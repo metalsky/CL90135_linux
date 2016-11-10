@@ -1,0 +1,402 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_pGadgetDriver_with_gad
+# Date: Fri Sep 19 14:08:50 2008
+# From c1408081972ce4d3d7a90ca5aa97c73595e63c3d Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Mon, 13 Aug 2007 04:32:13 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace pGadgetDriver with gadget_driver
+# 
+# Search and replace pGadgetDriver with gadget_driver
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit a75cd5aba2872fb0d8c54d8c7c02f170779eb921)
+
+PATCHNUM=1691
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From c1408081972ce4d3d7a90ca5aa97c73595e63c3d Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Mon, 13 Aug 2007 04:32:13 -0700
+Subject: [PATCH] musb_hdrc: Search and replace pGadgetDriver with gadget_driver
+
+Search and replace pGadgetDriver with gadget_driver
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit a75cd5aba2872fb0d8c54d8c7c02f170779eb921)
+Index: linux-2.6.18/drivers/usb/musb/g_ep0.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/g_ep0.c
++++ linux-2.6.18/drivers/usb/musb/g_ep0.c
+@@ -583,10 +583,10 @@ __releases(musb->lock)
+ __acquires(musb->lock)
+ {
+ 	int retval;
+-	if (!musb->pGadgetDriver)
++	if (!musb->gadget_driver)
+ 		return -EOPNOTSUPP;
+ 	spin_unlock(&musb->lock);
+-	retval = musb->pGadgetDriver->setup(&musb->g, pControlRequest);
++	retval = musb->gadget_driver->setup(&musb->g, pControlRequest);
+ 	spin_lock(&musb->lock);
+ 	return retval;
+ }
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -1531,7 +1531,7 @@ static void musb_pullup(struct musb *mus
+ 	/* FIXME if on, HdrcStart; if off, HdrcStop */
+ 
+ 	DBG(3, "gadget %s D+ pullup %s\n",
+-		musb->pGadgetDriver->function, is_on ? "on" : "off");
++		musb->gadget_driver->function, is_on ? "on" : "off");
+ 	musb_writeb(musb->mregs, MGC_O_HDRC_POWER, power);
+ }
+ 
+@@ -1758,13 +1758,13 @@ int usb_gadget_register_driver(struct us
+ 	DBG(3, "registering driver %s\n", driver->function);
+ 	spin_lock_irqsave(&musb->lock, flags);
+ 
+-	if (musb->pGadgetDriver) {
++	if (musb->gadget_driver) {
+ 		DBG(1, "%s is already bound to %s\n",
+ 				musb_driver_name,
+-				musb->pGadgetDriver->driver.name);
++				musb->gadget_driver->driver.name);
+ 		retval = -EBUSY;
+ 	} else {
+-		musb->pGadgetDriver = driver;
++		musb->gadget_driver = driver;
+ 		musb->g.dev.driver = &driver->driver;
+ 		driver->driver.bus = NULL;
+ 		musb->softconnect = 1;
+@@ -1778,7 +1778,7 @@ int usb_gadget_register_driver(struct us
+ 	if (retval != 0) {
+ 		DBG(3, "bind to driver %s failed --> %d\n",
+ 			driver->driver.name, retval);
+-		musb->pGadgetDriver = NULL;
++		musb->gadget_driver = NULL;
+ 		musb->g.dev.driver = NULL;
+ 	}
+ 
+@@ -1817,7 +1817,7 @@ int usb_gadget_register_driver(struct us
+ 				spin_lock_irqsave(&musb->lock, flags);
+ 				musb->xceiv.gadget = NULL;
+ 				musb->xceiv.state = OTG_STATE_UNDEFINED;
+-				musb->pGadgetDriver = NULL;
++				musb->gadget_driver = NULL;
+ 				musb->g.dev.driver = NULL;
+ 				spin_unlock_irqrestore(&musb->lock, flags);
+ 			}
+@@ -1896,7 +1896,7 @@ int usb_gadget_unregister_driver(struct 
+ 	musb_hnp_stop(musb);
+ #endif
+ 
+-	if (musb->pGadgetDriver == driver) {
++	if (musb->gadget_driver == driver) {
+ 		musb->xceiv.state = OTG_STATE_UNDEFINED;
+ 		stop_activity(musb, driver);
+ 
+@@ -1905,7 +1905,7 @@ int usb_gadget_unregister_driver(struct 
+ 		driver->unbind(&musb->g);
+ 		spin_lock_irqsave(&musb->lock, flags);
+ 
+-		musb->pGadgetDriver = NULL;
++		musb->gadget_driver = NULL;
+ 		musb->g.dev.driver = NULL;
+ 
+ 		musb->is_active = 0;
+@@ -1940,9 +1940,9 @@ void musb_g_resume(struct musb *musb)
+ 	case OTG_STATE_B_WAIT_ACON:
+ 	case OTG_STATE_B_PERIPHERAL:
+ 		musb->is_active = 1;
+-		if (musb->pGadgetDriver && musb->pGadgetDriver->resume) {
++		if (musb->gadget_driver && musb->gadget_driver->resume) {
+ 			spin_unlock(&musb->lock);
+-			musb->pGadgetDriver->resume(&musb->g);
++			musb->gadget_driver->resume(&musb->g);
+ 			spin_lock(&musb->lock);
+ 		}
+ 		break;
+@@ -1967,9 +1967,9 @@ void musb_g_suspend(struct musb *musb)
+ 		break;
+ 	case OTG_STATE_B_PERIPHERAL:
+ 		musb->is_suspended = 1;
+-		if (musb->pGadgetDriver && musb->pGadgetDriver->suspend) {
++		if (musb->gadget_driver && musb->gadget_driver->suspend) {
+ 			spin_unlock(&musb->lock);
+-			musb->pGadgetDriver->suspend(&musb->g);
++			musb->gadget_driver->suspend(&musb->g);
+ 			spin_lock(&musb->lock);
+ 		}
+ 		break;
+@@ -2003,9 +2003,9 @@ void musb_g_disconnect(struct musb *musb
+ 	(void) musb_gadget_vbus_draw(&musb->g, 0);
+ 
+ 	musb->g.speed = USB_SPEED_UNKNOWN;
+-	if (musb->pGadgetDriver && musb->pGadgetDriver->disconnect) {
++	if (musb->gadget_driver && musb->gadget_driver->disconnect) {
+ 		spin_unlock(&musb->lock);
+-		musb->pGadgetDriver->disconnect(&musb->g);
++		musb->gadget_driver->disconnect(&musb->g);
+ 		spin_lock(&musb->lock);
+ 	}
+ 
+@@ -2042,8 +2042,8 @@ __acquires(musb->lock)
+ 			(devctl & MGC_M_DEVCTL_BDEVICE)
+ 				? "B-Device" : "A-Device",
+ 			musb_readb(mbase, MGC_O_HDRC_FADDR),
+-			musb->pGadgetDriver
+-				? musb->pGadgetDriver->driver.name
++			musb->gadget_driver
++				? musb->gadget_driver->driver.name
+ 				: NULL
+ 			);
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_procfs.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_procfs.c
++++ linux-2.6.18/drivers/usb/musb/musb_procfs.c
+@@ -619,8 +619,8 @@ static int dump_header_stats(struct musb
+ #ifdef CONFIG_USB_GADGET_MUSB_HDRC
+ 	if (is_peripheral_enabled(musb)) {
+ 		code = sprintf(buffer, "Gadget driver: %s\n",
+-				musb->pGadgetDriver
+-					? musb->pGadgetDriver->driver.name
++				musb->gadget_driver
++					? musb->gadget_driver->driver.name
+ 					: "(none)");
+ 		if (code <= 0)
+ 			goto done;
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -446,7 +446,7 @@ struct musb {
+ 	u8			test_mode_nr;
+ 	u16			ackpend;		/* ep0 */
+ 	struct usb_gadget	g;			/* the gadget */
+-	struct usb_gadget_driver *pGadgetDriver;	/* its driver */
++	struct usb_gadget_driver *gadget_driver;	/* its driver */
+ #endif
+ 
+ #ifdef CONFIG_USB_MUSB_OTG
+Index: linux-2.6.18/drivers/usb/musb/tusb6010.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010.c
++++ linux-2.6.18/drivers/usb/musb/tusb6010.c
+@@ -422,7 +422,7 @@ static void musb_do_idle(unsigned long _
+ #endif
+ 
+ #ifdef CONFIG_USB_GADGET_MUSB_HDRC
+-		if (is_peripheral_enabled(musb) && !musb->pGadgetDriver)
++		if (is_peripheral_enabled(musb) && !musb->gadget_driver)
+ 			wakeups = 0;
+ 		else {
+ 			wakeups = TUSB_PRCM_WHOSTDISCON
+Index: linux-2.6.18/mvl_patches/pro50-1691.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1691.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1691);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

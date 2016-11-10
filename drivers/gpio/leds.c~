@@ -1,0 +1,291 @@
+/*
+ * CL90135 leds
+ *
+ * Copyright (C) 2011 Michele Sponchiado
+ *
+ * Based on code written by Paul Gortmaker and Ralf Baechle.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ */
+#include <linux/CL90135_leds.h>
+#include <linux/types.h>
+#include <linux/errno.h>
+#include <linux/miscdevice.h>
+#include <linux/slab.h>
+#include <linux/ioport.h>
+#include <linux/fcntl.h>
+#include <linux/init.h>
+#include <linux/poll.h>
+#include <linux/rtc.h>
+#include <linux/spinlock.h>
+#include <linux/bcd.h>
+#include <linux/proc_fs.h>
+
+#include <asm/uaccess.h>
+#include <asm/system.h>
+
+#include <linux/platform_device.h>
+
+#include <asm/mach-types.h>
+
+
+// Michele: driver per cl90135 leds
+#define CL90135_LED_VERSION		"1.0"
+// nome del device...
+#define CL90135_LED_driver_path "driver/CL90135_led"
+#define DEV_NAME "CL90135_led"
+
+
+static ssize_t ds3231_read(struct file *file, char *buf,
+			size_t count, loff_t *ppos);
+
+static int ds3231_ioctl(struct inode *inode, struct file *file,
+                        unsigned int cmd, unsigned long arg);
+
+static unsigned int ds3231_poll(struct file *file, poll_table *wait);
+
+static void ds3231_get_alm_time (struct rtc_time *alm_tm);
+static void ds3231_get_time(struct rtc_time *rtc_tm);
+static int ds3231_set_time(struct rtc_time *rtc_tm);
+
+static inline unsigned char ds3231_is_updating(void);
+
+static DEFINE_SPINLOCK(ds3231_lock);
+
+static int ds3231_read_proc(char *page, char **start, off_t off,
+                            int count, int *eof, void *data);
+
+
+static int CL90135_ioctl(struct inode *inode, struct file *file,unsigned int cmd, unsigned long arg)
+{
+	struct rtc_time wtime;
+
+	switch (cmd) {
+	case RTC_AIE_OFF:	// Mask alarm int. enab. bit	
+	{
+		unsigned int flags;
+		unsigned char val;
+
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+
+	// no spin lock while atomic!!!!
+//		spin_lock_irqsave(&ds3231_lock, flags);
+		val = rtc_read(RTC_CTL_REG_ADDR);
+		val &=  ~RTC_A1_IE_MASK;
+		rtc_write(val, RTC_CTL_REG_ADDR);
+	// no spin lock while atomic!!!!
+//		spin_unlock_irqrestore(&ds3231_lock, flags);
+
+		return 0;
+	}
+	case RTC_AIE_ON:	// alarm int. enab. 
+	{
+		unsigned int flags;
+		unsigned char val;
+
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+
+	// no spin lock while atomic!!!!
+//		spin_lock_irqsave(&ds3231_lock, flags);
+		val = rtc_read(RTC_CTL_REG_ADDR);
+		val |=  RTC_A1_IE_MASK;
+		rtc_write(val, RTC_CTL_REG_ADDR);
+	// no spin lock while atomic!!!!
+//		spin_unlock_irqrestore(&ds3231_lock, flags);
+
+		return 0;
+	}
+	
+	case RTC_ALM_READ:	/* Read the present alarm time */
+	{
+		/*
+		 * This returns a struct rtc_time. Reading >= 0xc0
+		 * means "don't care" or "match all". Only the tm_hour,
+		 * tm_min, and tm_sec values are filled in.
+		 */
+
+		memset(&wtime, 0, sizeof(wtime));
+		ds3231_get_alm_time(&wtime);
+		break;
+	}
+	case RTC_ALM_SET:	/* Store a time into the alarm */
+	{
+		/*
+		 * This expects a struct rtc_time. Writing 0xff means
+		 * "don't care" or "match all". Only the tm_hour,
+		 * tm_min and tm_sec are used.
+		 */
+		unsigned char hrs, min, sec;
+		struct rtc_time alm_tm;
+
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+
+		if (copy_from_user(&alm_tm, (struct rtc_time*)arg,
+				   sizeof(struct rtc_time)))
+			return -EFAULT;
+
+		hrs = alm_tm.tm_hour;
+		min = alm_tm.tm_min;
+		sec = alm_tm.tm_sec;
+
+		if (hrs >= 24)
+			hrs = 0xff;
+
+		if (min >= 60)
+			min = 0xff;
+			
+		if (sec >= 60)
+			sec = 0xff;
+
+		BIN_TO_BCD(sec);
+		BIN_TO_BCD(min);
+		BIN_TO_BCD(hrs);
+
+	// no spin lock while atomic!!!!
+//		spin_lock(&ds3231_lock);
+		
+		rtc_write(hrs, RTC_A1_HR_ADDR);
+		rtc_write(min, RTC_A1_MIN_ADDR);
+		rtc_write(sec, RTC_A1_SEC_ADDR);
+	// no spin lock while atomic!!!!
+//		spin_unlock(&ds3231_lock);
+
+		return 0;
+	}
+	case RTC_RD_TIME:	/* Read the time/date from RTC	*/
+	{
+		memset(&wtime, 0, sizeof(wtime));
+		ds3231_get_time(&wtime);
+		break;
+	}
+	case RTC_SET_TIME:	/* Set the RTC */
+	{
+		struct rtc_time rtc_tm;
+
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+
+		if (copy_from_user(&rtc_tm, (struct rtc_time*)arg,
+				   sizeof(struct rtc_time)))
+			return -EFAULT;
+
+		return ds3231_set_time(&rtc_tm);
+	}
+	default:
+        printk("DS3231 invalid code: %X\n", cmd);
+	
+		return -EINVAL;
+	}
+	return copy_to_user((void *)arg, &wtime, sizeof wtime) ? -EFAULT : 0;
+}
+
+/*
+ *	We enforce only one user at a time here with the open/close.
+ *	Also clear the previous interrupt data on an open, and clean
+ *	up things on a close.
+ */
+
+static int ds3231_open(struct inode *inode, struct file *file)
+{
+	return 0;
+
+}
+
+static int ds3231_release(struct inode *inode, struct file *file)
+{
+
+	return 0;
+}
+
+/*
+ *	The various file operations we support.
+ */
+
+static const struct file_operations ds3231_fops = {
+	.llseek		= no_llseek,
+	.read		= no_read,
+	.ioctl		= ds3231_ioctl,
+	.open		= ds3231_open,
+	.release	= ds3231_release,
+};
+
+static struct miscdevice CL90135_dev=
+{
+	.minor	= RTC_MINOR+34,
+	.name	= DEV_NAME,
+	.fops	= &CL90135_fops,
+};
+
+static int __init CL90135_init(void)
+{
+	int err;
+
+	printk(KERN_INFO "CL90135 LED DRIVER v%s\n", CL90135_LED_VERSION);
+
+	err = misc_register(&CL90135_dev);
+	if (err)
+		goto out;
+
+	if (!create_proc_read_entry(CL90135_LED_driver_path, 0, 0, CL90135_read_proc, NULL)) {
+		err = -ENOMEM;
+
+		goto out_deregister;
+	}
+	printk(KERN_INFO "CL90135 LED DRIVER v%s init ok\n", CL90135_LED_VERSION);
+
+	return 0;
+
+out_deregister:
+	misc_deregister(&CL90135_dev);
+
+out:
+	return err;
+}
+
+static void __exit CL90135_exit(void)
+{
+	remove_proc_entry(CL90135_LED_driver_path, NULL);
+	misc_deregister(&CL90135_dev);
+}
+
+
+/*
+ *	Info exported via "/proc/rtc".
+ */
+static int CL90135_proc_output(char *buf)
+{
+	char *p;
+
+	p = buf;
+	p += sprintf(p,"hello_000\n");
+
+	return  p - buf;
+}
+
+static int CL90135_read_proc(char *page, char **start, off_t off,int count, int *eof, void *data)
+{
+	int len = CL90135_proc_output (page);
+	if (len <= off+count) *eof = 1;
+	*start = page + off;
+	len -= off;
+	if (len>count)
+		len = count;
+	if (len<0)
+		len = 0;
+
+	return len;
+}
+
+
+module_init(CL90135_init);
+module_exit(CL90135_exit);
+
+MODULE_AUTHOR("Michele Sponchiado");
+MODULE_LICENSE("GPL");
+MODULE_ALIAS_MISCDEV(RTC_MINOR);

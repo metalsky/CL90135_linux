@@ -1,0 +1,484 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_da8xx_edma
+# Date: Thu Feb 19 15:04:11 2009
+# Source: MontaVista Software, Inc.
+# MR: 28546
+# Type: Enhancement
+# Disposition: needs submitting to DaVinci community
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Signed-off-by: Mark Greer <mgreer@mvista.com>
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description:
+# Add EDMA support for TI DA8xx.
+# 
+#  arch/arm/mach-da8xx/Makefile        |    2 
+#  arch/arm/mach-da8xx/devices.c       |   10 ++
+#  arch/arm/mach-da8xx/dma.c           |  138 ++++++++++++++++++++++++++++++++++++
+#  include/asm-arm/arch-davinci/edma.h |   49 ++++++++++++
+#  4 files changed, 198 insertions(+), 1 deletion(-)
+# 
+
+PATCHNUM=2150
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28546
+Type: Enhancement
+Disposition: needs submitting to DaVinci community
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Signed-off-by: Mark Greer <mgreer@mvista.com>
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description:
+Add EDMA support for TI DA8xx.
+
+ arch/arm/mach-da8xx/Makefile        |    2 
+ arch/arm/mach-da8xx/devices.c       |   10 ++
+ arch/arm/mach-da8xx/dma.c           |  138 ++++++++++++++++++++++++++++++++++++
+ include/asm-arm/arch-davinci/edma.h |   49 ++++++++++++
+ mvl_patches/pro50-2150.c            |   16 ++++
+ 5 files changed, 214 insertions(+), 1 deletion(-)
+
+Index: linux-2.6.18/arch/arm/mach-da8xx/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-da8xx/Makefile
++++ linux-2.6.18/arch/arm/mach-da8xx/Makefile
+@@ -4,6 +4,6 @@
+ #
+ 
+ # Common objects
+-obj-y := time.o clock.o io.o id.o devices.o reset.o
++obj-y := time.o clock.o io.o id.o devices.o dma.o reset.o
+ 
+ obj-$(CONFIG_GENERIC_GPIO)	+= gpio.o
+Index: linux-2.6.18/arch/arm/mach-da8xx/devices.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-da8xx/devices.c
++++ linux-2.6.18/arch/arm/mach-da8xx/devices.c
+@@ -250,6 +250,16 @@ static struct resource da8xx_mmc_resourc
+ 		.start	= IRQ_DA8XX_MMCSDINT0,
+ 		.end	= IRQ_DA8XX_MMCSDINT0,
+ 		.flags	= IORESOURCE_IRQ
++	},
++	[2] = {		 /* DMA RX */
++		.start	= DA8XX_DMACH_MMCSD_RX,
++		.end	= DA8XX_DMACH_MMCSD_RX,
++		.flags	= IORESOURCE_DMA
++	},
++	[3] = {		 /* DMA TX */
++		.start	= DA8XX_DMACH_MMCSD_TX,
++		.end	= DA8XX_DMACH_MMCSD_TX,
++		.flags	= IORESOURCE_DMA
+ 	}
+ };
+ 
+Index: linux-2.6.18/arch/arm/mach-da8xx/dma.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/dma.c
+@@ -0,0 +1,138 @@
++/*
++ * TI DA8xx EDMA config file
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#include <linux/init.h>
++
++#include <asm/arch/hardware.h>
++#include <asm/arch/irqs.h>
++#include <asm/arch/dma.h>
++#include <asm/arch/cpu.h>
++
++/*
++ * DA8xx specific EDMA3 information
++ */
++
++/*
++ * Each bit field of the elements below indicate the corresponding DMA channel
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int da8xx_edma_channels_arm[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	DA8XX_EDMA_ARM_OWN, 0
++};
++
++/*
++ * Each bit field of the elements below indicate the corresponding QDMA channel
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned char da8xx_qdma_channels_arm[EDMA_NUM_QDMA_CHAN_BYTES] = {
++	0x000000F0u
++};
++
++/*
++ * Each bit field of the elements below indicate corresponding PaRAM entry
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int da8xx_param_entry_arm[] = {
++	DA8XX_EDMA_ARM_OWN, 0xFF000000u, 0xFFFFFFFFu, 0xFFFFFFFFu
++};
++
++/*
++ * Each bit field of the elements below indicate corresponding TCC
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int da8xx_tcc_arm[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	DA8XX_EDMA_ARM_OWN, 0
++};
++
++/*
++ * Each bit field of the elements below indicate whether the corresponding
++ * PaRAM entry is available for ANY DMA channel or not: 1 - reserved, 0 - not.
++ * (First 32 PaRAM sets are reserved for 32 DMA channels.)
++ */
++static unsigned int da8xx_param_entry_reserved[] = {
++	0xFFFFFFFFu, 0, 0, 0
++};
++
++static struct edma_map da8xx_queue_priority_mapping[EDMA_DA8XX_NUM_EVQUE] = {
++	/* {Event Queue No, Priority} */
++	{0, 0},
++	{1, 7}
++};
++
++static struct edma_map da8xx_queue_watermark_level[EDMA_DA8XX_NUM_EVQUE] = {
++	/* {Event Queue No, Watermark Level} */
++	{0, 16},
++	{1, 16}
++};
++
++static struct edma_map da8xx_queue_tc_mapping[EDMA_DA8XX_NUM_EVQUE] = {
++	/* {Event Queue No, TC no} */
++	{0, 0},
++	{1, 1}
++};
++
++/*
++ * Mapping of DMA channels to Hardware Events from
++ * various peripherals, which use EDMA for data transfer.
++ * All channels need not be mapped, some can be free also.
++ */
++static unsigned int da8xx_dma_ch_hw_event_map[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	DA8XX_DMACH2EVENT_MAP0,
++	DA8XX_DMACH2EVENT_MAP1
++};
++
++/* Array containing physical addresses of all the TCs present */
++static u32 da8xx_edmatc_base_addrs[EDMA_MAX_TC] = {
++	DA8XX_TPTC0_BASE,
++	DA8XX_TPTC1_BASE
++};
++
++/*
++ * Variable which will be used internally for referring transfer controllers'
++ * error interrupts.
++ */
++static unsigned int da8xx_tc_error_int[EDMA_MAX_TC] = {
++	IRQ_DA8XX_TCERRINT0, IRQ_DA8XX_TCERRINT1
++};
++
++static struct dma_init_info dma_info __initdata = {
++	.edma_num_dmach 	= EDMA_DA8XX_NUM_DMACH,
++	.edma_num_tcc		= EDMA_DA8XX_NUM_TCC,
++	.edma_num_evtq		= EDMA_DA8XX_NUM_EVQUE,
++	.edma_num_tc		= EDMA_DA8XX_NUM_TC,
++	.edma_num_param 	= EDMA_DA8XX_NUM_PARAMENTRY,
++
++	.edma_chmap_exist	= EDMA_DA8XX_CHMAP_EXIST,
++
++	.edmatc_base_addrs	= da8xx_edmatc_base_addrs,
++
++	.edma2event_map		= da8xx_dma_ch_hw_event_map,
++
++	.edma_channels_arm	= da8xx_edma_channels_arm,
++	.qdma_channels_arm	= da8xx_qdma_channels_arm,
++	.param_entry_arm	= da8xx_param_entry_arm,
++	.tcc_arm		= da8xx_tcc_arm,
++	.param_entry_reserved	= da8xx_param_entry_reserved,
++
++	.q_pri			= da8xx_queue_priority_mapping,
++	.q_tc			= da8xx_queue_tc_mapping,
++	.q_wm			= da8xx_queue_watermark_level,
++
++	.cc_reg0_int		= IRQ_DA8XX_CCINT0,
++	.cc_error_int		= IRQ_DA8XX_CCERRINT,
++	.tc_error_int		= da8xx_tc_error_int,
++};
++
++static int __init dma_init(void)
++{
++	return davinci_dma_init(&dma_info);
++}
++arch_initcall(dma_init);
+Index: linux-2.6.18/include/asm-arm/arch-davinci/edma.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/edma.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/edma.h
+@@ -511,6 +511,55 @@ enum dm355_edma_ch {
+ };
+ /* end DM355 specific info */
+ 
++/* DA8xx specific EDMA3 information */
++#define EDMA_DA8XX_NUM_DMACH		32
++#define EDMA_DA8XX_NUM_TCC		32
++#define EDMA_DA8XX_NUM_PARAMENTRY	128
++#define EDMA_DA8XX_NUM_EVQUE		2
++#define EDMA_DA8XX_NUM_TC		2
++#define EDMA_DA8XX_CHMAP_EXIST		0
++#define EDMA_DA8XX_NUM_REGIONS		4
++#define DA8XX_DMACH2EVENT_MAP0		0x000FC03Fu
++#define DA8XX_DMACH2EVENT_MAP1		0x00000000u
++#define DA8XX_EDMA_ARM_OWN		0x30FFCCFFu
++
++/* DA8xx specific EDMA3 Events Information */
++enum da8xx_edma_ch {
++	DA8XX_DMACH_MCASP0_RX,
++	DA8XX_DMACH_MCASP0_TX,
++	DA8XX_DMACH_MCASP1_RX,
++	DA8XX_DMACH_MCASP1_TX,
++	DA8XX_DMACH_MCASP2_RX,
++	DA8XX_DMACH_MCASP2_TX,
++	DA8XX_DMACH_GPIO_BNK0INT,
++	DA8XX_DMACH_GPIO_BNK1INT,
++	DA8XX_DMACH_UART0_RX,
++	DA8XX_DMACH_UART0_TX,
++	DA8XX_DMACH_TMR64P0_EVTOUT12,
++	DA8XX_DMACH_TMR64P0_EVTOUT34,
++	DA8XX_DMACH_UART1_RX,
++	DA8XX_DMACH_UART1_TX,
++	DA8XX_DMACH_SPI0_RX,
++	DA8XX_DMACH_SPI0_TX,
++	DA8XX_DMACH_MMCSD_RX,
++	DA8XX_DMACH_MMCSD_TX,
++	DA8XX_DMACH_SPI1_RX,
++	DA8XX_DMACH_SPI1_TX,
++	DA8XX_DMACH_DMAX_EVTOUT6,
++	DA8XX_DMACH_DMAX_EVTOUT7,
++	DA8XX_DMACH_GPIO_BNK2INT,
++	DA8XX_DMACH_GPIO_BNK3INT,
++	DA8XX_DMACH_I2C0_RX,
++	DA8XX_DMACH_I2C0_TX,
++	DA8XX_DMACH_I2C1_RX,
++	DA8XX_DMACH_I2C1_TX,
++	DA8XX_DMACH_GPIO_BNK4INT,
++	DA8XX_DMACH_GPIO_BNK5INT,
++	DA8XX_DMACH_UART2_RX,
++	DA8XX_DMACH_UART2_TX
++};
++/* End DA8xx specific info */
++
+ /* ch_status paramater of callback function possible values */
+ enum edma_status {
+ 	DMA_COMPLETE = 1,
+Index: linux-2.6.18/mvl_patches/pro50-2150.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2150.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2150);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

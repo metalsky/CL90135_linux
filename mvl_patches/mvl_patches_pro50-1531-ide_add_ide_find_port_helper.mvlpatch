@@ -1,0 +1,459 @@
+#! /usr/bin/env bash
+# Patch: -ide_add_ide_find_port_helper
+# Date: Fri Sep 19 13:57:43 2008
+# Source: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+# MR: 27086
+# Type: Enhancement
+# Disposition: merged from 2.6.24-rc1
+# Signed-off-by: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+# ide: add ide_find_port() helper
+# 
+# * Add ide_find_port() helper.
+# 
+# * Convert icside, rapide and ide_platform host drivers to use it.
+# 
+# The patch is a bit different from its upstream version because I didn't merge
+# the patches converting 'hwif->mmio' into a flag; also because of the upstream
+# version of the 'ide_platform' driver using devm_*() API...
+# 
+# commit baa8f3e94bc7a7ba3650d80b67d54c3e08365dee
+# tree caabf63904cd62f758535e16dcc4676ba3ae5095
+# parent 8447d9d52adbe4c653482bd0d5ccb9b5d26f9c9d
+# author Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:31 +0200
+# committer Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:31 +0200
+# 
+#  drivers/ide/arm/icside.c          |   24 +-----------------------
+#  drivers/ide/arm/rapide.c          |   25 +++++--------------------
+#  drivers/ide/ide.c                 |   24 ++++++++++++++++++++++++
+#  drivers/ide/legacy/ide_platform.c |   25 ++++++-------------------
+#  include/linux/ide.h               |    2 ++
+#  5 files changed, 38 insertions(+), 62 deletions(-)
+# 
+
+PATCHNUM=1531
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+MR: 27086
+Type: Enhancement
+Disposition: merged from 2.6.24-rc1
+Signed-off-by: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+ide: add ide_find_port() helper
+
+* Add ide_find_port() helper.
+
+* Convert icside, rapide and ide_platform host drivers to use it.
+
+The patch is a bit different from its upstream version because I didn't merge
+the patches converting 'hwif->mmio' into a flag; also because of the upstream
+version of the 'ide_platform' driver using devm_*() API...
+
+commit baa8f3e94bc7a7ba3650d80b67d54c3e08365dee
+tree caabf63904cd62f758535e16dcc4676ba3ae5095
+parent 8447d9d52adbe4c653482bd0d5ccb9b5d26f9c9d
+author Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:31 +0200
+committer Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:31 +0200
+
+ drivers/ide/arm/icside.c          |   24 +-----------------------
+ drivers/ide/arm/rapide.c          |   25 +++++--------------------
+ drivers/ide/ide.c                 |   24 ++++++++++++++++++++++++
+ drivers/ide/legacy/ide_platform.c |   25 ++++++-------------------
+ include/linux/ide.h               |    2 ++
+ mvl_patches/pro50-1531.c          |   16 ++++++++++++++++
+ 6 files changed, 54 insertions(+), 62 deletions(-)
+
+Index: linux-2.6.18/drivers/ide/arm/icside.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/arm/icside.c
++++ linux-2.6.18/drivers/ide/arm/icside.c
+@@ -507,35 +507,13 @@ static void icside_dma_init(ide_hwif_t *
+ #define icside_dma_init(hwif)	(0)
+ #endif
+ 
+-static ide_hwif_t *icside_find_hwif(unsigned long dataport)
+-{
+-	ide_hwif_t *hwif;
+-	int index;
+-
+-	for (index = 0; index < MAX_HWIFS; ++index) {
+-		hwif = &ide_hwifs[index];
+-		if (hwif->io_ports[IDE_DATA_OFFSET] == dataport)
+-			goto found;
+-	}
+-
+-	for (index = 0; index < MAX_HWIFS; ++index) {
+-		hwif = &ide_hwifs[index];
+-		if (!hwif->io_ports[IDE_DATA_OFFSET])
+-			goto found;
+-	}
+-
+-	hwif = NULL;
+-found:
+-	return hwif;
+-}
+-
+ static ide_hwif_t *
+ icside_setup(void __iomem *base, struct cardinfo *info, struct expansion_card *ec)
+ {
+ 	unsigned long port = (unsigned long)base + info->dataoffset;
+ 	ide_hwif_t *hwif;
+ 
+-	hwif = icside_find_hwif(port);
++	hwif = ide_find_port(port);
+ 	if (hwif) {
+ 		int i;
+ 
+Index: linux-2.6.18/drivers/ide/arm/rapide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/arm/rapide.c
++++ linux-2.6.18/drivers/ide/arm/rapide.c
+@@ -13,31 +13,16 @@
+ 
+ #include <asm/ecard.h>
+ 
+-/*
+- * Something like this really should be in generic code, but isn't.
+- */
+ static ide_hwif_t *
+ rapide_locate_hwif(void __iomem *base, void __iomem *ctrl, unsigned int sz, int irq)
+ {
+ 	unsigned long port = (unsigned long)base;
+-	ide_hwif_t *hwif;
+-	int index, i;
+-
+-	for (index = 0; index < MAX_HWIFS; ++index) {
+-		hwif = ide_hwifs + index;
+-		if (hwif->io_ports[IDE_DATA_OFFSET] == port)
+-			goto found;
+-	}
++	ide_hwif_t *hwif = ide_find_port(port);
++	int i;
+ 
+-	for (index = 0; index < MAX_HWIFS; ++index) {
+-		hwif = ide_hwifs + index;
+-		if (hwif->io_ports[IDE_DATA_OFFSET] == 0)
+-			goto found;
+-	}
+-
+-	return NULL;
++	if (hwif == NULL)
++		goto out;
+ 
+- found:
+ 	for (i = IDE_DATA_OFFSET; i <= IDE_STATUS_OFFSET; i++) {
+ 		hwif->hw.io_ports[i] = port;
+ 		hwif->io_ports[i] = port;
+@@ -48,7 +33,7 @@ rapide_locate_hwif(void __iomem *base, v
+ 	hwif->hw.irq = hwif->irq = irq;
+ 	hwif->mmio = 2;
+ 	default_hwif_mmiops(hwif);
+-
++out:
+ 	return hwif;
+ }
+ 
+Index: linux-2.6.18/drivers/ide/ide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide.c
++++ linux-2.6.18/drivers/ide/ide.c
+@@ -346,6 +346,30 @@ static int ide_system_bus_speed(void)
+ 	return system_bus_speed;
+ }
+ 
++ide_hwif_t * ide_find_port(unsigned long base)
++{
++	ide_hwif_t *hwif;
++	int i;
++
++	for (i = 0; i < MAX_HWIFS; i++) {
++		hwif = &ide_hwifs[i];
++		if (hwif->io_ports[IDE_DATA_OFFSET] == base)
++			goto found;
++	}
++
++	for (i = 0; i < MAX_HWIFS; i++) {
++		hwif = &ide_hwifs[i];
++		if (hwif->io_ports[IDE_DATA_OFFSET] == 0)
++			goto found;
++	}
++
++	hwif = NULL;
++found:
++	return hwif;
++}
++
++EXPORT_SYMBOL_GPL(ide_find_port);
++
+ static struct resource* hwif_request_region(ide_hwif_t *hwif,
+ 					    unsigned long addr, int num)
+ {
+Index: linux-2.6.18/drivers/ide/legacy/ide_platform.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/ide_platform.c
++++ linux-2.6.18/drivers/ide/legacy/ide_platform.c
+@@ -33,24 +33,11 @@ static ide_hwif_t *__devinit plat_ide_lo
+ 	    int mmio)
+ {
+ 	unsigned long port = (unsigned long)base;
+-	ide_hwif_t *hwif;
+-	int index, i;
+-
+-	for (index = 0; index < MAX_HWIFS; ++index) {
+-		hwif = ide_hwifs + index;
+-		if (hwif->io_ports[IDE_DATA_OFFSET] == port)
+-			goto found;
+-	}
++	ide_hwif_t *hwif = ide_find_port(port);
++	int i;
+ 
+-	for (index = 0; index < MAX_HWIFS; ++index) {
+-		hwif = ide_hwifs + index;
+-		if (hwif->io_ports[IDE_DATA_OFFSET] == 0)
+-			goto found;
+-	}
+-
+-	return NULL;
+-
+-found:
++	if (hwif == NULL)
++		goto out;
+ 
+ 	hwif->hw.io_ports[IDE_DATA_OFFSET] = port;
+ 
+@@ -73,9 +60,9 @@ found:
+ 	}
+ 
+ 	hwif_prop.hwif = hwif;
+-	hwif_prop.index = index;
++	hwif_prop.index = hwif->index;
+ 	hwif_prop.mmio = mmio;
+-
++out:
+ 	return hwif;
+ }
+ 
+Index: linux-2.6.18/include/linux/ide.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/ide.h
++++ linux-2.6.18/include/linux/ide.h
+@@ -217,6 +217,8 @@ typedef struct hw_regs_s {
+ 	struct device	*dev;
+ } hw_regs_t;
+ 
++struct hwif_s * ide_find_port(unsigned long);
++
+ int ide_register_hw(hw_regs_t *, void (*)(struct hwif_s *), int,
+ 		    struct hwif_s **);
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1531.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1531.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1531);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

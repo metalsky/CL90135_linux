@@ -1,0 +1,798 @@
+/*
+ * Driver for TI CL90135 SoC's RTC.
+ *
+ * Author: Mark A. Greer <mgreer@mvista.com>
+ *
+ * 2008 (c) MontaVista Software, Inc. This file is licensed under
+ * the terms of the GNU General Public License version 2. This program
+ * is licensed "as is" without any warranty of any kind, whether express
+ * or implied.
+ */
+
+#include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/delay.h>
+#include <linux/interrupt.h>
+#include <linux/spinlock.h>
+#include <linux/rtc.h>
+#include <linux/bcd.h>
+#include <linux/ioctl.h>
+#include <linux/platform_device.h>
+#include <linux/io.h>
+#include <linux/ds3231.h>
+#include <asm/mach-types.h>
+#include <asm/arch/i2c-client.h>
+
+#define defDriverVersion "TI CL90135 Real Time Clock driver v 1.00"
+
+//static DEFINE_SPINLOCK(cl90135_rtc_lock);
+static void __iomem	*cl90135_rtc_base;
+static resource_size_t	cl90135_rtc_pbase;
+static size_t		cl90135_rtc_base_size;
+static u8		cl90135_rtc_irq;
+//static unsigned char ds3231_status;	/* bitmapped status byte.	*/
+static unsigned char ds3231_alarmMaskReg; //masck identifying alarm generation mode (only for alarm 1)
+
+
+static unsigned char days_in_mo[] = {
+	0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+};
+
+
+static unsigned char rtc_read(unsigned char ucRegister){
+    char rtcData[4];
+    rtcData[0]=ucRegister;
+    davinci_i2c_write(1, rtcData, 0x68);
+	davinci_i2c_read(1, rtcData, 0x68);
+	return rtcData[0];
+}
+
+static unsigned char rtc_write(unsigned char ucValue,unsigned char ucRegister){
+    char rtcData[4];
+    rtcData[0]=ucRegister;
+    rtcData[1]=ucValue;
+    return davinci_i2c_write(2, rtcData, 0x68);
+}
+
+
+void cl90135_rtc_wait_not_busy(void){
+    unsigned char ucBusy;
+    unsigned int i;
+    for (i=0;i<1000;i++){
+        ucBusy=rtc_read(RTC_STAT_REG_ADDR)&RTC_STATUS_BUSY_BIT;
+        if (!ucBusy)
+            return;
+    }
+	pr_debug("rtc-cl90135: RTC always busy.\n");
+}
+
+
+
+
+static void ds3231_get_time(struct rtc_time *rtc_tm)
+{
+	unsigned char save_control,byteFromRtc,century;
+//	printk("cl90135 time get\n");
+
+	/*
+	 * Only the values that we read from the RTC are set. We leave
+	 * tm_wday, tm_yday and tm_isdst untouched. Even though the
+	 * RTC has RTC_DAY_OF_WEEK, we ignore it, as it is only updated
+	 * by the RTC when initially set to a non-zero value.
+	 */
+	save_control = rtc_read(RTC_CTL_REG_ADDR);
+	rtc_write((save_control&~RTC_OSCILLATOR_STOP_FLAG_BIT), RTC_CTL_REG_ADDR);
+
+	rtc_tm->tm_sec = rtc_read(RTC_SEC_REG_ADDR);
+	rtc_tm->tm_min = rtc_read(RTC_MIN_REG_ADDR);
+	byteFromRtc=rtc_read(RTC_HR_REG_ADDR);
+	if (byteFromRtc&RTC_12_HR_MODE_BIT){
+	    rtc_tm->tm_hour = (byteFromRtc  & 0x1f)+12*((byteFromRtc&RTC_PM_MODE_BIT)?1:0);
+	}
+	else{
+	    rtc_tm->tm_hour = (byteFromRtc  & 0x3f);
+	}
+	
+	
+	rtc_tm->tm_mday = rtc_read(RTC_DATE_REG_ADDR);
+	
+	byteFromRtc=rtc_read(RTC_MON_REG_ADDR);
+	
+	century=(byteFromRtc&RTC_CENTURY_BIT)?1:0;
+	rtc_tm->tm_mon = byteFromRtc & 0x1f;
+	
+	rtc_tm->tm_year = rtc_read(RTC_YR_REG_ADDR);
+
+	rtc_write(save_control, RTC_CTL_REG_ADDR);
+
+	BCD_TO_BIN(rtc_tm->tm_sec);
+	BCD_TO_BIN(rtc_tm->tm_min);
+	BCD_TO_BIN(rtc_tm->tm_hour);
+	BCD_TO_BIN(rtc_tm->tm_mday);
+	BCD_TO_BIN(rtc_tm->tm_mon);
+	BCD_TO_BIN(rtc_tm->tm_year);
+
+	/*
+	 * Account for differences between how the RTC uses the values
+	 * and how they are defined in a struct rtc_time;
+	 */
+	 
+	 // nella struttura rtc_tm 0-->1900, mentre nel chip  rtc parto da 0-->2000
+	 // perciò devo sommare 100 al valore letto da rtc
+	 rtc_tm->tm_year+=100;
+     if (century)
+    	rtc_tm->tm_year += 100;
+
+	rtc_tm->tm_mon--;
+}
+
+static int ds3231_set_time(struct rtc_time *rtc_tm)
+{
+	unsigned char mon, day, hrs, min, sec, leap_yr;
+	unsigned char save_control,century;
+	unsigned int yrs;
+
+// In ingresso anno deve essere riferito in base al 1900, ad es per specificare l'anno 2011, passare 2011-1900=111
+//	printk("\ncl90135 time Setting\n");
+//	printk("year : %i\n",(int)rtc_tm->tm_year);
+//	printk("month: %i\n",(int)rtc_tm->tm_mon);
+//	printk("mday : %i\n",(int)rtc_tm->tm_mday);
+//	printk("hour : %i\n",(int)rtc_tm->tm_hour);
+//	printk("min  : %i\n",(int)rtc_tm->tm_min);
+//	printk("sec  : %i\n",(int)rtc_tm->tm_sec);
+
+// sommo l'anno base...	
+	yrs = rtc_tm->tm_year+1900;
+	mon = rtc_tm->tm_mon + 1;   /* tm_mon starts at zero */
+	day = rtc_tm->tm_mday;
+	hrs = rtc_tm->tm_hour;
+	min = rtc_tm->tm_min;
+	sec = rtc_tm->tm_sec;
+
+	if (yrs < 1970)
+		return -EINVAL;
+
+	leap_yr = ((!(yrs % 4) && (yrs % 100)) || !(yrs % 400));
+
+	if ((mon > 12) || (day == 0))
+		return -EINVAL;
+
+	if (day > (days_in_mo[mon] + ((mon == 2) && leap_yr)))
+		return -EINVAL;
+
+	if ((hrs >= 24) || (min >= 60) || (sec >= 60))
+		return -EINVAL;
+
+	if ((yrs -= 2000) > 255)    /* They are unsigned */
+		return -EINVAL;
+
+	if (yrs >= 100){
+		yrs -= 100;
+		century=RTC_CENTURY_BIT;
+	}
+	else{
+		century=0;
+	}
+//	printk("cl90135 time Setting writing...\n");
+
+	BIN_TO_BCD(sec);
+	BIN_TO_BCD(min);
+	BIN_TO_BCD(hrs);
+	BIN_TO_BCD(day);
+	BIN_TO_BCD(mon);
+	BIN_TO_BCD(yrs);
+	
+
+	save_control = rtc_read(RTC_CTL_REG_ADDR);
+
+	rtc_write(yrs|century,  RTC_YR_REG_ADDR);
+	rtc_write(mon,          RTC_MON_REG_ADDR);
+	rtc_write(day,          RTC_DATE_REG_ADDR);
+	rtc_write(hrs,          RTC_HR_REG_ADDR);
+	rtc_write(min,          RTC_MIN_REG_ADDR);
+	rtc_write(sec,          RTC_SEC_REG_ADDR);
+
+	rtc_write(save_control, RTC_CTL_REG_ADDR);
+	
+
+	return 0;
+}
+
+static void ds3231_get_alm_time(struct rtc_time *alm_tm)
+{
+	unsigned char byteFromRtc;
+
+	ds3231_alarmMaskReg=0;
+	
+	byteFromRtc=rtc_read(RTC_A1_SEC_ADDR);
+	alm_tm->tm_sec = byteFromRtc & 0x7f;
+	ds3231_alarmMaskReg|=(byteFromRtc&0x80)?1:0;
+	
+	byteFromRtc=rtc_read(RTC_A1_MIN_ADDR);
+	alm_tm->tm_min = rtc_read(RTC_A1_MIN_ADDR) & 0x7f;
+	ds3231_alarmMaskReg|=(byteFromRtc&0x80)?2:0;
+	
+	byteFromRtc=rtc_read(RTC_A1_HR_ADDR);
+	ds3231_alarmMaskReg|=(byteFromRtc&0x80)?4:0;
+	if (byteFromRtc&RTC_12_HR_MODE_BIT){
+	    alm_tm->tm_hour = (byteFromRtc  & 0x1f)+12*((byteFromRtc&RTC_PM_MODE_BIT)?1:0);
+	}
+	else{
+	    alm_tm->tm_hour = (byteFromRtc  & 0x3f);
+	}
+	
+	byteFromRtc=rtc_read(RTC_A1_DAYDATE_ADDR);
+	ds3231_alarmMaskReg|=(byteFromRtc&0x80)?8:0;
+	ds3231_alarmMaskReg|=(byteFromRtc&0x40)?16:0;
+	
+	if (byteFromRtc&RTC_DAY_ALARM_MODE_BIT){
+	    alm_tm->tm_wday = rtc_read(RTC_A1_DAYDATE_ADDR)    & 0x07;
+	    alm_tm->tm_mday=0;
+	}
+	else{
+	    alm_tm->tm_wday=0;
+	    alm_tm->tm_mday = rtc_read(RTC_A1_DAYDATE_ADDR)    & 0x3f;
+	}
+//	cmd = rtc_read(RTC_CTL_REG_ADDR);
+
+	BCD_TO_BIN(alm_tm->tm_sec);
+	BCD_TO_BIN(alm_tm->tm_min);
+	BCD_TO_BIN(alm_tm->tm_hour);
+	BCD_TO_BIN(alm_tm->tm_wday);
+	BCD_TO_BIN(alm_tm->tm_mday);
+}
+
+
+static int _cl90135_rtc_read_time(struct device *dev, struct rtc_time *tm, int is_alarm)
+{
+//	unsigned long flags;
+
+//	spin_lock_irqsave(&cl90135_rtc_lock, flags);
+	if (!is_alarm){
+    	ds3231_get_time(tm);
+	}
+	else{
+        ds3231_get_alm_time(tm);
+	}
+//	spin_unlock_irqrestore(&cl90135_rtc_lock, flags);
+	return 0;
+}
+
+static int _cl90135_rtc_set_time(struct device *dev, struct rtc_time *tm,		int is_alarm)
+{
+//	unsigned long flags;
+
+//	spin_lock_irqsave(&cl90135_rtc_lock, flags);
+        if (!is_alarm){
+            ds3231_set_time(tm);
+        }
+        else{
+        }
+//	spin_unlock_irqrestore(&cl90135_rtc_lock, flags);
+
+	return 0;
+}
+
+static int cl90135_rtc_read_time(struct device *dev, struct rtc_time *tm)
+{
+	return _cl90135_rtc_read_time(dev, tm, 0);
+}
+
+static int cl90135_rtc_set_time(struct device *dev, struct rtc_time *tm)
+{
+	return _cl90135_rtc_set_time(dev, tm, 0);
+}
+
+static int cl90135_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
+{
+	return _cl90135_rtc_read_time(dev, &alrm->time, 1);
+}
+
+static int cl90135_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
+{
+	return _cl90135_rtc_set_time(dev, &alrm->time, 1);
+}
+
+#ifdef CONFIG_RTC_INTF_DEV
+static int cl90135_rtc_ioctl(struct device *dev, unsigned int cmd,
+		unsigned long arg)
+{
+	int ret = 0;
+	u32 v;
+//	unsigned long flags;
+	struct rtc_time wtime;
+	unsigned char temp_msb,temp_lsb,rtc_status,rtc_ctl;
+	unsigned long temperature;
+
+//	if (!cl90135_rtc_irq) /* Intr handler not registered */
+//		return -ENOIOCTLCMD;
+
+	switch (cmd) {
+	case RTC_AIE_OFF:
+	case RTC_AIE_ON:
+	case RTC_UIE_OFF:
+	case RTC_UIE_ON:
+		break;
+	case RTC_EPOCH_READ:{
+	        unsigned long ulEpoch;
+	        ulEpoch=1900;
+	        return copy_to_user((void *)arg, &ulEpoch, sizeof ulEpoch) ? -EFAULT : 0;
+	    }
+	case RTC_RD_TIME:
+	    memset(&wtime, 0, sizeof(wtime));
+	    ds3231_get_time(&wtime);
+        return copy_to_user((void *)arg, &wtime, sizeof wtime) ? -EFAULT : 0;
+// restituisce temperatura 
+	case RTC_READ_TEMPERATURE:{
+	        int i;
+    //	    printk("cl90135 reading temperature...\n");
+    
+            // se busy attivo, aspetto che vada a zero
+            for (i=0;i<1000;i++){
+                rtc_status=rtc_read(RTC_STAT_REG_ADDR);
+                if ((rtc_status&RTC_STATUS_BUSY_BIT)==0)
+                        break;
+            }
+            // se non è in corso un conversione, la inizializzo
+            rtc_ctl=rtc_read(RTC_CTL_REG_ADDR);
+            if ((RTC_CTRL_CONV_BIT&rtc_ctl)==0){
+                rtc_write(RTC_CTRL_CONV_BIT|rtc_ctl,RTC_CTL_REG_ADDR);
+            }
+            // aspetto che termini la conversione...
+            for (i=0;i<1000;i++){
+                rtc_ctl=rtc_read(RTC_CTL_REG_ADDR);
+                if ((RTC_CTRL_CONV_BIT&rtc_ctl)==0)
+                    break;
+            }
+	        temp_msb = rtc_read(RTC_TEMP_MSB_ADDR);
+	        temp_lsb = rtc_read(RTC_TEMP_LSB_ADDR);
+	        temperature=temp_msb;
+	        temperature*=100;
+	        temperature+=(temp_lsb>>6)*25;
+	        return copy_to_user((void *)arg, &temperature, sizeof temperature) ? -EFAULT : 0;
+	    }
+	case RTC_READ_VERSION:{
+	    TipoStruct_rtc_version rtc_version;
+		if (copy_from_user(&rtc_version, (TipoStruct_rtc_version*)arg,sizeof rtc_version))
+			return -EFAULT;
+    	if (rtc_version.uiMaxChar2copy>sizeof(rtc_version.cversion)-1)
+    	    rtc_version.uiMaxChar2copy=sizeof(rtc_version.cversion)-1;
+		strncpy(rtc_version.cversion,defDriverVersion,rtc_version.uiMaxChar2copy);
+	    return copy_to_user((void *)arg, &rtc_version, sizeof rtc_version) ? -EFAULT : 0;
+	}
+	case RTC_SET_TIME:	/* Set the RTC */
+	{
+		struct rtc_time rtc_tm;
+
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+
+		if (copy_from_user(&rtc_tm, (struct rtc_time*)arg,
+				   sizeof(struct rtc_time)))
+			return -EFAULT;
+
+		return ds3231_set_time(&rtc_tm);
+	}
+	default:
+		return -ENOIOCTLCMD;
+	}
+
+//	spin_lock_irqsave(&cl90135_rtc_lock, flags);
+	cl90135_rtc_wait_not_busy();
+
+	v = rtc_read(RTC_CTL_REG_ADDR);
+
+	switch (cmd) {
+	case RTC_AIE_OFF: /* Disable alarm */
+		v &= ~RTC_A1_IE_MASK;
+		break;
+	case RTC_AIE_ON: /* Enable alarm */
+		v |= RTC_A1_IE_MASK;
+		break;
+	case RTC_UIE_OFF: /* Disable Update Interrupt Enable (1 second timer) */
+		v &= ~RTC_A2_IE_MASK;
+		break;
+	case RTC_UIE_ON: /* Enable Update Interrupt Enable (1 second timer) */
+		v |= RTC_A2_IE_MASK;
+		break;
+	}
+
+	rtc_write(v, RTC_CTL_REG_ADDR);
+//	spin_unlock_irqrestore(&cl90135_rtc_lock, flags);
+
+	return ret;
+}
+#endif
+
+
+static char *days[] = {
+	"***", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+};
+
+static char *square_wave_out_freq[] = {
+	"1Hz", "1.024kHz", "2.048kHz", "4.096kHz"
+};
+
+static char *alarm1_rates[] = {
+                                                      // DY/DT A1M4 A1M3 A1M2 A1M1
+"Alarm when date, hours, minutes, and seconds match", // 0      0   0    0      0 
+"Alarm when day, hours, minutes, and seconds match" , // 1      0   0    0      0 
+"Alarm when hours, minutes, and seconds match"      , // X      1   0    0      0 
+"Alarm when minutes and seconds match"              , // X      1   1    0      0 
+"Alarm when seconds match"                          , // X      1   1    1      0 
+"Alarm once per second"                             , // X      1   1    1      1 
+"Unknown"                                           , // any other
+};
+
+#if 0
+static char *alarm2_rates[] = {
+                                                      // DY/DT A2M4 A2M3 A2M2 
+"Alarm when date, hours, and minutes match"         , // 0      0   0    0 
+"Alarm when day, hours, and minutes match"          , // 1      0   0    0 
+"Alarm when hours and minutes match"                , // X      1   0    0 
+"Alarm when minutes match"                          , // X      1   1    0 
+"Alarm once per minute"                             , // X      1   1    1
+};
+#endif
+
+
+static int cl90135_rtc_proc(struct device *dev, struct seq_file *seq)
+{
+//	unsigned long flags;
+	struct rtc_time tm,alm_tm;
+	unsigned char hundredth, cmd,cmd_ctl, temp_msb,temp_lsb,rtc_status,idx;
+
+//	spin_lock_irqsave(&cl90135_rtc_lock, flags);
+	cl90135_rtc_wait_not_busy();
+
+	    ds3231_get_time(&tm);
+	    ds3231_get_alm_time(&alm_tm);
+	    temp_msb = rtc_read(RTC_TEMP_MSB_ADDR);
+	    temp_lsb = rtc_read(RTC_TEMP_LSB_ADDR);
+        cmd=rtc_read(RTC_AGING_OFFSET_ADDR);
+	    cmd_ctl = rtc_read(RTC_CTL_REG_ADDR);
+	    rtc_status = rtc_read(RTC_STAT_REG_ADDR);
+	
+//	spin_unlock_irqrestore(&cl90135_rtc_lock, flags);
+	
+	hundredth = 0;
+	BCD_TO_BIN(hundredth);
+
+    seq_printf(  seq
+                ,"rtc_time\t: %02d:%02d:%02d.%02d\n"
+                 "rtc_date\t: %04d-%02d-%02d\n"
+		        ,(int)tm.tm_hour, (int)tm.tm_min, (int)tm.tm_sec, (int)hundredth
+		        ,(int)tm.tm_year + 1900
+		        ,(int)tm.tm_mon + 1
+		        ,(int)tm.tm_mday
+		      );
+	
+	
+    seq_printf(  seq
+	            ,"alarm\t\t: %s "
+	            , days[alm_tm.tm_wday]
+	          );
+	if (alm_tm.tm_hour <= 24)
+        seq_printf(  seq
+                    , "%02d:"
+                    , alm_tm.tm_hour
+                   );
+	else
+	    seq_printf(seq, "**:");
+
+	if (alm_tm.tm_min <= 59)
+        seq_printf(  seq
+                   , "%02d\n"
+                   , alm_tm.tm_min
+                   );
+	else
+        seq_printf(  seq
+                    , "**\n"
+                  );
+    if ((ds3231_alarmMaskReg&0x0F)==0){
+        if (ds3231_alarmMaskReg&0x10)
+            idx=0;
+        else
+            idx=1;
+    }
+    else{
+        switch (ds3231_alarmMaskReg&0x0F){
+            case 8:
+                idx=2;
+                break;
+            case 12:
+                idx=3;
+                break;
+            case 14:
+                idx=4;
+                break;
+            case 15:
+                idx=5;
+                break;
+            default:
+                idx=6;
+                break;
+        }
+    }
+    seq_printf(  seq
+                ,"alarm mode\t: %s (%i)\n"
+	            ,(idx<sizeof(alarm1_rates)/sizeof(alarm1_rates[0]))?alarm1_rates[idx]:"???"
+	            ,(int)idx
+	          );
+
+    seq_printf(  seq
+                ,"temperature\t: %i.%02i °C\naging offset\t: %02X\n"
+	            ,temp_msb,(temp_lsb>>6)*25
+	            ,(int)cmd
+	           );
+
+	idx=(cmd_ctl&(RTC_CTRL_RS1_BIT|RTC_CTRL_RS2_BIT))>>RTC_CTRL_RS1_IDX;
+    seq_printf(  seq
+                ,"alarm_1_enabled\t: %s\n"
+	             "alarm_2_enabled\t: %s\n"
+	             "int/sqw        \t: %s\n"
+	             "rate select    \t: %s\n"
+	             "converting temp\t: %s\n"
+	             "battery back square\t: %s\n"
+	             "osc enabled    \t: %s\n"
+	             ,(cmd_ctl&RTC_CTRL_A1E_BIT)?"ON":"off"
+	             ,(cmd_ctl&RTC_CTRL_A2E_BIT)?"ON":"off"
+	             ,(cmd_ctl&RTC_CTRL_INTCN_BIT)?"square wave pin":"int pin"
+	             ,square_wave_out_freq[idx]
+	             ,(cmd_ctl&RTC_CTRL_CONV_BIT)?"ON":"off"
+	             ,(cmd_ctl&RTC_CTRL_BBSQ_BIT)?"ON":"off"
+	             ,(cmd_ctl&RTC_CTRL_EOSCN_BIT)?"off":"ON"
+	             );
+
+    seq_printf(  seq
+                ,
+	             "alarm_1_flag\t: %s\n"
+	             "alarm_2_flag\t: %s\n"
+	             "busy_flag   \t: %s\n"
+	             "enable_32kHz\t: %s\n"
+	             "oscill_stop \t: %s\n"
+	             ,(rtc_status&RTC_STATUS_A1F_BIT)?"ON":"off"
+	             ,(rtc_status&RTC_STATUS_A2F_BIT)?"ON":"off"
+	             ,(rtc_status&RTC_STATUS_BUSY_BIT)?"ON":"off"
+	             ,(rtc_status&RTC_STATUS_EN32KHZ_BIT)?"ON":"off"
+	             ,(rtc_status&RTC_STATUS_OSF_BIT)?"ON":"off"
+	             );
+	
+	return 0;
+}
+
+static struct rtc_class_ops cl90135_rtc_ops = {
+#ifdef CONFIG_RTC_INTF_DEV
+	.ioctl		= cl90135_rtc_ioctl,
+#endif
+	.read_time	= cl90135_rtc_read_time,
+	.set_time	= cl90135_rtc_set_time,
+	.read_alarm	= cl90135_rtc_read_alarm,
+	.set_alarm	= cl90135_rtc_set_alarm,
+	.proc		= cl90135_rtc_proc,
+};
+
+
+/* Interrupt handling for alarms and periodic 1 second interrupts */
+static void cl90135_rtc_clear_alarm_intr(void)
+{
+	u32 v;
+
+	v = rtc_read(RTC_STAT_REG_ADDR);
+	rtc_write(v&~(RTC_STATUS_A1F_BIT|RTC_STATUS_A2F_BIT), RTC_STAT_REG_ADDR);
+}
+
+static irqreturn_t cl90135_rtc_intr(int irq, void *dev_id, struct pt_regs *regs)
+{
+	struct platform_device *pdev = dev_id;
+	struct rtc_device *rtc = platform_get_drvdata(pdev);
+	unsigned long events = RTC_IRQF;
+	u32 v;
+	static u8 first_time = 1;
+
+	v = rtc_read(RTC_STAT_REG_ADDR);
+
+	if ((v & (RTC_STATUS_A1F_BIT|RTC_STATUS_A2F_BIT))) {
+		if ((v & RTC_STATUS_A1F_BIT)) {
+			events |= RTC_AF;
+			cl90135_rtc_clear_alarm_intr();
+		} else{ /* must be 1 second timer intr */
+			events |= RTC_UF;
+			cl90135_rtc_clear_alarm_intr();
+		}
+		rtc_update_irq(&rtc->class_dev, 1, events);
+
+		return IRQ_HANDLED;
+	}
+    else if (first_time) {
+		dev_warn(&pdev->dev, "Bogus interrupt: 0x%08x\n", v);
+		first_time = 0;
+	}
+
+	return IRQ_NONE;
+}
+
+
+
+static void __init cl90135_rtc_start(void)
+{
+	u32 v;
+
+	v = rtc_read(RTC_CTL_REG_ADDR);
+	if (v & RTC_CTRL_EOSCN_BIT) // reset eoscn to start
+		rtc_write(v &(~RTC_CTRL_EOSCN_BIT), RTC_CTL_REG_ADDR);
+	v = rtc_read(RTC_STAT_REG_ADDR);
+	if (v & RTC_STATUS_OSF_BIT) 
+	    rtc_write(v&(~RTC_STATUS_OSF_BIT),RTC_STAT_REG_ADDR);
+}
+
+static int __init cl90135_rtc_is_enabled(void)
+{
+	u32 v;
+
+	v = rtc_read(RTC_STAT_REG_ADDR);
+	return (v & RTC_STATUS_OSF_BIT) ? 0 : 1;
+}
+
+static void __init cl90135_rtc_config(void)
+{
+	u32 v;
+
+	/*
+	 * Put clock & alarm in 24 hour mode, don't round.
+	 * Leave compensation alone in case firmware sets it up.
+	 */
+	v = rtc_read(RTC_CTL_REG_ADDR);
+	v &= ~(RTC_CTRL_A1E_BIT | RTC_CTRL_A2E_BIT|RTC_CTRL_INTCN_BIT|RTC_CTRL_RS1_BIT|RTC_CTRL_RS2_BIT|RTC_CTRL_EOSCN_BIT|RTC_CTRL_EOSCN_BIT);
+	rtc_write(v, RTC_CTL_REG_ADDR);
+	
+	v=rtc_read(RTC_HR_REG_ADDR);
+	v&=~RTC_12_HR_MODE_BIT;
+	rtc_write(v, RTC_HR_REG_ADDR);
+
+}
+
+static int __devinit cl90135_rtc_probe(struct platform_device *pdev)
+{
+//	struct resource *res, *mem = NULL;
+	struct rtc_device *rtc = NULL;
+	int irq, ret;
+
+//    printk("cl90135 rtc probe\n");
+ #if 0   
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		pr_debug("%s: No MEM resource in platform data.\n", pdev->name);
+		ret = -ENOENT;
+		goto Noresources;
+	}
+
+	cl90135_rtc_pbase = res->start;
+	cl90135_rtc_base_size = res->start - res->start + 1;
+
+	mem = request_mem_region(res->start, cl90135_rtc_base_size, pdev->name);
+	if (!mem) {
+		pr_debug("%s: Can't reserve MEM resource.\n", pdev->name);
+		ret = -EBUSY;
+		goto err_out;
+	}
+
+	cl90135_rtc_base = ioremap(res->start, cl90135_rtc_base_size);
+	if (cl90135_rtc_base == NULL) {
+		pr_debug("%s: Can't ioremap MEM resource.\n", pdev->name);
+		ret = -ENOMEM;
+		goto err_out0;
+	}
+Noresources:	
+#endif
+
+	rtc = rtc_device_register(pdev->name, &pdev->dev, &cl90135_rtc_ops,
+			THIS_MODULE);
+	if (IS_ERR(rtc)) {
+		pr_debug("%s: Can't register device.\n", pdev->name);
+//		printk("%s: Can't register device.\n", pdev->name);
+		ret = PTR_ERR(rtc);
+		goto err_out1;
+	}
+
+	platform_set_drvdata(pdev, rtc);
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq <= 0)
+		dev_warn(&pdev->dev,
+				"No IRQ in platform data. Alarms disabled.\n");
+	else {
+		ret = request_irq(irq, cl90135_rtc_intr, IRQF_DISABLED,
+				pdev->name, pdev);
+		if (ret) {
+			pr_debug("%s: Failed to register handler for irq %d.\n",
+					pdev->name, irq);
+			ret = -EIO;
+			goto err_out2;
+		}
+
+		cl90135_rtc_irq = irq;
+	}
+
+#if 0 /* XXXX */
+	cl90135_rtc_sw_reset();
+#endif
+	cl90135_rtc_config();
+	cl90135_rtc_clear_alarm_intr();
+	cl90135_rtc_start();
+	if (!cl90135_rtc_is_enabled()) {
+		pr_debug("%s: RTC disabled and can't be enabled.\n",pdev->name);
+//		printk("%s: RTC disabled and can't be enabled.\n",pdev->name);
+		ret = -EIO;
+		goto err_out3;
+	}
+
+	dev_info(&pdev->dev, defDriverVersion"\n");
+	return 0;
+
+err_out3:
+	if (cl90135_rtc_irq)
+		free_irq(cl90135_rtc_irq, pdev);
+err_out2:
+	platform_set_drvdata(pdev, NULL);
+	rtc_device_unregister(rtc);
+err_out1:
+//	iounmap(cl90135_rtc_base);
+//err_out0:
+//	release_mem_region(cl90135_rtc_pbase, cl90135_rtc_base_size);
+//err_out:
+	dev_err(&pdev->dev, "Unable to register RTC.\n");
+	return ret;
+}
+
+static int __devexit cl90135_rtc_remove(struct platform_device *pdev)
+{
+	struct rtc_device *rtc = platform_get_drvdata(pdev);
+
+	/* Put RTC into known state with intrs disabled */
+	cl90135_rtc_config();
+	cl90135_rtc_clear_alarm_intr();
+
+	if (cl90135_rtc_irq)
+		free_irq(cl90135_rtc_irq, pdev);
+
+	platform_set_drvdata(pdev, NULL);
+	rtc_device_unregister(rtc);
+	iounmap(cl90135_rtc_base);
+	release_mem_region(cl90135_rtc_pbase, cl90135_rtc_base_size);
+
+	return 0;
+}
+
+/*
+ * Suspend/Resume are not supported by the hardware because once you
+ * turn the RTC off, you can't turn it back on (section 2.2.4.1).
+ */
+static struct platform_driver cl90135_rtc_driver = {
+	.probe		= cl90135_rtc_probe,
+	.remove		= cl90135_rtc_remove,
+	.driver		= {
+		.name	= "rtc-cl90135",
+//		.name	= "rtc-da8xx",
+		.owner	= THIS_MODULE,
+	},
+};
+
+static int __init cl90135_rtc_init(void)
+{
+//    printk("cl90135 rtc init\n");
+	return platform_driver_register(&cl90135_rtc_driver);
+}
+
+static void __exit cl90135_rtc_exit(void)
+{
+	platform_driver_unregister(&cl90135_rtc_driver);
+}
+
+module_init(cl90135_rtc_init);
+module_exit(cl90135_rtc_exit);
+
+MODULE_AUTHOR("Michele Sponchiado");
+MODULE_DESCRIPTION("RTC driver for TI CL90135 SoC");
+MODULE_LICENSE("GPL");

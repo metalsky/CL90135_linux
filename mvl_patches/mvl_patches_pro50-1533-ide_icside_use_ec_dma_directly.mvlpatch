@@ -1,0 +1,441 @@
+#! /usr/bin/env bash
+# Patch: -ide_icside_use_ec_dma_directly
+# Date: Fri Sep 19 13:57:50 2008
+# Source: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+# MR: 21733
+# Type: Enhancement
+# Disposition: merged from 2.6.24-rc1
+# Signed-off-by: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+# icside: use ec->dma directly
+# 
+# * hwif->hwif_data contains pointer to struct expansion_card so use ec->dma
+#   directly instead of caching it in hwif->hw.dma.
+# 
+# * Remove no longer needed hw_regs_t.dma and NO_DMA define.
+# 
+# commit 86f3a492bb09eee5745b93af35f2212179c251fd
+# tree 45d0f4725943fe0d0f16d44db3e643ce1f4d4553
+# parent 8f173b5bf460a85791c131e774dc992f8cd578c1
+# author Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:32 +0200
+# committer Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:32 +0200
+# 
+#  drivers/ide/arm/icside.c          |   20 ++++++++++----------
+#  drivers/ide/h8300/ide-h8300.c     |    1 -
+#  drivers/ide/ide-pnp.c             |    1 -
+#  drivers/ide/ide.c                 |    1 -
+#  drivers/ide/legacy/ide_platform.c |    1 -
+#  drivers/ide/legacy/q40ide.c       |    3 +--
+#  include/linux/ide.h               |    5 -----
+#  7 files changed, 11 insertions(+), 21 deletions(-)
+# 
+
+PATCHNUM=1533
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+MR: 21733
+Type: Enhancement
+Disposition: merged from 2.6.24-rc1
+Signed-off-by: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+icside: use ec->dma directly
+
+* hwif->hwif_data contains pointer to struct expansion_card so use ec->dma
+  directly instead of caching it in hwif->hw.dma.
+
+* Remove no longer needed hw_regs_t.dma and NO_DMA define.
+
+commit 86f3a492bb09eee5745b93af35f2212179c251fd
+tree 45d0f4725943fe0d0f16d44db3e643ce1f4d4553
+parent 8f173b5bf460a85791c131e774dc992f8cd578c1
+author Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:32 +0200
+committer Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:32 +0200
+
+ drivers/ide/arm/icside.c          |   20 ++++++++++----------
+ drivers/ide/h8300/ide-h8300.c     |    1 -
+ drivers/ide/ide-pnp.c             |    1 -
+ drivers/ide/ide.c                 |    1 -
+ drivers/ide/legacy/ide_platform.c |    1 -
+ drivers/ide/legacy/q40ide.c       |    3 +--
+ include/linux/ide.h               |    5 -----
+ mvl_patches/pro50-1533.c          |   16 ++++++++++++++++
+ 8 files changed, 27 insertions(+), 21 deletions(-)
+
+Index: linux-2.6.18/drivers/ide/arm/icside.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/arm/icside.c
++++ linux-2.6.18/drivers/ide/arm/icside.c
+@@ -373,27 +373,29 @@ static int icside_dma_end(ide_drive_t *d
+ 
+ 	drive->waiting_for_dma = 0;
+ 
+-	disable_dma(hwif->hw.dma);
++	disable_dma(state->dev->dma);
+ 
+ 	/* Teardown mappings after DMA has completed. */
+ 	dma_unmap_sg(state->dev, hwif->sg_table, hwif->sg_nents,
+ 		     hwif->sg_dma_direction);
+ 
+-	return get_dma_residue(hwif->hw.dma) != 0;
++	return get_dma_residue(state->dev->dma) != 0;
+ }
+ 
+ static void icside_dma_start(ide_drive_t *drive)
+ {
+ 	ide_hwif_t *hwif = HWIF(drive);
++	struct icside_state *state = hwif->hwif_data;
+ 
+ 	/* We can not enable DMA on both channels simultaneously. */
+-	BUG_ON(dma_channel_active(hwif->hw.dma));
+-	enable_dma(hwif->hw.dma);
++	BUG_ON(dma_channel_active(state->dev->dma));
++	enable_dma(state->dev->dma);
+ }
+ 
+ static int icside_dma_setup(ide_drive_t *drive)
+ {
+ 	ide_hwif_t *hwif = HWIF(drive);
++	struct icside_state *state = hwif->hwif_data;
+ 	struct request *rq = hwif->hwgroup->rq;
+ 	unsigned int dma_mode;
+ 
+@@ -405,7 +407,7 @@ static int icside_dma_setup(ide_drive_t 
+ 	/*
+ 	 * We can not enable DMA on both channels.
+ 	 */
+-	BUG_ON(dma_channel_active(hwif->hw.dma));
++	BUG_ON(dma_channel_active(state->dev->dma));
+ 
+ 	icside_build_sglist(drive, rq);
+ 
+@@ -422,14 +424,14 @@ static int icside_dma_setup(ide_drive_t 
+ 	/*
+ 	 * Select the correct timing for this drive.
+ 	 */
+-	set_dma_speed(hwif->hw.dma, drive->drive_data);
++	set_dma_speed(state->dev->dma, drive->drive_data);
+ 
+ 	/*
+ 	 * Tell the DMA engine about the SG table and
+ 	 * data direction.
+ 	 */
+-	set_dma_sg(hwif->hw.dma, hwif->sg_table, hwif->sg_nents);
+-	set_dma_mode(hwif->hw.dma, dma_mode);
++	set_dma_sg(state->dev->dma, hwif->sg_table, hwif->sg_nents);
++	set_dma_mode(state->dev->dma, dma_mode);
+ 
+ 	drive->waiting_for_dma = 1;
+ 
+@@ -647,7 +649,6 @@ icside_register_v6(struct icside_state *
+ 	hwif->serialized  = 1;
+ 	hwif->config_data = (unsigned long)ioc_base;
+ 	hwif->select_data = sel;
+-	hwif->hw.dma      = ec->dma;
+ 
+ 	mate->maskproc    = icside_maskproc;
+ 	mate->channel     = 1;
+@@ -656,7 +657,6 @@ icside_register_v6(struct icside_state *
+ 	mate->serialized  = 1;
+ 	mate->config_data = (unsigned long)ioc_base;
+ 	mate->select_data = sel | 1;
+-	mate->hw.dma      = ec->dma;
+ 
+ 	if (ec->dma != NO_DMA && !request_dma(ec->dma, hwif->name)) {
+ 		icside_dma_init(hwif);
+Index: linux-2.6.18/drivers/ide/h8300/ide-h8300.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/h8300/ide-h8300.c
++++ linux-2.6.18/drivers/ide/h8300/ide-h8300.c
+@@ -68,7 +68,6 @@ static inline void hw_setup(hw_regs_t *h
+ 		hw->io_ports[i] = CONFIG_H8300_IDE_BASE + H8300_IDE_GAP*i;
+ 	hw->io_ports[IDE_CONTROL_OFFSET] = CONFIG_H8300_IDE_ALT;
+ 	hw->irq = EXT_IRQ0 + CONFIG_H8300_IDE_IRQ;
+-	hw->dma = NO_DMA;
+ 	hw->chipset = ide_generic;
+ }
+ 
+Index: linux-2.6.18/drivers/ide/ide-pnp.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide-pnp.c
++++ linux-2.6.18/drivers/ide/ide-pnp.c
+@@ -40,7 +40,6 @@ static int idepnp_probe(struct pnp_dev *
+ 	ide_std_init_ports(&hw, pnp_port_start(dev, 0),
+ 				pnp_port_start(dev, 1));
+ 	hw.irq = pnp_irq(dev, 0);
+-	hw.dma = NO_DMA;
+ 
+ 	index = ide_register_hw(&hw, NULL, 1, &hwif);
+ 
+Index: linux-2.6.18/drivers/ide/ide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide.c
++++ linux-2.6.18/drivers/ide/ide.c
+@@ -759,7 +759,6 @@ void ide_setup_ports (	hw_regs_t *hw,
+ 		}
+ 	}
+ 	hw->irq = irq;
+-	hw->dma = NO_DMA;
+ 	hw->ack_intr = ack_intr;
+ /*
+  *	hw->iops = iops;
+Index: linux-2.6.18/drivers/ide/legacy/ide_platform.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/ide_platform.c
++++ linux-2.6.18/drivers/ide/legacy/ide_platform.c
+@@ -51,7 +51,6 @@ static ide_hwif_t *__devinit plat_ide_lo
+ 	memcpy(hwif->io_ports, hwif->hw.io_ports, sizeof(hwif->hw.io_ports));
+ 	hwif->hw.irq = hwif->irq = irq;
+ 
+-	hwif->hw.dma = NO_DMA;
+ 	hwif->chipset = hwif->hw.chipset = ide_generic;
+ 
+ 	if (mmio) {
+Index: linux-2.6.18/drivers/ide/legacy/q40ide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/q40ide.c
++++ linux-2.6.18/drivers/ide/legacy/q40ide.c
+@@ -89,9 +89,8 @@ void q40_ide_setup_ports ( hw_regs_t *hw
+ 		else
+ 			hw->io_ports[i] = Q40_ISA_IO_B(base + offsets[i]);
+ 	}
+-	
++
+ 	hw->irq = irq;
+-	hw->dma = NO_DMA;
+ 	hw->ack_intr = ack_intr;
+ /*
+  *	hw->iops = iops;
+Index: linux-2.6.18/include/linux/ide.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/ide.h
++++ linux-2.6.18/include/linux/ide.h
+@@ -188,10 +188,6 @@ typedef unsigned char	byte;	/* used ever
+ struct hwif_s;
+ typedef int (ide_ack_intr_t)(struct hwif_s *);
+ 
+-#ifndef NO_DMA
+-#define NO_DMA  255
+-#endif
+-
+ /*
+  * hwif_chipset_t is used to keep track of the specific hardware
+  * chipset used by each IDE interface, if known.
+@@ -211,7 +207,6 @@ typedef enum {	ide_unknown,	ide_generic,
+ typedef struct hw_regs_s {
+ 	unsigned long	io_ports[IDE_NR_PORTS];	/* task file registers */
+ 	int		irq;			/* our irq number */
+-	int		dma;			/* our dma entry */
+ 	ide_ack_intr_t	*ack_intr;		/* acknowledge interrupt */
+ 	hwif_chipset_t  chipset;
+ 	struct device	*dev;
+Index: linux-2.6.18/mvl_patches/pro50-1533.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1533.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1533);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

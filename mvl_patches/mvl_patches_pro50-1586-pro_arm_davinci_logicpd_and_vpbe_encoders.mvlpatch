@@ -1,0 +1,1514 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_logicpd_and_vpbe_encoders
+# Date: Fri Sep 19 14:01:32 2008
+# Source: MontaVista Software, Inc.
+# MR: 28149, 28746
+# Type: Integration
+# Disposition: merged from pro_40
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Signed-off-by: Philby John <pjohn@in.mvista.com>
+# Description: DaVinci logicpd and vpbe encoders support.
+# Since there is a PINMUX dependency between DAVINCI_LOGICPD_ENCODER
+# and DAVINCI_PWM options for DM355 EVM, a fix has been added that
+# prevents both options being enabled for DM355 while ignoring other
+# architectures.
+# 
+#  arch/arm/mach-davinci/board-dm355-evm.c       |    9 
+#  drivers/media/video/Kconfig                   |   18 
+#  drivers/media/video/davinci/Makefile          |    2 
+#  drivers/media/video/davinci/logicpd_encoder.c |  413 ++++++++++++++++
+#  drivers/media/video/davinci/vpbe_encoder.c    |  666 ++++++++++++++++++++++++++
+#  include/media/davinci/logicpd_encoder.h       |   55 ++
+#  include/media/davinci/vpbe_encoder.h          |   42 +
+#  7 files changed, 1205 insertions(+)
+# 
+
+PATCHNUM=1586
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28149, 28746
+Type: Integration
+Disposition: merged from pro_40
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Signed-off-by: Philby John <pjohn@in.mvista.com>
+Description: DaVinci logicpd and vpbe encoders support.
+Since there is a PINMUX dependency between DAVINCI_LOGICPD_ENCODER
+and DAVINCI_PWM options for DM355 EVM, a fix has been added that
+prevents both options being enabled for DM355 while ignoring other
+architectures.
+
+ arch/arm/mach-davinci/board-dm355-evm.c       |    9 
+ drivers/media/video/Kconfig                   |   18 
+ drivers/media/video/davinci/Makefile          |    2 
+ drivers/media/video/davinci/logicpd_encoder.c |  413 ++++++++++++++++
+ drivers/media/video/davinci/vpbe_encoder.c    |  666 ++++++++++++++++++++++++++
+ include/media/davinci/logicpd_encoder.h       |   55 ++
+ include/media/davinci/vpbe_encoder.h          |   42 +
+ mvl_patches/pro50-1586.c                      |   16 
+ 8 files changed, 1221 insertions(+)
+
+Index: linux-2.6.18/drivers/media/video/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/Kconfig
++++ linux-2.6.18/drivers/media/video/Kconfig
+@@ -607,6 +607,24 @@ config DISPLAY_DAVINCIHD
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called vpfe.
+ 
++config DAVINCI_VPBE_ENCODER
++	tristate "Davinci VPBE Encoder support"
++	depends on (DAVINCI_ENC_MNGR) && (FB_DAVINCI || VIDEO_DAVINCI_DISPLAY)
++	default y
++	help
++	  Enable support for the DaVinci VPBE internal encoder. DaVinci VPBE
++	  has internal VENC and DAC to output analog SD outputs (composite,
++	  S-Video and Component video outputs).
++
++config DAVINCI_LOGICPD_ENCODER
++	tristate "Logic PD Encoder support"
++	depends on (DAVINCI_ENC_MNGR) && (FB_DAVINCI || VIDEO_DAVINCI_DISPLAY)
++	default y
++	help
++	  Enable support for the DaVinci VPBE internal encoder. DaVinci VPBE
++	  has internal VENC and DAC to output analog SD outputs (composite,
++	  S-Video and Component video outputs).
++
+ config DAVINCI_THS8200_ENCODER
+ 	tristate "THS8200 Encoder support"
+ 	depends on DAVINCI_ENC_MNGR && (FB_DAVINCI || VIDEO_DAVINCI_DISPLAY)
+Index: linux-2.6.18/drivers/media/video/davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/Makefile
++++ linux-2.6.18/drivers/media/video/davinci/Makefile
+@@ -16,6 +16,8 @@ obj-$(CONFIG_DAVINCI_OSD) += davinci_osd
+ 
+ # Encoder Manager and Encoders
+ obj-$(CONFIG_DAVINCI_ENC_MNGR)  += davinci_enc_mngr.o
++obj-$(CONFIG_DAVINCI_VPBE_ENCODER)      += vpbe_encoder.o
++obj-$(CONFIG_DAVINCI_LOGICPD_ENCODER) += logicpd_encoder.o
+ obj-$(CONFIG_DAVINCI_THS8200_ENCODER) += ths8200_encoder.o
+ 
+ obj-$(CONFIG_VIDEO_DAVINCI_DISPLAY) += davinci_display.o
+Index: linux-2.6.18/drivers/media/video/davinci/logicpd_encoder.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/logicpd_encoder.c
+@@ -0,0 +1,413 @@
++/*
++ * Copyright (C) 2007 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* logicpd_encoder.c. This is just a place holder for hardcoding all supported
++   modes timing. LogicPD timing signals are programmed by the encoder manager
++   based on this data.
++ */
++
++/* Kernel Specific header files */
++
++#include <linux/kernel.h>
++#include <linux/config.h>
++#include <linux/init.h>
++#include <linux/ctype.h>
++#include <linux/delay.h>
++#include <media/davinci/vid_encoder_if.h>
++#include <media/davinci/logicpd_encoder.h>
++
++/* Function prototypes */
++static int logicpd_encoder_initialize(struct vid_encoder_device *enc, int flag);
++static int logicpd_encoder_deinitialize(struct vid_encoder_device *enc);
++
++static int logicpd_encoder_setmode(struct vid_enc_mode_info *mode_info,
++				   struct vid_encoder_device *enc);
++static int logicpd_encoder_getmode(struct vid_enc_mode_info *mode_info,
++				   struct vid_encoder_device *enc);
++
++static int logicpd_encoder_setoutput(char *output,
++				     struct vid_encoder_device *enc);
++static int logicpd_encoder_getoutput(char *output,
++				     struct vid_encoder_device *enc);
++
++static int logicpd_encoder_enumoutput(int index,
++				      char *output,
++				      struct vid_encoder_device *enc);
++
++static struct logicpd_encoder_config logicpd_encoder_configuration = {
++	.no_of_outputs = LOGICPD_ENCODER_MAX_NO_OUTPUTS,
++	.output[0] = {
++		      .output_name = VID_ENC_OUTPUT_LCD,
++		      .no_of_standard = LOGICPD_ENCODER_GRAPHICS_NUM_STD,
++		      .standards[0] = {
++				       .name = VID_ENC_STD_640x480,
++				       .std = 1,
++				       .if_type = VID_ENC_IF_PRGB,
++				       .interlaced = 0,
++				       .xres = 640,
++				       .yres = 480,
++				       .fps = {60, 1},
++				       .left_margin = 85,
++				       .right_margin = 70,
++				       .upper_margin = 32,
++				       .lower_margin = 11,
++				       .hsync_len = 9,
++				       .vsync_len = 9,
++				       .flags = 0},	/* hsync -ve, vsync -ve */
++		      .standards[1] = {
++				       .name = VID_ENC_STD_640x400,
++				       .std = 1,
++				       .if_type = VID_ENC_IF_PRGB,
++				       .interlaced = 0,
++				       .xres = 640,
++				       .yres = 400,
++				       .fps = {60, 1},
++				       .left_margin = 85,
++				       .right_margin = 70,
++				       .upper_margin = 72,
++				       .lower_margin = 51,
++				       .hsync_len = 9,
++				       .vsync_len = 9,
++				       .flags = 2},	/* hsync -ve, vsync +ve */
++		      .standards[2] = {
++				       .name = VID_ENC_STD_640x350,
++				       .std = 1,
++				       .if_type = VID_ENC_IF_PRGB,
++				       .interlaced = 0,
++				       .xres = 640,
++				       .yres = 350,
++				       .fps = {60, 1},
++				       .left_margin = 85,
++				       .right_margin = 70,
++				       .upper_margin = 97,
++				       .lower_margin = 76,
++				       .hsync_len = 9,
++				       .vsync_len = 9,
++				       .flags = 1},	/* hsync +ve, vsync -ve */
++		      .standards[3] = {	/* This is programmed by the user application. We just save
++					   the received timing information */
++				       .name = VID_ENC_STD_NON_STANDARD,
++				       .std = 0,
++				       .if_type = VID_ENC_IF_PRGB,
++				       .interlaced = 0,
++				       .xres = 0,
++				       .yres = 0,
++				       .fps = {0, 0},
++				       .left_margin = 0,
++				       .right_margin = 0,
++				       .upper_margin = 0,
++				       .lower_margin = 0,
++				       .hsync_len = 0,
++				       .vsync_len = 0,
++				       .flags = 0},
++		      },
++};
++
++static struct logicpd_encoder_channel logicpd_encoder_channel_info = {
++	.params.outindex = 0,
++	.params.mode = VID_ENC_STD_640x480,
++	.enc_device = NULL
++};
++
++static struct vid_enc_output_ops outputs_ops = {
++	.count = LOGICPD_ENCODER_MAX_NO_OUTPUTS,
++	.enumoutput = logicpd_encoder_enumoutput,
++	.setoutput = logicpd_encoder_setoutput,
++	.getoutput = logicpd_encoder_getoutput
++};
++
++static struct vid_enc_mode_ops modes_ops = {
++	.setmode = logicpd_encoder_setmode,
++	.getmode = logicpd_encoder_getmode,
++};
++
++static struct vid_encoder_device logicpd_encoder_dev = {
++	.name = "LOGICPD_ENCODER",
++	.capabilities = 0,
++	.initialize = logicpd_encoder_initialize,
++	.mode_ops = &modes_ops,
++	.ctrl_ops = NULL,
++	.output_ops = &outputs_ops,
++	.params_ops = NULL,
++	.misc_ops = NULL,
++	.deinitialize = logicpd_encoder_deinitialize,
++};
++
++/* This function is called by the encoder manager to initialize logicpd encoder driver.
++ */
++static int logicpd_encoder_initialize(struct vid_encoder_device *enc, int flag)
++{
++	int err = 0, outindex;
++	char *std, *output;
++	if (NULL == enc) {
++		printk(KERN_ERR "enc:NULL Pointer\n");
++		return -EINVAL;
++	}
++	logicpd_encoder_channel_info.enc_device = (struct encoder_device *)enc;
++
++	/* call set standard */
++	std = logicpd_encoder_channel_info.params.mode;
++	outindex = logicpd_encoder_channel_info.params.outindex;
++	output = logicpd_encoder_configuration.output[outindex].output_name;
++	err |= logicpd_encoder_setoutput(output, enc);
++	if (err < 0) {
++		err = -EINVAL;
++		printk(KERN_ERR "Error occured in setoutput\n");
++		logicpd_encoder_deinitialize(enc);
++		return err;
++	}
++	printk(KERN_DEBUG "LogicPD Encoder initialized\n");
++	return err;
++}
++
++/* Function to de-initialize the encoder */
++static int logicpd_encoder_deinitialize(struct vid_encoder_device *enc)
++{
++	if (NULL == enc) {
++		printk(KERN_ERR "NULL Pointer\n");
++		return -EINVAL;
++	}
++	logicpd_encoder_channel_info.enc_device = NULL;
++	printk(KERN_DEBUG "LogicPD Encoder de-initialized\n");
++	return 0;
++}
++
++/* Following function is used to set the mode*/
++static int logicpd_encoder_setmode(struct vid_enc_mode_info *mode_info,
++				   struct vid_encoder_device *enc)
++{
++	int err = 0, outindex, i;
++	char *mode;
++	struct vid_enc_mode_info *my_mode_info = NULL;
++
++	if ((NULL == enc) || (NULL == mode_info)) {
++		printk(KERN_ERR "NULL Pointer\n");
++		return -EINVAL;
++	}
++
++	if (NULL == (mode = mode_info->name)) {
++		printk(KERN_ERR "NULL Pointer\n");
++		return -EINVAL;
++	}
++	printk(KERN_DEBUG "Start of logicpd_encoder_setmode..\n");
++	outindex = logicpd_encoder_channel_info.params.outindex;
++
++	if (mode_info->std) {
++		char *mymode = NULL;
++		/* This is a standard mode */
++		for (i = 0;
++		     i <
++		     logicpd_encoder_configuration.output[outindex].
++		     no_of_standard; i++) {
++			if (!strcmp
++			    (logicpd_encoder_configuration.output[outindex].
++			     standards[i].name, mode)) {
++				mymode =
++				    logicpd_encoder_configuration.
++				    output[outindex].standards[i].name;
++				break;
++			}
++		}
++		if ((i ==
++		     logicpd_encoder_configuration.output[outindex].
++		     no_of_standard) || (NULL == mymode)) {
++			printk(KERN_ERR "Invalid id...\n");
++			return -EINVAL;
++		}
++		/* Store the standard in global object of logicpd_encoder */
++		logicpd_encoder_channel_info.params.mode = mymode;
++		return 0;
++	} else {
++		/* Non- Standard mode. Check if we support it. If so
++		   save the timing info and return */
++		for (i = 0; i < LOGICPD_ENCODER_GRAPHICS_NUM_STD; i++) {
++			if (!strcmp
++			    (logicpd_encoder_configuration.output[outindex].
++			     standards[i].name, VID_ENC_STD_NON_STANDARD)) {
++				my_mode_info =
++				    &logicpd_encoder_configuration.
++				    output[outindex].standards[i];
++				break;
++			}
++		}
++		if (my_mode_info) {
++			/* We support. So save timing info and return success
++			   interface type is same as what is currently is active
++			 */
++			my_mode_info->interlaced = mode_info->interlaced;
++			my_mode_info->xres = mode_info->xres;
++			my_mode_info->yres = mode_info->yres;
++			my_mode_info->fps = mode_info->fps;
++			my_mode_info->left_margin = mode_info->left_margin;
++			my_mode_info->right_margin = mode_info->right_margin;
++			my_mode_info->upper_margin = mode_info->upper_margin;
++			my_mode_info->lower_margin = mode_info->lower_margin;
++			my_mode_info->hsync_len = mode_info->hsync_len;
++			my_mode_info->vsync_len = mode_info->vsync_len;
++			my_mode_info->flags = mode_info->flags;
++			/* If we need to configure something in the encoder module, we need to
++			   do this here */
++			return 0;
++		}
++		printk(KERN_ERR "Mode not supported..\n");
++		return -EINVAL;
++	}
++	printk(KERN_DEBUG "</logicpd_encoder_setmode>\n");
++	return err;
++}
++
++/* Following function is used to get currently selected mode.*/
++static int logicpd_encoder_getmode(struct vid_enc_mode_info *mode_info,
++				   struct vid_encoder_device *enc)
++{
++	int err = 0, i, outindex;
++	if ((NULL == enc) || (NULL == mode_info)) {
++		printk(KERN_ERR "NULL Pointer\n");
++		return -EINVAL;
++	}
++	printk(KERN_DEBUG "<logicpd_encoder_getmode>\n");
++	outindex = logicpd_encoder_channel_info.params.outindex;
++	for (i = 0; i < LOGICPD_ENCODER_GRAPHICS_NUM_STD; i++) {
++		if (!strcmp(logicpd_encoder_channel_info.params.mode,
++			    logicpd_encoder_configuration.output[outindex].
++			    standards[i].name)) {
++			memcpy(mode_info,
++			       &logicpd_encoder_configuration.output[outindex].
++			       standards[i], sizeof(struct vid_enc_mode_info));
++			break;
++		}
++	}
++	if (i == LOGICPD_ENCODER_GRAPHICS_NUM_STD) {
++		printk(KERN_ERR "Wiered. No mode info\n");
++		return -EINVAL;
++	}
++	printk(KERN_DEBUG "</logicpd_encoder_getmode>\n");
++	return err;
++}
++
++/* For LogicPD, we have only one output, called LCD, we
++   always set this to this at init
++*/
++static int logicpd_encoder_setoutput(char *output,
++				     struct vid_encoder_device *enc)
++{
++	int err = 0;
++	struct vid_enc_mode_info *my_mode_info;
++	printk(KERN_DEBUG "<logicpd_encoder_setoutput>\n");
++	if (NULL == enc) {
++		printk(KERN_ERR "enc:NULL Pointer\n");
++		return -EINVAL;
++	}
++
++	/* check for null pointer */
++	if (output == NULL) {
++		printk(KERN_ERR "output: NULL Pointer.\n");
++		return -EINVAL;
++	}
++
++	/* Just check if the default output match with this output name */
++	if (strcmp(logicpd_encoder_configuration.output[0].output_name, output)) {
++		printk(KERN_ERR "no matching output found.\n");
++		return -EINVAL;
++	}
++	logicpd_encoder_channel_info.params.mode
++	    = logicpd_encoder_configuration.output[0].standards[0].name;
++
++	my_mode_info = &logicpd_encoder_configuration.output[0].standards[0];
++	err |= logicpd_encoder_setmode(my_mode_info, enc);
++	if (err < 0) {
++		printk(KERN_ERR "Error in setting default mode\n");
++		return err;
++	}
++	printk(KERN_DEBUG "</logicpd_encoder_setoutput>\n");
++	return err;
++}
++
++/* Following function is used to get output name of current output.*/
++static int logicpd_encoder_getoutput(char *output,
++				     struct vid_encoder_device *enc)
++{
++	int err = 0, index, len;
++	if (NULL == enc) {
++		printk(KERN_ERR "enc:NULL Pointer\n");
++		return -EINVAL;
++	}
++	printk(KERN_DEBUG "<logicpd_encoder_getoutput>\n");
++	/* check for null pointer */
++	if (output == NULL) {
++		printk(KERN_ERR "output:NULL Pointer.\n");
++		return -EINVAL;
++	}
++	index = logicpd_encoder_channel_info.params.outindex;
++	len = strlen(logicpd_encoder_configuration.output[index].output_name);
++	if (len > (VID_ENC_NAME_MAX_CHARS - 1))
++		len = VID_ENC_NAME_MAX_CHARS - 1;
++	strncpy(output, logicpd_encoder_configuration.output[index].output_name,
++		len);
++	output[len] = '\0';
++	printk(KERN_DEBUG "</logicpd_encoder_getoutput>\n");
++	return err;
++}
++
++/* Following function is used to enumerate outputs supported by the driver.
++   It fills in information in the output. */
++static int logicpd_encoder_enumoutput(int index, char *output,
++				      struct vid_encoder_device *enc)
++{
++	int err = 0;
++
++	printk(KERN_DEBUG "<logicpd_encoder_enumoutput>\n");
++	if (NULL == enc) {
++		printk(KERN_ERR "enc:NULL Pointer.\n");
++		return -EINVAL;
++	}
++	/* check for null pointer */
++	if (output == NULL) {
++		printk(KERN_ERR "output:NULL Pointer.\n");
++		return -EINVAL;
++	}
++	/* Only one output is available */
++	if (index >= logicpd_encoder_configuration.no_of_outputs) {
++		return -EINVAL;
++	}
++	strncpy(output,
++		logicpd_encoder_configuration.output[index].output_name,
++		VID_ENC_NAME_MAX_CHARS);
++	printk(KERN_DEBUG "</logicpd_encoder_enumoutput>\n");
++	return err;
++}
++
++/* This function used to initialize the LogicPD encoder driver */
++static int logicpd_encoder_init(void)
++{
++	int err = 0;
++
++	err = vid_enc_register_encoder(&logicpd_encoder_dev);
++	printk(KERN_NOTICE "LogicPD encoder initialized\n");
++	return err;
++}
++
++/* Function used to cleanup LogicPD encoder driver */
++static void logicpd_encoder_cleanup(void)
++{
++	vid_enc_unregister_encoder(&logicpd_encoder_dev);
++}
++
++subsys_initcall(logicpd_encoder_init);
++module_exit(logicpd_encoder_cleanup);
++
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/media/video/davinci/vpbe_encoder.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/vpbe_encoder.c
+@@ -0,0 +1,666 @@
++/*
++ * Copyright (C) 2007 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* vpbe_encoder.c.. For internal encoder of the VPBE */
++
++/* Kernel Specific header files */
++
++#include <linux/kernel.h>
++#include <linux/config.h>
++#include <linux/init.h>
++#include <linux/ctype.h>
++#include <linux/delay.h>
++#include <video/davinci_vpbe.h>
++#include <media/davinci/vid_encoder_if.h>
++#include <media/davinci/vpbe_encoder.h>
++#include <asm/arch/hardware.h>
++#include <asm/arch/io.h>
++#include <asm/arch/cpu.h>
++
++struct vpbe_encoder_params {
++	int outindex;
++	char *mode;
++};
++
++struct vpbe_encoder_config {
++	unsigned long vencregs;
++	int no_of_outputs;
++	struct {
++		char *output_name;
++		int no_of_standard;
++		char *standards[VPBE_ENCODER_MAX_NUM_STD];
++	} output[VPBE_ENCODER_MAX_NO_OUTPUTS];
++};
++
++struct vpbe_encoder_channel {
++	struct encoder_device *enc_device;
++	struct vpbe_encoder_params params;
++};
++
++/* Function prototypes */
++static int vpbe_encoder_initialize(struct vid_encoder_device *enc, int flag);
++static int vpbe_encoder_deinitialize(struct vid_encoder_device *enc);
++
++static int vpbe_encoder_setmode(struct vid_enc_mode_info *mode_info,
++				struct vid_encoder_device *enc);
++static int vpbe_encoder_getmode(struct vid_enc_mode_info *mode_info,
++				struct vid_encoder_device *enc);
++
++static int vpbe_encoder_setoutput(char *output, struct vid_encoder_device *enc);
++static int vpbe_encoder_getoutput(char *output, struct vid_encoder_device *enc);
++
++static int vpbe_encoder_enumoutput(int index,
++				   char *output,
++				   struct vid_encoder_device *enc);
++
++static int vpbe_encoder_enable(int flag, struct vid_encoder_device *enc);
++
++/* All Supported encoder modes */
++static struct vid_enc_mode_info vpbe_encoder_modes[VPBE_ENCODER_MAX_NUM_STD] = {
++	{
++	 .name = VID_ENC_STD_NTSC,
++	 .std = 1,
++	 .if_type = VID_ENC_IF_INT,
++	 .interlaced = 1,
++	 .xres = 720,
++	 .yres = 480,
++	 .fps = {30000, 1001},
++	 .left_margin = 0x79,
++	 .right_margin = 0,
++	 .upper_margin = 0x10,
++	 .lower_margin = 0,
++	 .hsync_len = 0,
++	 .vsync_len = 0,
++	 .flags = 0},
++	{
++	 .name = VID_ENC_STD_PAL,
++	 .std = 1,
++	 .if_type = VID_ENC_IF_INT,
++	 .interlaced = 1,
++	 .xres = 720,
++	 .yres = 576,
++	 .fps = {25, 1},
++	 .left_margin = 0x7E,
++	 .right_margin = 0,
++	 .upper_margin = 0x16,
++	 .lower_margin = 0,
++	 .hsync_len = 0,
++	 .vsync_len = 0,
++	 .flags = 0},
++	{
++	 .name = VID_ENC_STD_NTSC_RGB,
++	 .std = 1,
++	 .if_type = VID_ENC_IF_INT,
++	 .interlaced = 1,
++	 .xres = 720,
++	 .yres = 480,
++	 .fps = {30000, 1001},
++	 .left_margin = 0x80,
++	 .right_margin = 0,
++	 .upper_margin = 0x12,
++	 .lower_margin = 0,
++	 .hsync_len = 0,
++	 .vsync_len = 0,
++	 .flags = 0},
++	{
++	 .name = VID_ENC_STD_PAL_RGB,
++	 .std = 1,
++	 .if_type = VID_ENC_IF_INT,
++	 .interlaced = 1,
++	 .xres = 720,
++	 .yres = 576,
++	 .fps = {25, 1},
++	 .left_margin = 0x88,
++	 .right_margin = 0,
++	 .upper_margin = 0x18,
++	 .lower_margin = 0,
++	 .hsync_len = 0,
++	 .vsync_len = 0,
++	 .flags = 0},
++	{
++	 .name = VID_ENC_STD_480P_60,
++	 .std = 1,
++	 .if_type = VID_ENC_IF_INT,
++	 .interlaced = 0,
++	 .xres = 720,
++	 .yres = 480,
++	 .fps = {60, 1},
++	 .left_margin = 0x80,
++	 .right_margin = 0,
++	 .upper_margin = 0x20,
++	 .lower_margin = 0,
++	 .hsync_len = 0,
++	 .vsync_len = 0,
++	 .flags = 0},
++	{
++	 .name = VID_ENC_STD_576P_50,
++	 .std = 1,
++	 .if_type = VID_ENC_IF_INT,
++	 .interlaced = 0,
++	 .xres = 720,
++	 .yres = 576,
++	 .fps = {50, 1},
++	 .left_margin = 0x7E,
++	 .right_margin = 0,
++	 .upper_margin = 0x30,
++	 .lower_margin = 0,
++	 .hsync_len = 0,
++	 .vsync_len = 0,
++	 .flags = 0}
++};
++
++static struct vpbe_encoder_config vpbe_encoder_configuration = {
++	.vencregs = DM644X_VENC_REG_BASE,
++	.no_of_outputs = VPBE_DM644X_ENCODER_MAX_NO_OUTPUTS,
++	.output[0] = {
++		      .output_name = VID_ENC_OUTPUT_COMPOSITE,
++		      .no_of_standard = VPBE_DM644X_ENCODER_COMPOSITE_NUM_STD,
++		      .standards = {VID_ENC_STD_NTSC, VID_ENC_STD_PAL},
++		      },
++	.output[1] = {
++		      .output_name = VID_ENC_OUTPUT_SVIDEO,
++		      .no_of_standard = VPBE_DM644X_ENCODER_SVIDEO_NUM_STD,
++		      .standards = {VID_ENC_STD_NTSC, VID_ENC_STD_PAL},
++		      },
++	.output[2] = {
++		      .output_name = VID_ENC_OUTPUT_COMPONENT,
++		      .no_of_standard = VPBE_DM644X_ENCODER_COMPONENT_NUM_STD,
++		      .standards = {VID_ENC_STD_NTSC,
++				    VID_ENC_STD_PAL,
++				    VID_ENC_STD_NTSC_RGB,
++				    VID_ENC_STD_PAL_RGB,
++				    VID_ENC_STD_480P_60,
++				    VID_ENC_STD_576P_50},
++		      }
++};
++
++static struct vpbe_encoder_channel vpbe_encoder_channel_info = {
++	.params.outindex = 0,
++	.params.mode = VID_ENC_STD_NTSC,
++	.enc_device = NULL
++};
++
++static struct vid_enc_output_ops outputs_ops = {
++	.count = VPBE_ENCODER_MAX_NO_OUTPUTS,
++	.enumoutput = vpbe_encoder_enumoutput,
++	.setoutput = vpbe_encoder_setoutput,
++	.getoutput = vpbe_encoder_getoutput
++};
++
++static struct vid_enc_mode_ops modes_ops = {
++	.setmode = vpbe_encoder_setmode,
++	.getmode = vpbe_encoder_getmode,
++};
++
++static struct vid_enc_misc_ops miscs_ops = {
++	.reset = NULL,
++	.enable = vpbe_encoder_enable,
++};
++
++static struct vid_encoder_device vpbe_encoder_dev = {
++	.name = "VPBE_ENCODER",
++	.capabilities = 0,
++	.initialize = vpbe_encoder_initialize,
++	.mode_ops = &modes_ops,
++	.ctrl_ops = NULL,
++	.output_ops = &outputs_ops,
++	.params_ops = NULL,
++	.misc_ops = &miscs_ops,
++	.deinitialize = vpbe_encoder_deinitialize,
++};
++
++/*
++ * display controller register I/O routines
++ */
++static __inline__ u32 dispc_reg_in(u32 offset)
++{
++	u32 addr;
++	addr = vpbe_encoder_configuration.vencregs + offset;
++	return (davinci_readl(addr));
++}
++static __inline__ u32 dispc_reg_out(u32 offset, u32 val)
++{
++	u32 addr = vpbe_encoder_configuration.vencregs + offset;
++	davinci_writel(val, addr);
++	return (val);
++}
++static __inline__ u32 dispc_reg_merge(u32 offset, u32 val, u32 mask)
++{
++	u32 addr, new_val;
++	addr = vpbe_encoder_configuration.vencregs + offset;
++	new_val = (davinci_readl(addr) & ~mask) | (val & mask);
++	davinci_writel(new_val, addr);
++	return (new_val);
++}
++
++/* Function to enable/disable output */
++static int vpbe_encoder_enable(int flag, struct vid_encoder_device *enc)
++{
++	if (flag)
++		dispc_reg_out(VENC_DACTST, 0);
++	else
++		dispc_reg_out(VENC_DACTST, 0xF000);
++	return 0;
++}
++
++/* This function sets the dac of the VPBE for various outputs
++ */
++static int vpbe_encoder_set_dac(char *output)
++{
++	int error = 0;
++	if (cpu_is_davinci_dm644x()) {
++		if (!strcmp(output, VID_ENC_OUTPUT_COMPOSITE)) {
++			printk(KERN_DEBUG "Setting output to Composite\n");
++			dispc_reg_out(VENC_DACSEL, 0);
++		} else if (!strcmp(output, VID_ENC_OUTPUT_SVIDEO)) {
++			printk(KERN_DEBUG "Setting output to S-Video\n");
++			dispc_reg_out(VENC_DACSEL, 0x210);
++		} else if (!strcmp(output, VID_ENC_OUTPUT_COMPONENT)) {
++			printk(KERN_DEBUG
++			       "Setting output to Component Video\n");
++			dispc_reg_out(VENC_DACSEL, 0x543);
++		} else
++			error = -1;
++	} else if (!cpu_is_davinci_dm355())
++		error = -1;
++	return error;
++}
++
++/* This function is called by the encoder manager to initialize vpbe encoder driver.
++ * It initializes all registers of vpbe_encoder with the default values
++ */
++static int vpbe_encoder_initialize(struct vid_encoder_device *enc, int flag)
++{
++	int err = 0, outindex;
++	char *std, *output;
++	if (NULL == enc) {
++		printk(KERN_ERR "enc:NULL Pointer\n");
++		return -EINVAL;
++	}
++	vpbe_encoder_channel_info.enc_device = (struct encoder_device *)enc;
++
++	/* call set standard */
++	std = vpbe_encoder_channel_info.params.mode;
++	outindex = vpbe_encoder_channel_info.params.outindex;
++	output = vpbe_encoder_configuration.output[outindex].output_name;
++	err |= vpbe_encoder_setoutput(output, enc);
++	if (err < 0) {
++		err = -EINVAL;
++		printk(KERN_ERR "Error occured in setoutput\n");
++		vpbe_encoder_deinitialize(enc);
++		return err;
++	}
++	printk(KERN_DEBUG "VPBE Encoder initialized\n");
++	return err;
++}
++
++static int vpbe_encoder_deinitialize(struct vid_encoder_device *enc)
++{
++	if (NULL == enc) {
++		printk(KERN_ERR "NULL Pointer\n");
++		return -EINVAL;
++	}
++	if (cpu_is_davinci_dm644x()) {
++		dispc_reg_out(VENC_DACSEL, 0);
++	}
++
++	/* disable output */
++	dispc_reg_out(VENC_DACTST, 0xF000);
++	dispc_reg_out(VENC_VMOD, 0);
++
++	vpbe_encoder_channel_info.enc_device = NULL;
++	printk(KERN_DEBUG "VPBE Encoder de-initialized\n");
++	return 0;
++}
++
++/* Following function returns ptr to a mode_info structure*/
++static struct vid_enc_mode_info *get_modeinfo(char *mode_name)
++{
++	int i;
++	for (i = 0; i < VPBE_ENCODER_MAX_NUM_STD; i++) {
++		if (!strcmp(vpbe_encoder_modes[i].name, mode_name)) {
++			return &vpbe_encoder_modes[i];
++		}
++	}
++	return NULL;
++}
++
++/* Following function is used to set the mode*/
++static int vpbe_encoder_setmode(struct vid_enc_mode_info *mode_info,
++				struct vid_encoder_device *enc)
++{
++	int err = 0, outindex, i, dm6446 = 0;
++	char *mode;
++	struct vid_enc_mode_info *my_mode_info;
++
++	if ((NULL == enc) || (NULL == mode_info)) {
++		printk(KERN_ERR "NULL Pointer\n");
++		return -EINVAL;
++	}
++
++	if (NULL == (mode = mode_info->name)) {
++		printk(KERN_ERR "NULL Pointer\n");
++		return -EINVAL;
++	}
++	printk(KERN_DEBUG "Start of vpbe_encoder_setmode..\n");
++	outindex = vpbe_encoder_channel_info.params.outindex;
++	if (cpu_is_davinci_dm644x())
++		dm6446 = 1;
++	else if (!cpu_is_davinci_dm355())
++		return -EINVAL;
++
++	if (mode_info->std) {
++		char *mymode = NULL;
++		/* This is a standard mode */
++		for (i = 0;
++		     i <
++		     vpbe_encoder_configuration.output[outindex].no_of_standard;
++		     i++) {
++			if (!strcmp
++			    (vpbe_encoder_configuration.output[outindex].
++			     standards[i], mode)) {
++				mymode =
++				    vpbe_encoder_configuration.output[outindex].
++				    standards[i];
++				break;
++			}
++		}
++		if ((i ==
++		     vpbe_encoder_configuration.output[outindex].no_of_standard)
++		    || (NULL == mymode)) {
++			printk(KERN_ERR "Invalid id...\n");
++			return -EINVAL;
++		}
++		/* Store the standard in global object of vpbe_encoder */
++		vpbe_encoder_channel_info.params.mode = mymode;
++		if (!strcmp(mymode, VID_ENC_STD_NTSC)) {
++			/* Setup NTSC */
++			dispc_reg_out(VENC_VMOD, 0);
++			dispc_reg_merge(VENC_VMOD,
++					(1 << VENC_VMOD_VIE_SHIFT),
++					VENC_VMOD_VIE);
++			dispc_reg_merge(VENC_VMOD,
++					(0 << VENC_VMOD_VMD), VENC_VMOD_VMD);
++			dispc_reg_merge(VENC_VMOD,
++					(0 << VENC_VMOD_TVTYP_SHIFT),
++					VENC_VMOD_TVTYP);
++		} else if (!strcmp(mymode, VID_ENC_STD_PAL)) {
++			/* Setup PAL */
++			dispc_reg_out(VENC_VMOD, 0);
++			dispc_reg_merge(VENC_VMOD,
++					(1 << VENC_VMOD_VIE_SHIFT),
++					VENC_VMOD_VIE);
++			dispc_reg_merge(VENC_VMOD,
++					(0 << VENC_VMOD_VMD), VENC_VMOD_VMD);
++			dispc_reg_merge(VENC_VMOD,
++					(1 << VENC_VMOD_TVTYP_SHIFT),
++					VENC_VMOD_TVTYP);
++		} else if (!strcmp(mymode, VID_ENC_STD_NTSC_RGB) && dm6446) {
++			/* Setup for NTSC RGB */
++			dispc_reg_out(VENC_VMOD, 0);
++			dispc_reg_merge(VENC_VMOD,
++					(0 << VENC_VMOD_VMD), VENC_VMOD_VMD);
++			dispc_reg_merge(VENC_VMOD,
++					(0 << VENC_VMOD_TVTYP_SHIFT),
++					VENC_VMOD_TVTYP);
++			dispc_reg_merge(VENC_CMPNT,
++					(1 << VENC_CMPNT_MRGB_SHIFT),
++					VENC_CMPNT_MRGB);
++		} else if (!strcmp(mymode, VID_ENC_STD_PAL_RGB) && dm6446) {
++			/* Setup for PAL RGB */
++			dispc_reg_out(VENC_VMOD, 0);
++			dispc_reg_merge(VENC_VMOD,
++					(1 << VENC_VMOD_VIE_SHIFT),
++					VENC_VMOD_VIE);
++			dispc_reg_merge(VENC_VMOD,
++					(0 << VENC_VMOD_VMD), VENC_VMOD_VMD);
++			dispc_reg_merge(VENC_VMOD,
++					(1 << VENC_VMOD_TVTYP_SHIFT),
++					VENC_VMOD_TVTYP);
++			dispc_reg_merge(VENC_CMPNT,
++					(1 << VENC_CMPNT_MRGB_SHIFT),
++					VENC_CMPNT_MRGB);
++		} else if (!strcmp(mymode, VID_ENC_STD_480P_60) && dm6446) {
++			/* Setup for 480P, Progressive NTSC */
++			dispc_reg_out(VENC_VMOD, 0);
++			dispc_reg_merge(VENC_VMOD,
++					(1 << VENC_VMOD_VIE_SHIFT),
++					VENC_VMOD_VIE);
++			dispc_reg_merge(VENC_VMOD,
++					VENC_VMOD_HDMD, VENC_VMOD_HDMD);
++			dispc_reg_merge(VENC_VMOD,
++					(HDTV_525P << VENC_VMOD_TVTYP_SHIFT),
++					VENC_VMOD_TVTYP);
++
++		} else if (!strcmp(mymode, VID_ENC_STD_576P_50) && dm6446) {
++			dispc_reg_out(VENC_VMOD, 0);
++			/* Setup for 576P, Progressive PAL */
++			dispc_reg_merge(VENC_VMOD,
++					(1 << VENC_VMOD_VIE_SHIFT),
++					VENC_VMOD_VIE);
++			dispc_reg_merge(VENC_VMOD,
++					VENC_VMOD_HDMD, VENC_VMOD_HDMD);
++			dispc_reg_merge
++			    (VENC_VMOD,
++			     (HDTV_625P << VENC_VMOD_TVTYP_SHIFT),
++			     VENC_VMOD_TVTYP);
++		} else {
++			printk(KERN_ERR "Mode not supported..\n");
++			return -EINVAL;
++		}
++	} else {
++		/* Non- Standard mode. Check if we support it. If so
++		   save the timing info and return */
++		my_mode_info = get_modeinfo(VID_ENC_STD_NON_STANDARD);
++		if (my_mode_info) {
++			/* We support. So save timing info and return success
++			   interface type is same as what is currently is active
++			 */
++			vpbe_encoder_channel_info.params.mode =
++			    VID_ENC_STD_NON_STANDARD;
++			my_mode_info->std = 0;
++			my_mode_info->interlaced = mode_info->interlaced;
++			my_mode_info->xres = mode_info->xres;
++			my_mode_info->yres = mode_info->yres;
++			my_mode_info->fps = mode_info->fps;
++			my_mode_info->left_margin = mode_info->left_margin;
++			my_mode_info->right_margin = mode_info->right_margin;
++			my_mode_info->upper_margin = mode_info->upper_margin;
++			my_mode_info->lower_margin = mode_info->lower_margin;
++			my_mode_info->hsync_len = mode_info->hsync_len;
++			my_mode_info->vsync_len = mode_info->vsync_len;
++			my_mode_info->flags = mode_info->flags;
++			/* If we need to configure something in the encoder module, we need to
++			   do this here */
++			return 0;
++		}
++		printk(KERN_ERR "Mode not supported..\n");
++		return -EINVAL;
++	}
++	printk(KERN_DEBUG "</vpbe_encoder_setmode>\n");
++	return err;
++}
++
++/* Following function is used to get currently selected mode.*/
++static int vpbe_encoder_getmode(struct vid_enc_mode_info *mode_info,
++				struct vid_encoder_device *enc)
++{
++	int err = 0;
++	struct vid_enc_mode_info *my_mode_info;
++	if ((NULL == enc) || (NULL == mode_info)) {
++		printk(KERN_ERR "NULL Pointer\n");
++		return -EINVAL;
++	}
++	printk(KERN_DEBUG "<vpbe_encoder_getmode>\n");
++	my_mode_info = get_modeinfo(vpbe_encoder_channel_info.params.mode);
++	if (NULL == my_mode_info) {
++		printk(KERN_ERR "NULL Pointer for current mode info\n");
++		return -EINVAL;
++	}
++	memcpy(mode_info, my_mode_info, sizeof(struct vid_enc_mode_info));
++	printk(KERN_DEBUG "<vpbe_encoder_getmode/>\n");
++	return err;
++}
++
++/* Following function is used to set output format in VPBE DAC. The
++   output name is  passed as the argument to this function. */
++static int vpbe_encoder_setoutput(char *output, struct vid_encoder_device *enc)
++{
++	int err = 0, index;
++	struct vid_enc_mode_info *my_mode_info;
++	printk(KERN_DEBUG "<vpbe_encoder_setoutput>\n");
++	if (NULL == enc) {
++		printk(KERN_ERR "enc:NULL Pointer\n");
++		return -EINVAL;
++	}
++
++	/* check for null pointer */
++	if (output == NULL) {
++		printk(KERN_ERR "output: NULL Pointer.\n");
++		return -EINVAL;
++	}
++
++	for (index = 0; index < vpbe_encoder_configuration.no_of_outputs;
++	     index++) {
++		if (!strcmp
++		    (output,
++		     vpbe_encoder_configuration.output[index].output_name)) {
++			break;
++		}
++	}
++
++	if (index == vpbe_encoder_configuration.no_of_outputs) {
++		/* No output matching this name */
++		printk(KERN_ERR "No matching output: %s\n", output);
++		return -EINVAL;
++	}
++
++	if (vpbe_encoder_set_dac(output) < 0) {
++		printk(KERN_ERR
++		       "<vpbe_encoder_setoutput, error in setting DAC config>\n");
++		return -EINVAL;
++	}
++
++	vpbe_encoder_channel_info.params.outindex = index;
++
++	/* set default standard */
++	vpbe_encoder_channel_info.params.mode
++	    = vpbe_encoder_configuration.output[index].standards[0];
++
++	my_mode_info = get_modeinfo(vpbe_encoder_channel_info.params.mode);
++	if (NULL == my_mode_info) {
++		printk(KERN_ERR "No matching mode_info entry found\n");
++		return -EINVAL;
++	}
++
++	err |= vpbe_encoder_setmode(my_mode_info, enc);
++	if (err < 0) {
++		printk(KERN_ERR "Erron in setting default mode\n");
++		return err;
++	}
++	printk(KERN_DEBUG "</vpbe_encoder_setoutput>\n");
++	return err;
++}
++
++/* Following function is used to get output name of current output.*/
++static int vpbe_encoder_getoutput(char *output, struct vid_encoder_device *enc)
++{
++	int err = 0, index, len;
++	if (NULL == enc) {
++		printk(KERN_ERR "enc:NULL Pointer\n");
++		return -EINVAL;
++	}
++	printk(KERN_DEBUG "<vpbe_encoder_getoutput>\n");
++	/* check for null pointer */
++	if (output == NULL) {
++		printk(KERN_ERR "output:NULL Pointer.\n");
++		return -EINVAL;
++	}
++	index = vpbe_encoder_channel_info.params.outindex;
++	len = strlen(vpbe_encoder_configuration.output[index].output_name);
++	if (len > (VID_ENC_NAME_MAX_CHARS - 1))
++		len = VID_ENC_NAME_MAX_CHARS - 1;
++	strncpy(output, vpbe_encoder_configuration.output[index].output_name,
++		len);
++	output[len] = '\0';
++	printk(KERN_DEBUG "</vpbe_encoder_getoutput>\n");
++	return err;
++}
++
++/* Following function is used to enumerate outputs supported by the driver.
++   It fills in information about the output in the output. */
++static int vpbe_encoder_enumoutput(int index, char *output,
++				   struct vid_encoder_device *enc)
++{
++	int err = 0;
++
++	printk(KERN_DEBUG "<vpbe_encoder_enumoutput>\n");
++	if (NULL == enc) {
++		printk(KERN_ERR "enc:NULL Pointer.\n");
++		return -EINVAL;
++	}
++	/* check for null pointer */
++	if (output == NULL) {
++		printk(KERN_ERR "output:NULL Pointer.\n");
++		return -EINVAL;
++	}
++	/* Only one output is available */
++	if (index >= vpbe_encoder_configuration.no_of_outputs) {
++		return -EINVAL;
++	}
++	strncpy(output,
++		vpbe_encoder_configuration.output[index].output_name,
++		VID_ENC_NAME_MAX_CHARS);
++	printk(KERN_DEBUG "</vpbe_encoder_enumoutput>\n");
++	return err;
++}
++
++/* This function used to initialize the vpbe encoder driver */
++static int vpbe_encoder_init(void)
++{
++	int err = 0;
++
++	if (cpu_is_davinci_dm644x()) {
++		/* Do nothing. We have everything setup for DM6446 */
++	} else if (cpu_is_davinci_dm355()) {
++		outputs_ops.count = VPBE_DM355_ENCODER_MAX_NO_OUTPUTS;
++		vpbe_encoder_configuration.vencregs = DM355_VENC_REG_BASE;
++		vpbe_encoder_configuration.no_of_outputs =
++		    VPBE_DM355_ENCODER_MAX_NO_OUTPUTS;
++		vpbe_encoder_configuration.output[0].no_of_standard =
++		    VPBE_DM355_ENCODER_COMPOSITE_NUM_STD;
++		/* If we have different no of standards for composite in DM355 and DM6446
++		   we need to fill the stanard names as well here. Now both are the same.
++		 */
++	} else
++		return -1;
++
++	err = vid_enc_register_encoder(&vpbe_encoder_dev);
++	printk(KERN_NOTICE "VPBE Encoder Initialized\n");
++	return err;
++}
++
++/* Function used to cleanup vpbe encoder driver */
++static void vpbe_encoder_cleanup(void)
++{
++	vid_enc_unregister_encoder(&vpbe_encoder_dev);
++}
++
++subsys_initcall(vpbe_encoder_init);
++module_exit(vpbe_encoder_cleanup);
++
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/include/media/davinci/logicpd_encoder.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/media/davinci/logicpd_encoder.h
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2007 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#ifndef LOGICPD_ENCODER_H
++#define LOGICPD_ENCODER_H
++
++#ifdef __KERNEL__
++/* Kernel Header files */
++#include <linux/i2c.h>
++#include <linux/device.h>
++#endif
++
++#ifdef __KERNEL__
++/* encoder standard related strctures */
++#define LOGICPD_ENCODER_MAX_NO_OUTPUTS		    (1)
++#define LOGICPD_ENCODER_GRAPHICS_NUM_STD		(4)
++
++struct logicpd_encoder_params {
++	int outindex;
++	char *mode;
++};
++
++struct logicpd_encoder_config {
++	int no_of_outputs;
++	struct {
++		char *output_name;
++		int no_of_standard;
++		struct vid_enc_mode_info
++		 standards[LOGICPD_ENCODER_GRAPHICS_NUM_STD];
++	} output[LOGICPD_ENCODER_MAX_NO_OUTPUTS];
++};
++
++struct logicpd_encoder_channel {
++	struct encoder_device *enc_device;
++	struct logicpd_encoder_params params;
++};
++
++#endif				/* End of #ifdef __KERNEL__ */
++
++#endif				/* End of #ifndef LOGICPD_ENCODER_H */
+Index: linux-2.6.18/include/media/davinci/vpbe_encoder.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/media/davinci/vpbe_encoder.h
+@@ -0,0 +1,42 @@
++/*
++ * Copyright (C) 2007 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#ifndef VPBE_ENCODER_H
++#define VPBE_ENCODER_H
++
++#ifdef __KERNEL__
++/* Kernel Header files */
++#include <linux/i2c.h>
++#include <linux/device.h>
++#endif
++
++#ifdef __KERNEL__
++/* encoder standard related strctures */
++#define VPBE_ENCODER_MAX_NO_OUTPUTS		            (3)
++#define VPBE_ENCODER_MAX_NUM_STD                    (6)
++#define VPBE_DM355_ENCODER_MAX_NO_OUTPUTS		    (1)
++#define VPBE_DM355_ENCODER_COMPOSITE_NUM_STD        (2)
++#define VPBE_DM355_ENCODER_MAX_NUM_STD              (2)
++#define VPBE_DM644X_ENCODER_MAX_NO_OUTPUTS		    (3)
++#define VPBE_DM644X_ENCODER_COMPONENT_NUM_STD		(6)
++#define VPBE_DM644X_ENCODER_SVIDEO_NUM_STD		    (2)
++#define VPBE_DM644X_ENCODER_COMPOSITE_NUM_STD       (2)
++
++#endif				/* End of #ifdef __KERNEL__ */
++
++#endif				/* End of #ifndef VPBE_VENC_H */
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm355-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+@@ -47,6 +47,15 @@
+ #include <asm/arch/common.h>
+ #include <asm/arch/clock.h>
+ 
++
++#if (defined(CONFIG_DAVINCI_LOGICPD_ENCODER) || \
++		                defined(CONFIG_DAVINCI_LOGICPD_ENCODER_MODULE)) && \
++        (defined(CONFIG_DAVINCI_PWM) || defined(CONFIG_DAVINCI_PWM_MODULE))
++#error There is a PINMUX dependency between DAVINCI_LOGICPD_ENCODER and \
++	DAVINCI_PWM options for DM355 EVM. Please deselect DAVINCI_PWM \
++for DM355 to enable DAVINCI_LOGICPD_ENCODER or vice versa.
++#endif
++
+ /**************************************************************************
+  * Definitions
+  **************************************************************************/
+Index: linux-2.6.18/mvl_patches/pro50-1586.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1586.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1586);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

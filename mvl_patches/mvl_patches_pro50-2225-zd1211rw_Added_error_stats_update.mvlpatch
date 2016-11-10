@@ -1,0 +1,365 @@
+#! /usr/bin/env bash
+# Patch: -zd1211rw_Added_error_stats_update
+# Date: Thu Feb 19 15:09:27 2009
+# MR: 29923
+# From 8b69d219d7e1bded172d0de034482d5fc01cedfe Mon Sep 17 00:00:00 2001
+# From: Ulrich Kunitz <kune@deine-taler.de>
+# Date: Mon, 29 Jan 2007 01:00:03 +0000
+# Subject: [PATCH] [PATCH] zd1211rw: Added error stats update
+# 
+# Added update of network device error statistics.
+# 
+# Based on earlier work by Maxime Austruy.
+# 
+# Signed-off-by: Ulrich Kunitz <kune@deine-taler.de>
+# Signed-off-by: Daniel Drake <dsd@gentoo.org>
+# Signed-off-by: John W. Linville <linville@tuxdriver.com>
+# (cherry picked from commit 22d3405f62c1cef6661ced96a64458235f9c5fe5)
+# 
+
+PATCHNUM=2225
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From 8b69d219d7e1bded172d0de034482d5fc01cedfe Mon Sep 17 00:00:00 2001
+From: Ulrich Kunitz <kune@deine-taler.de>
+Date: Mon, 29 Jan 2007 01:00:03 +0000
+Subject: [PATCH] [PATCH] zd1211rw: Added error stats update
+
+Added update of network device error statistics.
+
+Based on earlier work by Maxime Austruy.
+
+Signed-off-by: Ulrich Kunitz <kune@deine-taler.de>
+Signed-off-by: Daniel Drake <dsd@gentoo.org>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+(cherry picked from commit 22d3405f62c1cef6661ced96a64458235f9c5fe5)
+
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+@@ -900,16 +900,21 @@ static int fill_ctrlset(struct zd_mac *m
+ static int zd_mac_tx(struct zd_mac *mac, struct ieee80211_txb *txb, int pri)
+ {
+ 	int i, r;
++	struct ieee80211_device *ieee = zd_mac_to_ieee80211(mac);
+ 
+ 	for (i = 0; i < txb->nr_frags; i++) {
+ 		struct sk_buff *skb = txb->fragments[i];
+ 
+ 		r = fill_ctrlset(mac, txb, i);
+-		if (r)
++		if (r) {
++			ieee->stats.tx_dropped++;
+ 			return r;
++		}
+ 		r = zd_usb_tx(&mac->chip.usb, skb->data, skb->len);
+-		if (r)
++		if (r) {
++			ieee->stats.tx_dropped++;
+ 			return r;
++		}
+ 	}
+ 
+ 	/* FIXME: shouldn't this be handled by the upper layers? */
+@@ -1059,9 +1064,23 @@ static int fill_rx_stats(struct ieee8021
+ 
+ 	*pstatus = status = zd_tail(buffer, length, sizeof(struct rx_status));
+ 	if (status->frame_status & ZD_RX_ERROR) {
+-		/* FIXME: update? */
++		struct ieee80211_device *ieee = zd_mac_to_ieee80211(mac);
++		ieee->stats.rx_errors++;
++		if (status->frame_status & ZD_RX_TIMEOUT_ERROR)
++			ieee->stats.rx_missed_errors++;
++		else if (status->frame_status & ZD_RX_FIFO_OVERRUN_ERROR)
++			ieee->stats.rx_fifo_errors++;
++		else if (status->frame_status & ZD_RX_DECRYPTION_ERROR)
++			ieee->ieee_stats.rx_discards_undecryptable++;
++		else if (status->frame_status & ZD_RX_CRC32_ERROR) {
++			ieee->stats.rx_crc_errors++;
++			ieee->ieee_stats.rx_fcs_errors++;
++		}
++		else if (status->frame_status & ZD_RX_CRC16_ERROR)
++			ieee->stats.rx_crc_errors++;
+ 		return -EINVAL;
+ 	}
++
+ 	memset(stats, 0, sizeof(struct ieee80211_rx_stats));
+ 	stats->len = length - (ZD_PLCP_HEADER_SIZE + IEEE80211_FCS_LEN +
+ 		               + sizeof(struct rx_status));
+@@ -1090,6 +1109,8 @@ static void zd_mac_rx(struct zd_mac *mac
+ 	if (skb->len < ZD_PLCP_HEADER_SIZE + IEEE80211_1ADDR_LEN +
+ 	               IEEE80211_FCS_LEN + sizeof(struct rx_status))
+ 	{
++		ieee->stats.rx_errors++;
++		ieee->stats.rx_length_errors++;
+ 		dev_dbg_f(zd_mac_dev(mac), "Packet with length %u to small.\n",
+ 			 skb->len);
+ 		goto free_skb;
+@@ -1097,7 +1118,9 @@ static void zd_mac_rx(struct zd_mac *mac
+ 
+ 	r = fill_rx_stats(&stats, &status, mac, skb->data, skb->len);
+ 	if (r) {
+-		/* Only packets with rx errors are included here. */
++		/* Only packets with rx errors are included here.
++		 * The error stats have already been set in fill_rx_stats.
++		 */
+ 		goto free_skb;
+ 	}
+ 
+@@ -1110,8 +1133,10 @@ static void zd_mac_rx(struct zd_mac *mac
+ 
+ 	r = filter_rx(ieee, skb->data, skb->len, &stats);
+ 	if (r <= 0) {
+-		if (r < 0)
++		if (r < 0) {
++			ieee->stats.rx_errors++;
+ 			dev_dbg_f(zd_mac_dev(mac), "Error in packet.\n");
++		}
+ 		goto free_skb;
+ 	}
+ 
+@@ -1142,7 +1167,9 @@ int zd_mac_rx_irq(struct zd_mac *mac, co
+ 
+ 	skb = dev_alloc_skb(sizeof(struct zd_rt_hdr) + length);
+ 	if (!skb) {
++		struct ieee80211_device *ieee = zd_mac_to_ieee80211(mac);
+ 		dev_warn(zd_mac_dev(mac), "Could not allocate skb.\n");
++		ieee->stats.rx_dropped++;
+ 		return -ENOMEM;
+ 	}
+ 	skb_reserve(skb, sizeof(struct zd_rt_hdr));
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_usb.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_usb.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_usb.c
+@@ -313,6 +313,12 @@ out:
+ 
+ static inline void handle_retry_failed_int(struct urb *urb)
+ {
++	struct zd_usb *usb = urb->context;
++	struct zd_mac *mac = zd_usb_to_mac(usb);
++	struct ieee80211_device *ieee = zd_mac_to_ieee80211(mac);
++
++	ieee->stats.tx_errors++;
++	ieee->ieee_stats.tx_retry_limit_exceeded++;
+ 	dev_dbg_f(urb_dev(urb), "retry failed interrupt\n");
+ }
+ 
+@@ -487,6 +493,9 @@ static void handle_rx_packet(struct zd_u
+ 
+ 	if (length < sizeof(struct rx_length_info)) {
+ 		/* It's not a complete packet anyhow. */
++		struct ieee80211_device *ieee = zd_mac_to_ieee80211(mac);
++		ieee->stats.rx_errors++;
++		ieee->stats.rx_length_errors++;
+ 		return;
+ 	}
+ 	length_info = (struct rx_length_info *)
+Index: linux-2.6.18/mvl_patches/pro50-2225.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2225.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2225);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

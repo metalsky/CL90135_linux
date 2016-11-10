@@ -1,0 +1,65 @@
+if ARCH_DAVINCI_TRUE
+
+choice
+	prompt "DaVinci Specific Core Type"
+	default ARCH_DAVINCI644x
+
+config ARCH_DAVINCI644x
+	bool "DM644x"
+
+config ARCH_DAVINCI_DM355
+	bool "DM355"
+
+config ARCH_DAVINCI_DM646x
+        bool "DM646x"
+
+endchoice
+
+choice
+	prompt "DaVinci Board Type"
+        default MACH_DAVINCI_EVM
+
+config MACH_DAVINCI_EVM
+	bool "TI DaVinci EVM"
+	depends on ARCH_DAVINCI644x
+	help
+	  Configure this option to specify the whether the board used
+	  for development is a DaVinci EVM
+
+config MACH_DAVINCI_DM355_EVM
+	bool "TI DM355 EVM"
+	depends on ARCH_DAVINCI_DM355
+	help
+	  Configure this option to specify the whether the board used
+	  for development is a DM355 EVM
+
+config MACH_DAVINCI_DM6467_EVM
+        bool "TI DM646x EVM"
+        depends on ARCH_DAVINCI_DM646x
+        help
+          Configure this option to specify the whether the board used
+          for development is a DM646x EVM
+
+endchoice
+
+config DAVINCI_EVM_CF_SUPPORT
+	bool "CF card support"
+	depends on MACH_DAVINCI_EVM
+	default y
+	help
+	  Configure this option to enable CompactFlash card support.
+
+config DM355_NAND_256KB_BLOCKS
+        bool "NAND chip installed on DM355 EVM has 256KB blocks"
+        default y
+        depends on MACH_DAVINCI_DM355_EVM
+        help
+        The boot firmware on the DM355 EVM assumes a default partition map
+        for NAND flash based on erase block offsets.  Thus, the partition map
+        varies based on the size of the erase blocks in the particular NAND
+        flash component installed on the board.  Answer Y here if the NAND
+        chip (e.g a 16 Gigabit Micron MT29F16G08QAA) installed on your board
+        has 256KB blocks.  Answer N here if the NAND chip (e.g. a 4 Gigabit
+        Micron MT29F4G08AAA) installed on your board has 128KB blocks.
+
+endif

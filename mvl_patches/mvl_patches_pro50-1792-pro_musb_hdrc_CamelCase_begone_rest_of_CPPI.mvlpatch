@@ -1,0 +1,620 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_CamelCase_begone_rest_of_CPPI
+# Date: Fri Sep 19 14:19:06 2008
+# From 5268040e7d1e8897dca171894d3e3c3685cbb056 Mon Sep 17 00:00:00 2001
+# From: David Brownell <david-b@pacbell.net>
+# Date: Mon, 27 Aug 2007 17:45:58 -0700
+# Subject: [PATCH] musb_hdrc, CamelCase begone (rest of CPPI)
+# 
+# This should be the last of the CamelCase removal for CPPI...
+# more local variable updates:
+# 
+#  - "txState" --> tx_ram
+#  - "bReqComplete" --> complete (or remove)
+#  - "bdPtr" --> bd
+#  - "chanNum" --> index
+#  - remove pointless/unused "numCompleted"
+#  - convert cppi_rx_scan() to use bool, return true/false
+# 
+# Also improve indentation on the monstrous TX side of cppi_completion();
+# TX paths still deserve a rewrite to better match the RX side.
+# 
+# Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+# (cherry picked from commit 3634c7f6047eb545983b3552b7f185c52a6ee44f)
+
+PATCHNUM=1792
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 5268040e7d1e8897dca171894d3e3c3685cbb056 Mon Sep 17 00:00:00 2001
+From: David Brownell <david-b@pacbell.net>
+Date: Mon, 27 Aug 2007 17:45:58 -0700
+Subject: [PATCH] musb_hdrc, CamelCase begone (rest of CPPI)
+
+This should be the last of the CamelCase removal for CPPI...
+more local variable updates:
+
+ - "txState" --> tx_ram
+ - "bReqComplete" --> complete (or remove)
+ - "bdPtr" --> bd
+ - "chanNum" --> index
+ - remove pointless/unused "numCompleted"
+ - convert cppi_rx_scan() to use bool, return true/false
+
+Also improve indentation on the monstrous TX side of cppi_completion();
+TX paths still deserve a rewrite to better match the RX side.
+
+Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+(cherry picked from commit 3634c7f6047eb545983b3552b7f185c52a6ee44f)
+Index: linux-2.6.18/drivers/usb/musb/cppi_dma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/cppi_dma.c
++++ linux-2.6.18/drivers/usb/musb/cppi_dma.c
+@@ -280,8 +280,7 @@ static inline void core_rxirq_enable(voi
+  */
+ static struct dma_channel *
+ cppi_channel_allocate(struct dma_controller *c,
+-		struct musb_hw_ep *ep,
+-		u8 transmit)
++		struct musb_hw_ep *ep, u8 transmit)
+ {
+ 	struct cppi		*controller;
+ 	u8			index;
+@@ -1001,13 +1000,14 @@ static int cppi_channel_program(struct d
+ 	return true;
+ }
+ 
+-static int cppi_rx_scan(struct cppi *cppi, unsigned ch)
++static bool cppi_rx_scan(struct cppi *cppi, unsigned ch)
+ {
+ 	struct cppi_channel		*rx = &cppi->rx[ch];
+ 	struct cppi_rx_stateram __iomem	*state = rx->state_ram;
+ 	struct cppi_descriptor		*bd;
+ 	struct cppi_descriptor		*last = rx->last_processed;
+-	int				completed = 0, acked = 0;
++	bool				completed = false;
++	bool				acked = false;
+ 	int				i;
+ 	dma_addr_t			safe2ack;
+ 	void __iomem			*regs = rx->hw_ep->regs;
+@@ -1016,7 +1016,7 @@ static int cppi_rx_scan(struct cppi *cpp
+ 
+ 	bd = last ? last->next : rx->head;
+ 	if (!bd)
+-		return 0;
++		return false;
+ 
+ 	/* run through all completed BDs */
+ 	for (i = 0, safe2ack = musb_readl(&state->rx_complete, 0);
+@@ -1041,7 +1041,7 @@ static int cppi_rx_scan(struct cppi *cpp
+ 			len = 0;
+ 
+ 		if (bd->hw_options & CPPI_EOQ_MASK)
+-			completed = 1;
++			completed = true;
+ 
+ 		if (!completed && len < bd->buflen) {
+ 			/* NOTE:  when we get a short packet, RXCSR_H_REQPKT
+@@ -1049,7 +1049,7 @@ static int cppi_rx_scan(struct cppi *cpp
+ 			 * active be in the queue... TI docs didn't say, but
+ 			 * CPPI ignores those BDs even though OWN is still set.
+ 			 */
+-			completed = 1;
++			completed = true;
+ 			DBG(3, "rx short %d/%d (%d)\n",
+ 					len, bd->buflen,
+ 					rx->channel.actual_len);
+@@ -1066,7 +1066,7 @@ static int cppi_rx_scan(struct cppi *cpp
+ 		if (bd->dma == safe2ack) {
+ 			musb_writel(&state->rx_complete, 0, safe2ack);
+ 			safe2ack = musb_readl(&state->rx_complete, 0);
+-			acked = 1;
++			acked = true;
+ 			if (bd->dma == safe2ack)
+ 				safe2ack = 0;
+ 		}
+@@ -1078,7 +1078,7 @@ static int cppi_rx_scan(struct cppi *cpp
+ 
+ 		/* stop scanning on end-of-segment */
+ 		if (bd->hw_next == 0)
+-			completed = 1;
++			completed = true;
+ 	}
+ 	rx->last_processed = last;
+ 
+@@ -1140,143 +1140,128 @@ static int cppi_rx_scan(struct cppi *cpp
+ void cppi_completion(struct musb *musb, u32 rx, u32 tx)
+ {
+ 	void __iomem		*tibase;
+-	int			i, chanNum, numCompleted;
+-	u8			bReqComplete;
++	int			i, index;
+ 	struct cppi		*cppi;
+-	struct cppi_descriptor	*bdPtr;
+ 	struct musb_hw_ep	*hw_ep = NULL;
+ 
+ 	cppi = container_of(musb->dma_controller, struct cppi, controller);
+ 
+ 	tibase = musb->ctrl_base;
+ 
+-	chanNum = 0;
+ 	/* process TX channels */
+-	for (chanNum = 0; tx; tx = tx >> 1, chanNum++) {
+-		if (tx & 1) {
+-			struct cppi_channel		*tx_ch;
+-			struct cppi_tx_stateram __iomem	*txState;
++	for (index = 0; tx; tx = tx >> 1, index++) {
++		struct cppi_channel		*tx_ch;
++		struct cppi_tx_stateram __iomem	*tx_ram;
++		bool				completed = false;
++		struct cppi_descriptor		*bd;
+ 
+-			tx_ch = cppi->tx + chanNum;
+-			txState = tx_ch->state_ram;
++		if (!(tx & 1))
++			continue;
+ 
+-			/* FIXME  need a cppi_tx_scan() routine, which
+-			 * can also be called from abort code
+-			 */
++		tx_ch = cppi->tx + index;
++		tx_ram = tx_ch->state_ram;
++
++		/* FIXME  need a cppi_tx_scan() routine, which
++		 * can also be called from abort code
++		 */
+ 
+-			cppi_dump_tx(5, tx_ch, "/E");
++		cppi_dump_tx(5, tx_ch, "/E");
+ 
+-			bdPtr = tx_ch->head;
++		bd = tx_ch->head;
+ 
+-			if (NULL == bdPtr) {
+-				DBG(1, "null BD\n");
+-				continue;
+-			}
++		if (NULL == bd) {
++			DBG(1, "null BD\n");
++			continue;
++		}
+ 
+-			i = 0;
+-			bReqComplete = 0;
++		/* run through all completed BDs */
++		for (i = 0; !completed && bd && i < NUM_TXCHAN_BD;
++				i++, bd = bd->next) {
++			u16	len;
+ 
+-			numCompleted = 0;
++			rmb();
++			if (bd->hw_options & CPPI_OWN_SET)
++				break;
+ 
+-			/* run through all completed BDs */
+-			for (i = 0;
+-					!bReqComplete
+-						&& bdPtr
+-						&& i < NUM_TXCHAN_BD;
+-					i++, bdPtr = bdPtr->next) {
+-				u16	len;
+-
+-				rmb();
+-				if (bdPtr->hw_options & CPPI_OWN_SET)
+-					break;
+-
+-				DBG(5, "C/TXBD %p n %x b %x off %x opt %x\n",
+-						bdPtr, bdPtr->hw_next,
+-						bdPtr->hw_bufp,
+-						bdPtr->hw_off_len,
+-						bdPtr->hw_options);
+-
+-				len = bdPtr->hw_off_len & CPPI_BUFFER_LEN_MASK;
+-				tx_ch->channel.actual_len += len;
+-
+-				numCompleted++;
+-				tx_ch->last_processed = bdPtr;
+-
+-				/* write completion register to acknowledge
+-				 * processing of completed BDs, and possibly
+-				 * release the IRQ; EOQ might not be set ...
+-				 *
+-				 * REVISIT use the same ack strategy as rx
+-				 *
+-				 * REVISIT have observed bit 18 set; huh??
+-				 */
+-				/* if ((bdPtr->hw_options & CPPI_EOQ_MASK)) */
+-					musb_writel(&txState->tx_complete, 0,
+-							bdPtr->dma);
+-
+-				/* stop scanning on end-of-segment */
+-				if (bdPtr->hw_next == 0)
+-					bReqComplete = 1;
+-			}
++			DBG(5, "C/TXBD %p n %x b %x off %x opt %x\n",
++					bd, bd->hw_next, bd->hw_bufp,
++					bd->hw_off_len, bd->hw_options);
++
++			len = bd->hw_off_len & CPPI_BUFFER_LEN_MASK;
++			tx_ch->channel.actual_len += len;
++
++			tx_ch->last_processed = bd;
++
++			/* write completion register to acknowledge
++			 * processing of completed BDs, and possibly
++			 * release the IRQ; EOQ might not be set ...
++			 *
++			 * REVISIT use the same ack strategy as rx
++			 *
++			 * REVISIT have observed bit 18 set; huh??
++			 */
++			/* if ((bd->hw_options & CPPI_EOQ_MASK)) */
++				musb_writel(&tx_ram->tx_complete, 0, bd->dma);
+ 
+-			/* on end of segment, maybe go to next one */
+-			if (bReqComplete) {
+-				/* cppi_dump_tx(4, tx_ch, "/complete"); */
+-
+-				/* transfer more, or report completion */
+-				if (tx_ch->offset >= tx_ch->buf_len) {
+-					tx_ch->head = NULL;
+-					tx_ch->tail = NULL;
+-					tx_ch->channel.status =
+-							MUSB_DMA_STATUS_FREE;
+-
+-					hw_ep = tx_ch->hw_ep;
+-
+-					/* Peripheral role never repurposes the
+-					 * endpoint, so immediate completion is
+-					 * safe.  Host role waits for the fifo
+-					 * to empty (TXPKTRDY irq) before going
+-					 * to the next queued bulk transfer.
+-					 */
+-					if (is_host_active(cppi->musb)) {
++			/* stop scanning on end-of-segment */
++			if (bd->hw_next == 0)
++				completed = true;
++		}
++
++		/* on end of segment, maybe go to next one */
++		if (completed) {
++			/* cppi_dump_tx(4, tx_ch, "/complete"); */
++
++			/* transfer more, or report completion */
++			if (tx_ch->offset >= tx_ch->buf_len) {
++				tx_ch->head = NULL;
++				tx_ch->tail = NULL;
++				tx_ch->channel.status = MUSB_DMA_STATUS_FREE;
++
++				hw_ep = tx_ch->hw_ep;
++
++				/* Peripheral role never repurposes the
++				 * endpoint, so immediate completion is
++				 * safe.  Host role waits for the fifo
++				 * to empty (TXPKTRDY irq) before going
++				 * to the next queued bulk transfer.
++				 */
++				if (is_host_active(cppi->musb)) {
+ #if 0
+-						/* WORKAROUND because we may
+-						 * not always get TXKPTRDY ...
+-						 */
+-						int	csr;
+-
+-						csr = musb_readw(hw_ep->regs,
+-							MUSB_TXCSR);
+-						if (csr & MUSB_TXCSR_TXPKTRDY)
+-#endif
+-							bReqComplete = 0;
+-					}
+-					if (bReqComplete)
+-						musb_dma_completion(
+-							musb, chanNum + 1, 1);
+-
+-				} else {
+-					/* Bigger transfer than we could fit in
+-					 * that first batch of descriptors...
++					/* WORKAROUND because we may
++					 * not always get TXKPTRDY ...
+ 					 */
+-					cppi_next_tx_segment(musb, tx_ch);
++					int	csr;
++
++					csr = musb_readw(hw_ep->regs,
++						MUSB_TXCSR);
++					if (csr & MUSB_TXCSR_TXPKTRDY)
++#endif
++						completed = false;
+ 				}
+-			} else
+-				tx_ch->head = bdPtr;
+-		}
++				if (completed)
++					musb_dma_completion(musb, index + 1, 1);
++
++			} else {
++				/* Bigger transfer than we could fit in
++				 * that first batch of descriptors...
++				 */
++				cppi_next_tx_segment(musb, tx_ch);
++			}
++		} else
++			tx_ch->head = bd;
+ 	}
+ 
+ 	/* Start processing the RX block */
+-	for (chanNum = 0; rx; rx = rx >> 1, chanNum++) {
++	for (index = 0; rx; rx = rx >> 1, index++) {
+ 
+ 		if (rx & 1) {
+ 			struct cppi_channel		*rx_ch;
+ 
+-			rx_ch = cppi->rx + chanNum;
+-			bReqComplete = cppi_rx_scan(cppi, chanNum);
++			rx_ch = cppi->rx + index;
+ 
+ 			/* let incomplete dma segments finish */
+-			if (!bReqComplete)
++			if (!cppi_rx_scan(cppi, index))
+ 				continue;
+ 
+ 			/* start another dma segment if needed */
+@@ -1292,8 +1277,8 @@ void cppi_completion(struct musb *musb, 
+ 
+ 			hw_ep = rx_ch->hw_ep;
+ 
+-			core_rxirq_disable(tibase, chanNum + 1);
+-			musb_dma_completion(musb, chanNum + 1, 0);
++			core_rxirq_disable(tibase, index + 1);
++			musb_dma_completion(musb, index + 1, 0);
+ 		}
+ 	}
+ 
+@@ -1403,7 +1388,7 @@ static int cppi_channel_abort(struct dma
+ 	musb_ep_select(mbase, cppi_ch->index + 1);
+ 
+ 	if (cppi_ch->transmit) {
+-		struct cppi_tx_stateram __iomem *txState;
++		struct cppi_tx_stateram __iomem *tx_ram;
+ 		int			enabled;
+ 
+ 		/* mask interrupts raised to signal teardown complete.  */
+@@ -1423,11 +1408,11 @@ static int cppi_channel_abort(struct dma
+ 		} while (!(value & CPPI_TEAR_READY));
+ 		musb_writel(tibase, DAVINCI_TXCPPI_TEAR_REG, cppi_ch->index);
+ 
+-		txState = cppi_ch->state_ram;
++		tx_ram = cppi_ch->state_ram;
+ 		do {
+-			value = musb_readl(&txState->tx_complete, 0);
++			value = musb_readl(&tx_ram->tx_complete, 0);
+ 		} while (0xFFFFFFFC != value);
+-		musb_writel(&txState->tx_complete, 0, 0xFFFFFFFC);
++		musb_writel(&tx_ram->tx_complete, 0, 0xFFFFFFFC);
+ 
+ 		/* FIXME clean up the transfer state ... here?
+ 		 * the completion routine should get called with
+@@ -1454,8 +1439,8 @@ static int cppi_channel_abort(struct dma
+ 		 * Value written is compared(for bits 31:2) and when
+ 		 * equal, interrupt is deasserted.
+ 		 */
+-		cppi_reset_tx(txState, 1);
+-		musb_writel(&txState->tx_complete, 0, 0);
++		cppi_reset_tx(tx_ram, 1);
++		musb_writel(&tx_ram->tx_complete, 0, 0);
+ 
+ 		cppi_dump_tx(5, cppi_ch, " (done teardown)");
+ 
+@@ -1532,6 +1517,7 @@ static int cppi_channel_abort(struct dma
+ 
+ 		while (queue) {
+ 			struct cppi_descriptor	*tmp = queue->next;
++
+ 			cppi_bd_free(cppi_ch, queue);
+ 			queue = tmp;
+ 		}
+Index: linux-2.6.18/mvl_patches/pro50-1792.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1792.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1792);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

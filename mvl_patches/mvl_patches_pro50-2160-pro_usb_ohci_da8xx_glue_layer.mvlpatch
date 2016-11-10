@@ -1,0 +1,750 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_ohci_da8xx_glue_layer
+# Date: Thu Feb 19 15:04:54 2009
+# Source: MontaVista Software, Inc.
+# MR: 30797
+# Type: Enhancement
+# Disposition: needs submitting to linux-usb@vger.kernel.org
+# Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+# Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Texas Instruments DA8xx OHCI glue layer.
+# 
+#  drivers/usb/Kconfig                |    1 
+#  drivers/usb/host/ohci-da8xx.c      |  443 +++++++++++++++++++++++++++++++++++++
+#  drivers/usb/host/ohci-hcd.c        |    4 
+#  include/asm-arm/arch-davinci/usb.h |   20 +
+#  4 files changed, 468 insertions(+)
+# 
+
+PATCHNUM=2160
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 30797
+Type: Enhancement
+Disposition: needs submitting to linux-usb@vger.kernel.org
+Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Texas Instruments DA8xx OHCI glue layer.
+
+ drivers/usb/Kconfig                |    1 
+ drivers/usb/host/ohci-da8xx.c      |  443 +++++++++++++++++++++++++++++++++++++
+ drivers/usb/host/ohci-hcd.c        |    4 
+ include/asm-arm/arch-davinci/usb.h |   20 +
+ mvl_patches/pro50-2160.c           |   16 +
+ 5 files changed, 484 insertions(+)
+
+Index: linux-2.6.18/drivers/usb/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/Kconfig
++++ linux-2.6.18/drivers/usb/Kconfig
+@@ -25,6 +25,7 @@ config USB_ARCH_HAS_OHCI
+ 	default y if PXA27x
+ 	default y if ARCH_EP93XX
+ 	default y if (ARCH_AT91RM9200 || ARCH_AT91SAM9261)
++	default y if ARCH_DA8XX
+ 	# PPC:
+ 	default y if STB03xxx
+ 	default y if PPC_MPC52xx
+Index: linux-2.6.18/drivers/usb/host/ohci-da8xx.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/usb/host/ohci-da8xx.c
+@@ -0,0 +1,443 @@
++/*
++ * OHCI HCD (Host Controller Driver) for USB.
++ *
++ * TI DA830 (OMAP-L137) Bus Glue
++ *
++ * Derived from: ohci-omap.c and ohci-s3c2410.c
++ * Copyright (C) 2008-2009 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++
++#include <linux/interrupt.h>
++#include <linux/jiffies.h>
++#include <linux/platform_device.h>
++#include <linux/clk.h>
++
++#include <asm/hardware.h>
++#include <asm/arch/usb.h>
++
++#ifndef CONFIG_ARCH_DA8XX
++#error "This file is DA8xx bus glue.  Define CONFIG_ARCH_DA8XX."
++#endif
++
++static struct clk *usb11_clk;
++static struct clk *usb20_clk;
++
++/* Over-current indicator change bitmask */
++static volatile u16 ocic_mask;
++
++static void ohci_da8xx_clock(int on)
++{
++	u32 cfgchip2;
++
++	cfgchip2 = davinci_cfg_readl(DA8XX_CFGCHIP(2));
++	if (on) {
++		clk_enable(usb11_clk);
++
++		/*
++		 * If USB 1.1 reference clock is sourced from USB 2.0 PHY, we
++		 * need to enable the USB 2.0 module clocking, start its PHY,
++		 * and not allow it to stop the clock during USB 2.0 suspend.
++		 */
++		if (!(cfgchip2 & CFGCHIP2_USB1PHYCLKMUX)) {
++			clk_enable(usb20_clk);
++
++			cfgchip2 &= ~(CFGCHIP2_RESET | CFGCHIP2_PHYPWRDN);
++			cfgchip2 |= CFGCHIP2_PHY_PLLON;
++			davinci_cfg_writel(cfgchip2, DA8XX_CFGCHIP(2));
++
++			pr_info("Waiting for USB PHY clock good...\n");
++			while (!(davinci_cfg_readl(DA8XX_CFGCHIP(2)) &
++				 CFGCHIP2_PHYCLKGD))
++				cpu_relax();
++		}
++
++		/* Enable USB 1.1 PHY */
++		cfgchip2 |= CFGCHIP2_USB1SUSPENDM;
++	} else {
++		clk_disable(usb11_clk);
++		if (!(cfgchip2 & CFGCHIP2_USB1PHYCLKMUX))
++			clk_disable(usb20_clk);
++
++		/* Disable USB 1.1 PHY */
++		cfgchip2 &= ~CFGCHIP2_USB1SUSPENDM;
++	}
++	davinci_cfg_writel(cfgchip2, DA8XX_CFGCHIP(2));
++}
++
++/*
++ * Handle the port over-current indicator change.
++ */
++static void ohci_da8xx_ocic_handler(struct da8xx_ohci_root_hub *hub,
++				    unsigned port)
++{
++	ocic_mask |= 1 << port;
++
++	/* Once over-current is detected, the port needs to be powered down */
++	if (hub->get_oci(port) > 0)
++		hub->set_power(port, 0);
++}
++
++static int ohci_da8xx_init(struct usb_hcd *hcd)
++{
++	struct device *dev		= hcd->self.controller;
++	struct da8xx_ohci_root_hub *hub	= dev->platform_data;
++	struct ohci_hcd	*ohci		= hcd_to_ohci(hcd);
++	int result;
++	u32 rh_a;
++
++	dev_dbg(dev, "starting USB controller\n");
++
++	ohci_da8xx_clock(1);
++
++	/*
++	 * DA830 only has 1 port connected to the pins but its HC root hub
++	 * register A reports 2 ports, thus we'll have to override it...
++	 */
++	ohci->num_ports = 1;
++
++	result = ohci_init(ohci);
++	if (result < 0)
++		return result;
++
++	/*
++	 * Since we're providing a board-specific root hub port power control
++	 * and over-current reporting, we have to override the HC root hub A
++	 * register's default value, so that ohci_hub_control() could return
++	 * the correct hub descriptor...
++	 */
++	rh_a = ohci_readl(ohci, &ohci->regs->roothub.a);
++	rh_a &= ~(RH_A_POTPGT | RH_A_NPS | RH_A_NOCP);
++	rh_a |=  (hub->potpgt << 24) | RH_A_PSM | RH_A_OCPM;
++	ohci_writel(ohci, rh_a, &ohci->regs->roothub.a);
++
++	return result;
++}
++
++static void ohci_da8xx_stop(struct usb_hcd *hcd)
++{
++	ohci_stop(hcd);
++	ohci_da8xx_clock(0);
++}
++
++static int ohci_da8xx_start(struct usb_hcd *hcd)
++{
++	struct ohci_hcd	*ohci		= hcd_to_ohci(hcd);
++	int result;
++
++	result = ohci_run(ohci);
++	if (result < 0)
++		ohci_da8xx_stop(hcd);
++
++	return result;
++}
++
++/*
++ * Update the status data from the hub with the over-current indicator change.
++ */
++static int ohci_da8xx_hub_status_data(struct usb_hcd *hcd, char *buf)
++{
++	int length		= ohci_hub_status_data(hcd, buf);
++
++	/* See if we have OCIC bit set on port 1 */
++	if (ocic_mask & (1 << 1)) {
++		dev_dbg(hcd->self.controller, "over-current indicator change "
++			"on port 1\n");
++
++		if (!length)
++			length = 1;
++
++		buf[0] |= 1 << 1;
++	}
++	return length;
++}
++
++/*
++ * Look at the control requests to the root hub and see if we need to override.
++ */
++static int ohci_da8xx_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
++				  u16 wIndex, char *buf, u16 wLength)
++{
++	struct device *dev		= hcd->self.controller;
++	struct da8xx_ohci_root_hub *hub	= dev->platform_data;
++	int temp;
++
++	switch (typeReq) {
++	case GetPortStatus:
++		/* Check the port number */
++		if (wIndex != 1)
++			break;
++
++		dev_dbg(dev, "GetPortStatus(%u)\n", wIndex);
++
++		temp = roothub_portstatus(hcd_to_ohci(hcd), wIndex - 1);
++
++		/* The port power status (PPS) bit defaults to 1 */
++		if (hub->get_power(wIndex) == 0)
++			temp &= ~RH_PS_PPS;
++
++		/* The port over-current indicator (POCI) bit is always 0 */
++		if (hub->get_oci(wIndex) > 0)
++			temp |=  RH_PS_POCI;
++
++		/* The over-current indicator change (OCIC) bit is 0 too */
++		if (ocic_mask & (1 << 1))
++			temp |=  RH_PS_OCIC;
++
++		put_unaligned(cpu_to_le32(temp), (__le32 *)buf);
++		return 0;
++	case SetPortFeature:
++		temp = 1;
++		goto check_port;
++	case ClearPortFeature:
++		temp = 0;
++
++check_port:
++		/* Check the port number */
++		if (wIndex != 1)
++			break;
++
++		switch (wValue) {
++		case USB_PORT_FEAT_POWER:
++			dev_dbg(dev, "%sPortFeature(%u): %s\n",
++				temp ? "Set" : "Clear", wIndex, "POWER");
++
++			return hub->set_power(wIndex, temp) ? -EPIPE : 0;
++		case USB_PORT_FEAT_C_OVER_CURRENT:
++			dev_dbg(dev, "%sPortFeature(%u): %s\n",
++				temp ? "Set" : "Clear", wIndex,
++				"C_OVER_CURRENT");
++
++			if (temp)
++				ocic_mask |= 1 << wIndex;
++			else
++				ocic_mask &= ~(1 << wIndex);
++			return 0;
++		}
++	}
++
++	return ohci_hub_control(hcd, typeReq, wValue, wIndex, buf, wLength);
++}
++
++/*
++ * We don't have OTG but the Mentor USB core in DA8xx does have it, so we
++ * have to define an empty function to silence the warning in ohci-hcd.c...
++ */
++#ifdef CONFIG_USB_OTG
++static void start_hnp(struct ohci_hcd *ohci) {}
++#endif
++
++static const struct hc_driver ohci_da8xx_hc_driver = {
++	.description		= hcd_name,
++	.product_desc		= "DA8xx OHCI",
++	.hcd_priv_size		= sizeof(struct ohci_hcd),
++
++	/*
++	 * generic hardware linkage
++	 */
++	.irq			= ohci_irq,
++	.flags			= HCD_USB11 | HCD_MEMORY,
++
++	/*
++	 * basic lifecycle operations
++	 */
++	.reset			= ohci_da8xx_init,
++	.start			= ohci_da8xx_start,
++	.stop			= ohci_da8xx_stop,
++	.shutdown		= ohci_shutdown,
++
++	/*
++	 * managing i/o requests and associated device resources
++	 */
++	.urb_enqueue		= ohci_urb_enqueue,
++	.urb_dequeue		= ohci_urb_dequeue,
++	.endpoint_disable	= ohci_endpoint_disable,
++
++	/*
++	 * scheduling support
++	 */
++	.get_frame_number	= ohci_get_frame,
++
++	/*
++	 * root hub support
++	 */
++	.hub_status_data	= ohci_da8xx_hub_status_data,
++	.hub_control		= ohci_da8xx_hub_control,
++	.hub_irq_enable 	= ohci_rhsc_enable,
++#ifdef	CONFIG_PM
++	.bus_suspend		= ohci_bus_suspend,
++	.bus_resume		= ohci_bus_resume,
++#endif
++	.start_port_reset	= ohci_start_port_reset,
++};
++
++/*-------------------------------------------------------------------------*/
++
++
++/**
++ * usb_hcd_da8xx_probe - initialize DA8xx-based HCDs
++ * Context: !in_interrupt()
++ *
++ * Allocates basic resources for this USB host controller, and
++ * then invokes the start() method for the HCD associated with it
++ * through the hotplug entry's driver_data.
++ */
++static int usb_hcd_da8xx_probe(const struct hc_driver *driver,
++			       struct platform_device *pdev)
++{
++	struct da8xx_ohci_root_hub *hub	= pdev->dev.platform_data;
++	struct usb_hcd	*hcd;
++	struct resource *mem;
++	int error, irq;
++
++	if (hub == NULL)
++		return -ENODEV;
++
++	usb11_clk = clk_get(&pdev->dev, "USB11CLK");
++	if (IS_ERR(usb11_clk))
++		return PTR_ERR(usb11_clk);
++
++	usb20_clk = clk_get(&pdev->dev, "USB20CLK");
++	if (IS_ERR(usb20_clk)) {
++		error = PTR_ERR(usb20_clk);
++		goto err0;
++	}
++
++	hcd = usb_create_hcd(driver, &pdev->dev, pdev->dev.bus_id);
++	if (!hcd) {
++		error = -ENOMEM;
++		goto err1;
++	}
++
++	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!mem) {
++		error = -ENODEV;
++		goto err2;
++	}
++	hcd->rsrc_start = mem->start;
++	hcd->rsrc_len = mem->end - mem->start + 1;
++
++	if (!request_mem_region(hcd->rsrc_start, hcd->rsrc_len, hcd_name)) {
++		dev_dbg(&pdev->dev, "request_mem_region failed\n");
++		error = -EBUSY;
++		goto err2;
++	}
++
++	hcd->regs = (void __iomem *)(long)IO_ADDRESS(hcd->rsrc_start);
++
++	ohci_hcd_init(hcd_to_ohci(hcd));
++
++	irq = platform_get_irq(pdev, 0);
++	if (irq < 0) {
++		error = -ENODEV;
++		goto err3;
++	}
++	error = usb_add_hcd(hcd, irq, IRQF_DISABLED);
++	if (error)
++		goto err4;
++
++	error = hub->ocic_notify(ohci_da8xx_ocic_handler);
++	if (!error)
++		return 0;
++
++err4:
++	usb_remove_hcd(hcd);
++err3:
++	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
++err2:
++	usb_put_hcd(hcd);
++err1:
++	clk_put(usb20_clk);
++err0:
++	clk_put(usb11_clk);
++	return error;
++}
++
++/**
++ * usb_hcd_da8xx_remove - shutdown processing for DA8xx-based HCDs
++ * @dev: USB Host Controller being removed
++ * Context: !in_interrupt()
++ *
++ * Reverses the effect of usb_hcd_da8xx_probe(), first invoking
++ * the HCD's stop() method.  It is always called from a thread
++ * context, normally "rmmod", "apmd", or something similar.
++ */
++static inline void
++usb_hcd_da8xx_remove(struct usb_hcd *hcd, struct platform_device *pdev)
++{
++	struct da8xx_ohci_root_hub *hub	= pdev->dev.platform_data;
++
++	hub->ocic_notify(NULL);
++	usb_remove_hcd(hcd);
++	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
++	usb_put_hcd(hcd);
++	clk_put(usb20_clk);
++	clk_put(usb11_clk);
++}
++
++static int ohci_hcd_da8xx_drv_probe(struct platform_device *dev)
++{
++	return usb_hcd_da8xx_probe(&ohci_da8xx_hc_driver, dev);
++}
++
++static int ohci_hcd_da8xx_drv_remove(struct platform_device *dev)
++{
++	struct usb_hcd	*hcd = platform_get_drvdata(dev);
++
++	usb_hcd_da8xx_remove(hcd, dev);
++	platform_set_drvdata(dev, NULL);
++
++	return 0;
++}
++
++#ifdef CONFIG_PM
++static int ohci_da8xx_suspend(struct platform_device *dev, pm_message_t message)
++{
++	struct usb_hcd	*hcd	= platform_get_drvdata(dev);
++	struct ohci_hcd	*ohci	= hcd_to_ohci(hcd);
++
++	if (time_before(jiffies, ohci->next_statechange))
++		msleep(5);
++	ohci->next_statechange = jiffies;
++
++	ohci_da8xx_clock(0);
++	hcd->state = HC_STATE_SUSPENDED;
++	dev->dev.power.power_state = PMSG_SUSPEND;
++	return 0;
++}
++
++static int ohci_da8xx_resume(struct platform_device *dev)
++{
++	struct usb_hcd	*hcd	= platform_get_drvdata(dev);
++	struct ohci_hcd	*ohci	= hcd_to_ohci(hcd);
++
++	if (time_before(jiffies, ohci->next_statechange))
++		msleep(5);
++	ohci->next_statechange = jiffies;
++
++	ohci_da8xx_clock(1);
++	dev->dev.power.power_state = PMSG_ON;
++	usb_hcd_resume_root_hub(hcd);
++	return 0;
++}
++#endif
++
++/*
++ * Driver definition to register with platform structure.
++ */
++static struct platform_driver ohci_hcd_da8xx_driver = {
++	.probe		= ohci_hcd_da8xx_drv_probe,
++	.remove		= ohci_hcd_da8xx_drv_remove,
++	.shutdown 	= usb_hcd_platform_shutdown,
++#ifdef	CONFIG_PM
++	.suspend	= ohci_da8xx_suspend,
++	.resume		= ohci_da8xx_resume,
++#endif
++	.driver		= {
++		.owner	= THIS_MODULE,
++		.name	= "ohci",
++	},
++};
+Index: linux-2.6.18/drivers/usb/host/ohci-hcd.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/host/ohci-hcd.c
++++ linux-2.6.18/drivers/usb/host/ohci-hcd.c
+@@ -946,6 +946,10 @@ MODULE_LICENSE ("GPL");
+ #define PLATFORM_DRIVER		ohci_hcd_at91_driver
+ #endif
+ 
++#ifdef CONFIG_ARCH_DA8XX
++#include "ohci-da8xx.c"
++#define PLATFORM_DRIVER		ohci_hcd_da8xx_driver
++#endif
+ 
+ #ifdef CONFIG_USB_OHCI_HCD_PPC_OF
+ #include "ohci-ppc-of.c"
+Index: linux-2.6.18/include/asm-arm/arch-davinci/usb.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/usb.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/usb.h
+@@ -34,4 +34,24 @@
+ #define CFGCHIP2_REFFREQ_24MHZ	(2 << 0)
+ #define CFGCHIP2_REFFREQ_48MHZ	(3 << 0)
+ 
++struct	da8xx_ohci_root_hub;
++
++typedef void (*da8xx_ocic_handler_t)(struct da8xx_ohci_root_hub *hub,
++				     unsigned port);
++
++/* Passed as the platform data to the OHCI driver */
++struct	da8xx_ohci_root_hub {
++	/* Switch the port power on/off */
++	int	(*set_power)(unsigned port, int on);
++	/* Read the port power status */
++	int	(*get_power)(unsigned port);
++	/* Read the port over-current indicator */
++	int	(*get_oci)(unsigned port);
++	/* Over-current indicator change notification (pass NULL to disable) */
++	int	(*ocic_notify)(da8xx_ocic_handler_t handler); 
++
++	/* Time from power on to power good (in 2 ms units) */
++	u8	potpgt;
++};
++
+ #endif	/* ifndef __ASM_ARCH_USB_H */
+Index: linux-2.6.18/mvl_patches/pro50-2160.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2160.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2160);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,454 @@
+#! /usr/bin/env bash
+# Patch: -MTD_NOR_Support_for_auto_locking_flash_on_power
+# Date: Fri Sep 19 14:30:23 2008
+# Source: kernel.org  
+# MR: 28745 
+# Type: Defect Fix
+# Disposition: backport from kernel.org
+# Signed-off-by: Egorov Evgeny <eegorov@ru.mvista.com>
+# Description:
+# 
+# From 0ecbc81adfcb9f15f86b05ff576b342ce81bbef8 Mon Sep 17 00:00:00 2001
+# From: Rodolfo Giometti <giometti@enneenne.com>
+# Date: Mon, 26 Mar 2007 21:45:43 -0800
+# Subject: [PATCH] [MTD] [NOR] Support for auto locking flash on power up
+# 
+# Auto unlock sectors on resume for auto locking flash on power up.
+# 
+# Signed-off-by: Rodolfo Giometti <giometti@enneenne.com>
+# Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+# Signed-off-by: David Woodhouse <dwmw2@infradead.org>
+# 
+
+PATCHNUM=1900
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org  
+MR: 28745 
+Type: Defect Fix
+Disposition: backport from kernel.org
+Signed-off-by: Egorov Evgeny <eegorov@ru.mvista.com>
+Description:
+
+From 0ecbc81adfcb9f15f86b05ff576b342ce81bbef8 Mon Sep 17 00:00:00 2001
+From: Rodolfo Giometti <giometti@enneenne.com>
+Date: Mon, 26 Mar 2007 21:45:43 -0800
+Subject: [PATCH] [MTD] [NOR] Support for auto locking flash on power up
+
+Auto unlock sectors on resume for auto locking flash on power up.
+
+Signed-off-by: Rodolfo Giometti <giometti@enneenne.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Signed-off-by: David Woodhouse <dwmw2@infradead.org>
+
+Index: linux-2.6.18/drivers/mtd/chips/cfi_cmdset_0001.c
+===================================================================
+--- linux-2.6.18.orig/drivers/mtd/chips/cfi_cmdset_0001.c
++++ linux-2.6.18/drivers/mtd/chips/cfi_cmdset_0001.c
+@@ -15,6 +15,8 @@
+  *	- optimized write buffer method
+  * 02/05/2002	Christopher Hoover <ch@hpl.hp.com>/<ch@murgatroid.com>
+  *	- reworked lock/unlock/erase support for var size flash
++ * 21/03/2007   Rodolfo Giometti <giometti@linux.it>
++ * 	- auto unlock sectors on resume for auto locking flash on power up
+  */
+ 
+ #include <linux/module.h>
+@@ -30,6 +32,7 @@
+ #include <linux/delay.h>
+ #include <linux/interrupt.h>
+ #include <linux/reboot.h>
++#include <linux/bitmap.h>
+ #include <linux/mtd/xip.h>
+ #include <linux/mtd/map.h>
+ #include <linux/mtd/mtd.h>
+@@ -220,6 +223,15 @@ static void fixup_use_write_buffers(stru
+ 	}
+ }
+ 
++/*
++ * Some chips power-up with all sectors locked by default.
++ */
++static void fixup_use_powerup_lock(struct mtd_info *mtd, void *param)
++{
++	printk(KERN_INFO "Using auto-unlock on power-up/resume\n" );
++	mtd->flags |= MTD_STUPID_LOCK;
++}
++
+ static struct cfi_fixup cfi_fixup_table[] = {
+ #ifdef CMDSET0001_DISABLE_ERASE_SUSPEND_ON_WRITE
+ 	{ CFI_MFR_ANY, CFI_ID_ANY, fixup_intel_strataflash, NULL },
+@@ -232,6 +244,7 @@ static struct cfi_fixup cfi_fixup_table[
+ #endif
+ 	{ CFI_MFR_ST, 0x00ba, /* M28W320CT */ fixup_st_m28w320ct, NULL },
+ 	{ CFI_MFR_ST, 0x00bb, /* M28W320CB */ fixup_st_m28w320cb, NULL },
++	{ MANUFACTURER_INTEL, 0x891c,	      fixup_use_powerup_lock, NULL, },
+ 	{ 0, 0, NULL, NULL }
+ };
+ 
+@@ -461,6 +474,7 @@ static struct mtd_info *cfi_intelext_set
+ 			mtd->eraseregions[(j*cfi->cfiq->NumEraseRegions)+i].offset = (j*devsize)+offset;
+ 			mtd->eraseregions[(j*cfi->cfiq->NumEraseRegions)+i].erasesize = ersize;
+ 			mtd->eraseregions[(j*cfi->cfiq->NumEraseRegions)+i].numblocks = ernum;
++			mtd->eraseregions[(j*cfi->cfiq->NumEraseRegions)+i].lockmap = kmalloc(ernum / 8 + 1, GFP_KERNEL);
+ 		}
+ 		offset += (ersize * ernum);
+ 	}
+@@ -1828,8 +1842,7 @@ static void cfi_intelext_sync (struct mt
+ 	}
+ }
+ 
+-#ifdef DEBUG_LOCK_BITS
+-static int __xipram do_printlockstatus_oneblock(struct map_info *map,
++static int __xipram do_getlockstatus_oneblock(struct map_info *map,
+ 						struct flchip *chip,
+ 						unsigned long adr,
+ 						int len, void *thunk)
+@@ -1843,8 +1856,17 @@ static int __xipram do_printlockstatus_o
+ 	chip->state = FL_JEDEC_QUERY;
+ 	status = cfi_read_query(map, adr+(2*ofs_factor));
+ 	xip_enable(map, chip, 0);
++	return status;
++}
++
++#ifdef DEBUG_LOCK_BITS
++static int __xipram do_printlockstatus_oneblock(struct map_info *map,
++						struct flchip *chip,
++						unsigned long adr,
++						int len, void *thunk)
++{
+ 	printk(KERN_DEBUG "block status register for 0x%08lx is %x\n",
+-	       adr, status);
++	       adr, do_getlockstatus_oneblock(map, chip, adr, len, thunk));
+ 	return 0;
+ }
+ #endif
+@@ -2219,14 +2241,45 @@ static int cfi_intelext_get_user_prot_in
+ 
+ #endif
+ 
++static void cfi_intelext_save_locks(struct mtd_info *mtd)
++{
++	struct mtd_erase_region_info *region;
++	int block, status, i;
++	unsigned long adr;
++	size_t len;
++
++	for (i = 0; i < mtd->numeraseregions; i++) {
++		region = &mtd->eraseregions[i];
++		if (!region->lockmap)
++			continue;
++
++		for (block = 0; block < region->numblocks; block++){
++			len = region->erasesize;
++			adr = region->offset + block * len;
++
++			status = cfi_varsize_frob(mtd,
++					do_getlockstatus_oneblock, adr, len, 0);
++			if (status)
++				set_bit(block, region->lockmap);
++			else
++				clear_bit(block, region->lockmap);
++		}
++	}
++}
++
+ static int cfi_intelext_suspend(struct mtd_info *mtd)
+ {
+ 	struct map_info *map = mtd->priv;
+ 	struct cfi_private *cfi = map->fldrv_priv;
++	struct cfi_pri_intelext *extp = cfi->cmdset_priv;
+ 	int i;
+ 	struct flchip *chip;
+ 	int ret = 0;
+ 
++	if ((mtd->flags & MTD_STUPID_LOCK)
++	    && extp && (extp->FeatureSupport & (1 << 5)))
++		cfi_intelext_save_locks(mtd);
++
+ 	for (i=0; !ret && i<cfi->numchips; i++) {
+ 		chip = &cfi->chips[i];
+ 
+@@ -2288,10 +2341,33 @@ static int cfi_intelext_suspend(struct m
+ 	return ret;
+ }
+ 
++static void cfi_intelext_restore_locks(struct mtd_info *mtd)
++{
++	struct mtd_erase_region_info *region;
++	int block, i;
++	unsigned long adr;
++	size_t len;
++
++	for (i = 0; i < mtd->numeraseregions; i++) {
++		region = &mtd->eraseregions[i];
++		if (!region->lockmap)
++			continue;
++
++		for (block = 0; block < region->numblocks; block++) {
++			len = region->erasesize;
++			adr = region->offset + block * len;
++
++			if (!test_bit(block, region->lockmap))
++				cfi_intelext_unlock(mtd, adr, len);
++		}
++	}
++}
++
+ static void cfi_intelext_resume(struct mtd_info *mtd)
+ {
+ 	struct map_info *map = mtd->priv;
+ 	struct cfi_private *cfi = map->fldrv_priv;
++	struct cfi_pri_intelext *extp = cfi->cmdset_priv;
+ 	int i;
+ 	struct flchip *chip;
+ 
+@@ -2310,6 +2386,10 @@ static void cfi_intelext_resume(struct m
+ 
+ 		spin_unlock(chip->mutex);
+ 	}
++
++	if ((mtd->flags & MTD_STUPID_LOCK)
++	    && extp && (extp->FeatureSupport & (1 << 5)))
++		cfi_intelext_restore_locks(mtd);
+ }
+ 
+ static int cfi_intelext_reset(struct mtd_info *mtd)
+@@ -2350,12 +2430,19 @@ static void cfi_intelext_destroy(struct 
+ {
+ 	struct map_info *map = mtd->priv;
+ 	struct cfi_private *cfi = map->fldrv_priv;
++	struct mtd_erase_region_info *region;
++	int i;
+ 	cfi_intelext_reset(mtd);
+ 	unregister_reboot_notifier(&mtd->reboot_notifier);
+ 	kfree(cfi->cmdset_priv);
+ 	kfree(cfi->cfiq);
+ 	kfree(cfi->chips[0].priv);
+ 	kfree(cfi);
++	for (i = 0; i < mtd->numeraseregions; i++) {
++		region = &mtd->eraseregions[i];
++		if (region->lockmap)
++			kfree(region->lockmap);
++	}
+ 	kfree(mtd->eraseregions);
+ }
+ 
+Index: linux-2.6.18/include/linux/mtd/mtd.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/mtd/mtd.h
++++ linux-2.6.18/include/linux/mtd/mtd.h
+@@ -53,6 +53,7 @@ struct mtd_erase_region_info {
+ 	u_int32_t offset;			/* At which this region starts, from the beginning of the MTD */
+ 	u_int32_t erasesize;		/* For this region */
+ 	u_int32_t numblocks;		/* Number of blocks of erasesize in this region */
++	unsigned long *lockmap;		/* If keeping bitmap of locks */
+ };
+ 
+ /*
+Index: linux-2.6.18/mvl_patches/pro50-1900.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1900.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1900);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

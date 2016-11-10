@@ -1,0 +1,713 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_spi_eeprom
+# Date: Fri Sep 19 14:02:10 2008
+# Source: MontaVista Software, Inc.
+# MR: 27913
+# Type: Integration
+# Disposition: merged from PRO 4.0
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+# Description:
+#     Add SPI EEPROM support
+# 
+
+PATCHNUM=1595
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 27913
+Type: Integration
+Disposition: merged from PRO 4.0
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+Description:
+    Add SPI EEPROM support
+
+Index: linux-2.6.18/drivers/spi/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/spi/Kconfig
++++ linux-2.6.18/drivers/spi/Kconfig
+@@ -199,7 +199,12 @@ config SPI_SPIDEV
+ #
+ # Add new SPI protocol masters in alphabetical order above this line
+ #
+-
++config DAVINCI_SPI_EEPROM
++        tristate "DaVinci SPI EEPROM"
++        depends on SPI_DAVINCI
++        default y
++        help
++          This enables the SPI EEPROM client for TI DaVinci
+ 
+ # (slave support would go here)
+ 
+Index: linux-2.6.18/drivers/mtd/devices/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/mtd/devices/Makefile
++++ linux-2.6.18/drivers/mtd/devices/Makefile
+@@ -17,3 +17,4 @@ obj-$(CONFIG_MTD_LART)		+= lart.o
+ obj-$(CONFIG_MTD_BLOCK2MTD)	+= block2mtd.o
+ obj-$(CONFIG_MTD_DATAFLASH)	+= mtd_dataflash.o
+ obj-$(CONFIG_MTD_M25P80)	+= m25p80.o
++obj-$(CONFIG_DAVINCI_SPI_EEPROM)+= at25xxA_eeprom.o
+Index: linux-2.6.18/drivers/mtd/devices/at25xxA_eeprom.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/mtd/devices/at25xxA_eeprom.c
+@@ -0,0 +1,290 @@
++/*
++ * Davinci SPI-EEPROM client driver
++ *
++ * Author: Steve Chen <schen@mvista.com>
++ *
++ * 2007 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/types.h>
++#include <linux/device.h>
++#include <linux/spi/spi.h>
++
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/partitions.h>
++
++#include <linux/uaccess.h>
++
++#include <linux/spi/at25xxA_eeprom.h>
++#include <linux/spi/davinci_spi_master.h>
++
++/*
++ *  Utilities functions
++ */
++static int spi_generic_config(struct davinci_spi_config_t *spi_cfg)
++{
++	if (spi_cfg == NULL) {
++		pr_info("spi_cfg = NULL\n");
++		return -1;
++	}
++
++	spi_cfg->clk_internal = 1;
++	spi_cfg->cs_hold = 1;
++	spi_cfg->intr_level = 0;
++	spi_cfg->pin_op_modes = SPI_OPMODE_SPISCS_4PIN;
++	spi_cfg->clk_high = 0;
++	spi_cfg->lsb_first = 0;
++	spi_cfg->parity_enable = 1;
++	spi_cfg->odd_parity = 0;
++	spi_cfg->phase_in = 1;
++	spi_cfg->op_mode = 1;	/*Polling -> 0, Interrupt -> 1 */
++	spi_cfg->loop_back = 0;	/* loopback is disabled */
++
++	return 0;
++
++}
++static int spi_generic_eeprom_read(struct mtd_info *mtd, loff_t from,
++				   size_t count, size_t *retlen, u_char *buf)
++{
++	u8 *tx_ptr, *rx_ptr;
++	int rx_cnt;
++	unsigned int addr;
++	unsigned long flags;
++	struct spi_transfer x[2];
++	struct spi_message msg;
++	struct davinci_eeprom_info *priv_dat = mtd->priv;
++
++	addr = (u16) from;
++	*retlen = 0;
++	if (addr > priv_dat->eeprom_size)
++		return -EINVAL;
++
++	if (count > priv_dat->eeprom_size)
++		return -EINVAL;
++
++	if ((addr + count) > priv_dat->eeprom_size)
++		return -EINVAL;
++
++	memset(x, 0, sizeof x);
++	down(&priv_dat->lock);
++	x[0].tx_buf = tx_ptr = priv_dat->tx_buffer;
++
++	tx_ptr[0] = DAVINCI_EEPROM_READ;
++
++	x[0].len = 3;
++
++	/* Handle data return from EEPROM */
++	x[1].rx_buf = rx_ptr = priv_dat->rx_buffer;
++
++	while (count > 0) {
++		if (likely(count > SPI_BUFFER_SIZE))
++			rx_cnt = SPI_BUFFER_SIZE;
++		else
++			rx_cnt = count;
++
++		spi_message_init(&msg);
++		/* setup read command */
++		tx_ptr[1] = (addr >> 8) & 0xFF;
++		tx_ptr[2] = (addr & 0xFF);
++
++		local_irq_save(flags);
++		spi_message_add_tail(&x[0], &msg);
++
++		/* read the eeprom */
++		x[1].len = rx_cnt;
++		spi_message_add_tail(&x[1], &msg);
++		local_irq_restore(flags);
++
++		spi_sync(priv_dat->spi, &msg);
++
++		/* spi_read(priv_dat->spi, rx_ptr, rx_cnt); */
++		memcpy(buf, rx_ptr, rx_cnt);
++
++		buf += rx_cnt;
++		count -= rx_cnt;
++		addr += rx_cnt;
++		*retlen += rx_cnt;
++	}
++	up(&priv_dat->lock);
++
++	return 0;
++}
++
++static int spi_generic_eeprom_write(struct mtd_info *mtd, loff_t to,
++				    size_t count, size_t *retlen,
++				    const u_char *buf)
++{
++	char *ptr;
++	int status;
++	int tx_cnt;
++	unsigned int addr;
++	struct spi_transfer xfer[2];
++	struct spi_message msg;
++	struct davinci_eeprom_info *priv_dat = mtd->priv;
++	unsigned long flags;
++
++	addr = (u16) (to);
++	*retlen = 0;
++	memset(xfer, 0, sizeof xfer);
++	if (addr > priv_dat->eeprom_size)
++		return -EINVAL;
++
++	if (count > priv_dat->eeprom_size)
++		return -EINVAL;
++
++	if ((addr + count) > priv_dat->eeprom_size)
++		return -EINVAL;
++
++	down(&priv_dat->lock);
++	while (count > 0) {
++		xfer[0].tx_buf = ptr = priv_dat->tx_buffer;
++
++		/* set write enable */
++		ptr[0] = DAVINCI_EEPROM_WREN;
++		spi_write(priv_dat->spi, ptr, 1);
++
++		spi_message_init(&msg);
++
++		/* set the write command */
++		ptr[0] = DAVINCI_EEPROM_WRITE;
++		ptr[1] = (addr >> 8) & 0xFF;
++		ptr[2] = (addr & 0xFF);
++		xfer[0].len = DAVINCI_SPI_TX_CMD_SIZE;
++		local_irq_save(flags);
++		spi_message_add_tail(&xfer[0], &msg);
++
++		/* figure out the max transfer within a page */
++		tx_cnt = priv_dat->page_size - (addr & priv_dat->page_mask);
++
++		if (count < tx_cnt)
++			tx_cnt = count;
++
++		ptr = &priv_dat->tx_buffer[DAVINCI_SPI_TX_CMD_SIZE];
++		xfer[1].tx_buf = ptr;
++		xfer[1].len = tx_cnt;
++		memcpy(ptr, buf, tx_cnt);
++		spi_message_add_tail(&xfer[1], &msg);
++		local_irq_restore(flags);
++		status = spi_sync(priv_dat->spi, &msg);
++
++		count -= tx_cnt;
++		buf += tx_cnt;
++		addr += tx_cnt;
++		*retlen += tx_cnt;
++		/* Some SPI-EEPROM (CSI for example) starts an internal
++		   transfer (from buffer to EEPROM) when WREN is disalbed.
++		   All requrests are ignored until the transfer is completed.
++		   This delay ensure no data is lost */
++		if (priv_dat->commit_delay)
++			mdelay(priv_dat->commit_delay);
++	}
++	up(&priv_dat->lock);
++
++	return (0);
++}
++
++static int spi_eeprom_generic_erase(struct mtd_info *mtd,
++				    struct erase_info *instr)
++{
++	instr->state = MTD_ERASE_DONE;
++	mtd_erase_callback(instr);
++	return 0;
++}
++
++static struct mtd_info davinci_at25;
++
++static int __devinit eeprom_probe(struct spi_device *spi)
++{
++	int ret;
++	static struct mtd_info *mtd;
++	struct davinci_eeprom_info *info;
++
++	mtd = &davinci_at25;
++	memset(mtd, 0, sizeof(struct mtd_info));
++
++	/* are there any id we need to read? */
++	info = spi->dev.platform_data;
++	info->spi = spi;
++	spi_generic_config(spi->controller_data);
++	info->spi_data = spi_master_get_devdata(spi->master);
++	init_MUTEX(&info->lock);
++
++	mtd->priv = info;
++	mtd->size = info->eeprom_size;
++	mtd->flags = MTD_CAP_RAM;
++	mtd->read = spi_generic_eeprom_read;
++	mtd->write = spi_generic_eeprom_write;
++	mtd->erase = spi_eeprom_generic_erase;
++	mtd->type = MTD_RAM;
++	mtd->name = "spi_eeprom";
++	mtd->erasesize = 0x10;
++	mtd->writesize = 1;
++
++#ifdef CONFIG_MTD_PARTITIONS
++	if (info->nr_parts)
++		ret = add_mtd_partitions(mtd, info->parts, info->nr_parts);
++	else
++		ret = add_mtd_device(mtd);
++#else
++	ret = add_mtd_device(mtd);
++#endif
++
++	if (ret < 0)
++		pr_info("at25xxA_spi_eeprom device register failed\n");
++
++	return ret;
++}
++
++static int __devexit eeprom_remove(struct spi_device *spi)
++{
++	int ret;
++	struct mtd_info *mtd;
++	struct davinci_eeprom_info *info;
++
++	mtd = &davinci_at25;
++	info = spi->dev.platform_data;
++
++#ifdef CONFIG_MTD_PARTITIONS
++	if (info->nr_parts)
++		ret = del_mtd_partitions(mtd);
++	else
++		ret = del_mtd_device(mtd);
++#else
++	ret = del_mtd_device(mtd);
++#endif
++
++	return ret;
++}
++
++static struct spi_driver spi_eeprom_driver = {
++	.driver = {
++		   .name = DAVINCI_SPI_EEPROM_NAME,
++		   .bus = &spi_bus_type,
++		   .owner = THIS_MODULE,
++		   },
++	.probe = eeprom_probe,
++	.remove = eeprom_remove,
++};
++
++static int __init spi_eeprom_init(void)
++{
++	return spi_register_driver(&spi_eeprom_driver);
++}
++
++module_init(spi_eeprom_init);
++
++static void __exit spi_eeprom_exit(void)
++{
++	spi_unregister_driver(&spi_eeprom_driver);
++}
++
++module_exit(spi_eeprom_exit);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Steve Chen");
++MODULE_DESCRIPTION("SPI EEPROM driver");
+Index: linux-2.6.18/include/linux/spi/at25xxA_eeprom.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/linux/spi/at25xxA_eeprom.h
+@@ -0,0 +1,50 @@
++/*
++ * DaVinci SPI-EEPROM client driver header file
++ *
++ * Author: Steve Chen <schen@mvista.com>
++ *
++ * 2007 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++
++#ifndef DAVINCI_SPI_EEPROM_H
++#define DAVINCI_SPI_EEPROM_H
++
++#include <linux/cache.h>
++/*
++ *  EEPROM op-codes
++ */
++#define DAVINCI_EEPROM_READ	0x03	/* read */
++#define DAVINCI_EEPROM_WRITE	0x02	/* write */
++#define DAVINCI_EEPROM_WREN	0x06	/* write enable */
++#define DAVINCI_EEPROM_WRDIS	0x04	/* write disable */
++#define DAVINCI_EEPROM_RDSTAT	0x05	/* read status register */
++#define DAVINCI_EEPROM_WRSTAT	0x01	/* write status register */
++
++#define SPI_BUFFER_SIZE SMP_CACHE_BYTES
++#define DAVINCI_SPI_TX_CMD_SIZE 3
++
++#define DAVINCI_SPI_EEPROM_NAME "davinci_spi_eeprom"
++
++struct mtd_partition;
++
++struct davinci_eeprom_info {
++	unsigned int eeprom_size;
++	unsigned int page_size;
++	unsigned int page_mask;
++	unsigned long chip_sel;
++	unsigned int commit_delay;
++	struct spi_device *spi;
++	struct davinci_spi *spi_data;
++
++	struct mtd_partition *parts;
++	unsigned int nr_parts;
++
++	struct semaphore lock;
++	char tx_buffer[SPI_BUFFER_SIZE + DAVINCI_SPI_TX_CMD_SIZE];
++	char rx_buffer[SPI_BUFFER_SIZE];
++};
++
++#endif				/*DAVINCI_SPI_EEPROM_H */
+Index: linux-2.6.18/arch/arm/mach-davinci/davinci_spi_platform.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/davinci_spi_platform.c
++++ linux-2.6.18/arch/arm/mach-davinci/davinci_spi_platform.c
+@@ -45,6 +45,7 @@
+ #include <linux/mtd/mtd.h>
+ #include <linux/mtd/partitions.h>
+ #include <linux/platform_device.h>
++#include <linux/spi/at25xxA_eeprom.h>
+ 
+ #include <asm/arch/hardware.h>
+ #include <linux/spi/davinci_spi_master.h>
+@@ -53,7 +54,7 @@
+ 
+ static struct davinci_spi_platform_data dm355_spi_platform_data = {
+ 	.initial_spmode = 0,
+-	.bus_num = -1,
++	.bus_num = 0,
+ 	.max_chipselect = 2,
+ 	.activate_cs = NULL,
+ 	.deactivate_cs = NULL,
+@@ -62,7 +63,7 @@ static struct davinci_spi_platform_data 
+ 
+ static struct davinci_spi_platform_data dm646x_spi_platform_data = {
+ 	.initial_spmode = 0,
+-	.bus_num = -1,
++	.bus_num = 0,
+ 	.max_chipselect = 2,
+ 	.activate_cs = NULL,
+ 	.deactivate_cs = NULL,
+@@ -102,12 +103,76 @@ static struct platform_device davinci_sp
+ 	.resource = dm646x_spi_resources,
+ };
+ 
++#if defined(CONFIG_DAVINCI_SPI_EEPROM_MODULE) || \
++    defined(CONFIG_DAVINCI_SPI_EEPROM)
++static struct mtd_partition spi_partitions[] = {
++	/* UBL in first sector */
++	{
++	 .name = "UBL",
++	 .offset = 0,
++	 .size = SZ_16K,
++	 .mask_flags = MTD_WRITEABLE,
++	 },
++	/* User data in the next sector */
++	{
++	 .name = "data",
++	 .offset = MTDPART_OFS_APPEND,
++	 .size = MTDPART_SIZ_FULL,
++	 .mask_flags = 0,
++	 }
++};
++
++struct davinci_eeprom_info davinci_8k_spi_eeprom_info = {
++	.eeprom_size = 8192,
++	.page_size = 32,
++	.page_mask = 0x001F,
++	.chip_sel = SCS0_SELECT,
++	.parts = NULL,
++	.nr_parts = 0,
++	.commit_delay = 3,
++};
++
++struct davinci_eeprom_info davinci_32k_spi_eeprom_info = {
++	.eeprom_size = 32768,
++	.page_size = 64,
++	.page_mask = 0x003F,
++	.chip_sel = SCS0_SELECT,
++	.parts = spi_partitions,
++	.nr_parts = ARRAY_SIZE(spi_partitions),
++	.commit_delay = 5,
++};
++#endif
++
+ /*Put slave specific information in this array.*/
+ /*For more information refer the table at the end of file tnetd84xx_spi_cs.c*/
+ static struct spi_board_info dm6467_spi_board_info[] = {
++#if defined(CONFIG_DAVINCI_SPI_EEPROM_MODULE) || \
++    defined(CONFIG_DAVINCI_SPI_EEPROM)
++       {
++	.modalias = DAVINCI_SPI_EEPROM_NAME,
++	.platform_data = &davinci_32k_spi_eeprom_info,
++	.mode = SPI_MODE_0,
++	.irq = 0,
++	.max_speed_hz = 2 * 1000 * 1000 /* max sample rate at 3V */ ,
++	.bus_num = 0,
++	.chip_select = 0,
++	},
++#endif
+ };
+ 
+ static struct spi_board_info dm355_spi_board_info[] = {
++#if defined(CONFIG_DAVINCI_SPI_EEPROM_MODULE) || \
++    defined(CONFIG_DAVINCI_SPI_EEPROM)
++       {
++	.modalias = DAVINCI_SPI_EEPROM_NAME,
++	.platform_data = &davinci_8k_spi_eeprom_info,
++	.mode = SPI_MODE_0,
++	.irq = 0,
++	.max_speed_hz = 2 * 1000 * 1000 /* max sample rate at 3V */ ,
++	.bus_num = 0,
++	.chip_select = 0,
++	},
++#endif
+ };
+ 
+ /*
+Index: linux-2.6.18/mvl_patches/pro50-1595.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1595.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1595);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,672 @@
+#! /usr/bin/env bash
+# Patch: -pro_powerpc_mpc7448hpc2_Add_RTC
+# Date: Wed Dec  3 14:04:56 2008
+# Source: MontaVista Software, Inc.
+# MR: 30078
+# Type: Enhancement
+# Disposition: needs submitting to Kernel.org
+# Signed-off-by: Randy Vinson <rvinson@mvista.com>
+# Description:
+# Add support for the M48T35 RTC used by the Freescale MPC7448HPC2 (Taiga).
+# 
+
+PATCHNUM=1979
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 30078
+Type: Enhancement
+Disposition: needs submitting to Kernel.org
+Signed-off-by: Randy Vinson <rvinson@mvista.com>
+Description:
+Add support for the M48T35 RTC used by the Freescale MPC7448HPC2 (Taiga).
+
+Index: linux-2.6.18/drivers/rtc/rtc-m48t35.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/rtc/rtc-m48t35.c
+@@ -0,0 +1,302 @@
++/*
++ * ST M48T35 RTC driver
++ *
++ * Copyright (c) 2008 MontaVista Software, Inc.
++ * Copyright (c) 2007 Wind River Systems, Inc.
++ *
++ * Author: Randy Vinson <rvinson@mvista.com>
++ *
++ * Derived from m48t59.c by Mark Zhan <rongkai.zhan@windriver.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/device.h>
++#include <linux/platform_device.h>
++#include <linux/rtc.h>
++#include <linux/m48t35.h>
++#include <linux/bcd.h>
++
++#define M48T35_READ(reg)	pdata->read_byte(dev, reg)
++#define M48T35_WRITE(val, reg)	pdata->write_byte(dev, reg, val)
++
++#define M48T35_SET_BITS(mask, reg)	\
++	M48T35_WRITE((M48T35_READ(reg) | (mask)), (reg))
++#define M48T35_CLEAR_BITS(mask, reg)	\
++	M48T35_WRITE((M48T35_READ(reg) & ~(mask)), (reg))
++
++struct m48t35_private {
++	void __iomem *ioaddr;
++	unsigned int size; /* iomem size */
++	struct rtc_device *rtc;
++	spinlock_t lock; /* serialize the NVRAM and RTC access */
++};
++
++/*
++ * This is the generic access method when the chip is memory-mapped
++ */
++static void
++m48t35_mem_writeb(struct device *dev, u32 ofs, u8 val)
++{
++	struct platform_device *pdev = to_platform_device(dev);
++	struct m48t35_private *m48t35 = platform_get_drvdata(pdev);
++
++	writeb(val, m48t35->ioaddr+ofs);
++}
++
++static u8
++m48t35_mem_readb(struct device *dev, u32 ofs)
++{
++	struct platform_device *pdev = to_platform_device(dev);
++	struct m48t35_private *m48t35 = platform_get_drvdata(pdev);
++
++	return readb(m48t35->ioaddr+ofs);
++}
++
++/*
++ * NOTE: M48T35 only uses BCD mode
++ */
++static int m48t35_rtc_read_time(struct device *dev, struct rtc_time *tm)
++{
++	struct platform_device *pdev = to_platform_device(dev);
++	struct m48t35_plat_data *pdata = pdev->dev.platform_data;
++	struct m48t35_private *m48t35 = platform_get_drvdata(pdev);
++	u8 val;
++
++	spin_lock(&m48t35->lock);
++	/* Issue the READ command */
++	M48T35_SET_BITS(M48T35_CNTL_READ, M48T35_CNTL);
++
++	tm->tm_year	= BCD2BIN(M48T35_READ(M48T35_YEAR));
++	/* tm_mon is 0-11 */
++	tm->tm_mon	= BCD2BIN(M48T35_READ(M48T35_MONTH)) - 1;
++	tm->tm_mday	= BCD2BIN(M48T35_READ(M48T35_MDAY));
++
++	val = M48T35_READ(M48T35_WDAY);
++	if ((val & M48T35_WDAY_CEB) && (val & M48T35_WDAY_CB)) {
++		dev_dbg(dev, "Century bit is enabled\n");
++		tm->tm_year += 100;	/* one century */
++	}
++
++	tm->tm_wday	= BCD2BIN(val & 0x07);
++	tm->tm_hour	= BCD2BIN(M48T35_READ(M48T35_HOUR) & 0x3F);
++	tm->tm_min	= BCD2BIN(M48T35_READ(M48T35_MIN) & 0x7F);
++	tm->tm_sec	= BCD2BIN(M48T35_READ(M48T35_SEC) & 0x7F);
++
++	/* Clear the READ bit */
++	M48T35_CLEAR_BITS(M48T35_CNTL_READ, M48T35_CNTL);
++	spin_unlock(&m48t35->lock);
++
++	dev_dbg(dev, "RTC read time %04d-%02d-%02d %02d/%02d/%02d\n",
++		tm->tm_year + 1900, tm->tm_mon, tm->tm_mday,
++		tm->tm_hour, tm->tm_min, tm->tm_sec);
++	return 0;
++}
++
++static int m48t35_rtc_set_time(struct device *dev, struct rtc_time *tm)
++{
++	struct platform_device *pdev = to_platform_device(dev);
++	struct m48t35_plat_data *pdata = pdev->dev.platform_data;
++	struct m48t35_private *m48t35 = platform_get_drvdata(pdev);
++	u8 val = 0;
++
++	dev_dbg(dev, "RTC set time %04d-%02d-%02d %02d/%02d/%02d\n",
++		tm->tm_year + 1900, tm->tm_mon, tm->tm_mday,
++		tm->tm_hour, tm->tm_min, tm->tm_sec);
++
++	spin_lock(&m48t35->lock);
++	/* Issue the WRITE command */
++	M48T35_SET_BITS(M48T35_CNTL_WRITE, M48T35_CNTL);
++
++	M48T35_WRITE((BIN2BCD(tm->tm_sec) & 0x7F), M48T35_SEC);
++	M48T35_WRITE((BIN2BCD(tm->tm_min) & 0x7F), M48T35_MIN);
++	M48T35_WRITE((BIN2BCD(tm->tm_hour) & 0x3F), M48T35_HOUR);
++	M48T35_WRITE((BIN2BCD(tm->tm_mday) & 0x3F), M48T35_MDAY);
++	/* tm_mon is 0-11 */
++	M48T35_WRITE((BIN2BCD(tm->tm_mon + 1) & 0x1F), M48T35_MONTH);
++	M48T35_WRITE(BIN2BCD(tm->tm_year % 100), M48T35_YEAR);
++
++	if (tm->tm_year/100)
++		val = (M48T35_WDAY_CEB | M48T35_WDAY_CB);
++	val |= (BIN2BCD(tm->tm_wday) & 0x07);
++	M48T35_WRITE(val, M48T35_WDAY);
++
++	/* Clear the WRITE bit */
++	M48T35_CLEAR_BITS(M48T35_CNTL_WRITE, M48T35_CNTL);
++	spin_unlock(&m48t35->lock);
++	return 0;
++}
++
++static struct rtc_class_ops m48t35_rtc_ops = {
++	.read_time	= m48t35_rtc_read_time,
++	.set_time	= m48t35_rtc_set_time,
++};
++
++static ssize_t m48t35_nvram_read(struct kobject *kobj,
++				char *buf, loff_t pos, size_t size)
++{
++	struct device *dev = container_of(kobj, struct device, kobj);
++	struct platform_device *pdev = to_platform_device(dev);
++	struct m48t35_plat_data *pdata = pdev->dev.platform_data;
++	struct m48t35_private *m48t35 = platform_get_drvdata(pdev);
++	ssize_t cnt = 0;
++
++	for (; size > 0 && pos < M48T35_NVRAM_SIZE; cnt++, size--) {
++		spin_lock(&m48t35->lock);
++		*buf++ = M48T35_READ(cnt);
++		spin_unlock(&m48t35->lock);
++	}
++
++	return cnt;
++}
++
++static ssize_t m48t35_nvram_write(struct kobject *kobj,
++				char *buf, loff_t pos, size_t size)
++{
++	struct device *dev = container_of(kobj, struct device, kobj);
++	struct platform_device *pdev = to_platform_device(dev);
++	struct m48t35_plat_data *pdata = pdev->dev.platform_data;
++	struct m48t35_private *m48t35 = platform_get_drvdata(pdev);
++	ssize_t cnt = 0;
++
++	for (; size > 0 && pos < M48T35_NVRAM_SIZE; cnt++, size--) {
++		spin_lock(&m48t35->lock);
++		M48T35_WRITE(*buf++, cnt);
++		spin_unlock(&m48t35->lock);
++	}
++
++	return cnt;
++}
++
++static struct bin_attribute m48t35_nvram_attr = {
++	.attr = {
++		.name = "nvram",
++		.mode = S_IRUGO | S_IWUSR,
++		.owner = THIS_MODULE,
++	},
++	.read = m48t35_nvram_read,
++	.write = m48t35_nvram_write,
++	.size = M48T35_NVRAM_SIZE,
++};
++
++static int __devinit m48t35_rtc_probe(struct platform_device *pdev)
++{
++	struct m48t35_plat_data *pdata = pdev->dev.platform_data;
++	struct m48t35_private *m48t35 = NULL;
++	struct resource *res;
++	int ret = -ENOMEM;
++
++	/* This chip could be memory-mapped or I/O-mapped */
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res) {
++		res = platform_get_resource(pdev, IORESOURCE_IO, 0);
++		if (!res)
++			return -EINVAL;
++	}
++
++	if (res->flags & IORESOURCE_IO) {
++		/* If we are I/O-mapped, the platform should provide
++		 * the operations accessing chip registers.
++		 */
++		if (!pdata || !pdata->write_byte || !pdata->read_byte)
++			return -EINVAL;
++	} else if (res->flags & IORESOURCE_MEM) {
++		/* we are memory-mapped */
++		if (!pdata) {
++			pdata = kzalloc(sizeof(*pdata), GFP_KERNEL);
++			if (!pdata)
++				return -ENOMEM;
++			/* Ensure we only kmalloc platform data once */
++			pdev->dev.platform_data = pdata;
++		}
++
++		/* Try to use the generic memory read/write ops */
++		if (!pdata->write_byte)
++			pdata->write_byte = m48t35_mem_writeb;
++		if (!pdata->read_byte)
++			pdata->read_byte = m48t35_mem_readb;
++	}
++
++	m48t35 = kzalloc(sizeof(*m48t35), GFP_KERNEL);
++	if (!m48t35)
++		return -ENOMEM;
++
++	m48t35->size = res->end - res->start + 1;
++	m48t35->ioaddr = ioremap(res->start, m48t35->size);
++	if (!m48t35->ioaddr)
++		goto out;
++
++	m48t35->rtc = rtc_device_register("m48t35", &pdev->dev,
++				&m48t35_rtc_ops, THIS_MODULE);
++	if (IS_ERR(m48t35->rtc)) {
++		ret = PTR_ERR(m48t35->rtc);
++		goto out;
++	}
++
++	ret = sysfs_create_bin_file(&pdev->dev.kobj, &m48t35_nvram_attr);
++	if (ret)
++		goto out;
++
++	spin_lock_init(&m48t35->lock);
++	platform_set_drvdata(pdev, m48t35);
++
++	return 0;
++
++out:
++	if (!IS_ERR(m48t35->rtc))
++		rtc_device_unregister(m48t35->rtc);
++	if (m48t35->ioaddr)
++		iounmap(m48t35->ioaddr);
++	if (m48t35)
++		kfree(m48t35);
++	return ret;
++}
++
++static int __devexit m48t35_rtc_remove(struct platform_device *pdev)
++{
++	struct m48t35_private *m48t35 = platform_get_drvdata(pdev);
++
++	sysfs_remove_bin_file(&pdev->dev.kobj, &m48t35_nvram_attr);
++	if (!IS_ERR(m48t35->rtc))
++		rtc_device_unregister(m48t35->rtc);
++	if (m48t35->ioaddr)
++		iounmap(m48t35->ioaddr);
++	platform_set_drvdata(pdev, NULL);
++	kfree(m48t35);
++	return 0;
++}
++
++/* work with hotplug and coldplug */
++MODULE_ALIAS("platform:rtc-m48t35");
++
++static struct platform_driver m48t35_rtc_driver = {
++	.driver		= {
++		.name	= "rtc-m48t35",
++		.owner	= THIS_MODULE,
++	},
++	.probe		= m48t35_rtc_probe,
++	.remove		= __devexit_p(m48t35_rtc_remove),
++};
++
++static int __init m48t35_rtc_init(void)
++{
++	return platform_driver_register(&m48t35_rtc_driver);
++}
++
++static void __exit m48t35_rtc_exit(void)
++{
++	platform_driver_unregister(&m48t35_rtc_driver);
++}
++
++module_init(m48t35_rtc_init);
++module_exit(m48t35_rtc_exit);
++
++MODULE_AUTHOR("Randy Vinson <rvinson@mvista.com>");
++MODULE_DESCRIPTION("M48T35 RTC driver");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/include/linux/m48t35.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/linux/m48t35.h
+@@ -0,0 +1,47 @@
++/*
++ * include/linux/m48t35.h
++ *
++ * Definitions for the platform data of m48t35 RTC chip driver.
++ *
++ * Copyright (c) 2008 MontaVista Software, Inc.
++ * Copyright (c) 2007 Wind River Systems, Inc.
++ *
++ * Author: Randy Vinson <rvinson@mvista.com>
++ *
++ * Derived from m48t59.c by Mark Zhan <rongkai.zhan@windriver.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef _LINUX_RTC_M48T35_H_
++#define _LINUX_RTC_M48T35_H_
++
++/*
++ * M48T35 Register Offset
++ */
++#define M48T35_YEAR		0x7fff
++#define M48T35_MONTH		0x7ffe
++#define M48T35_MDAY		0x7ffd	/* Day of Month */
++#define M48T35_WDAY		0x7ffc	/* Day of Week */
++#define M48T35_WDAY_CB			0x20	/* Century Bit */
++#define M48T35_WDAY_CEB			0x10	/* Century Enable Bit */
++#define M48T35_HOUR		0x7ffb
++#define M48T35_MIN		0x7ffa
++#define M48T35_SEC		0x7ff9
++#define M48T35_CNTL		0x7ff8
++#define M48T35_CNTL_READ		0x40
++#define M48T35_CNTL_WRITE		0x80
++
++#define M48T35_NVRAM_SIZE	0x7ff0
++
++struct m48t35_plat_data {
++	/* The method to access M48T35 registers,
++	 * NOTE: The 'ofs' should be 0x00~0x1fff
++	 */
++	void (*write_byte)(struct device *dev, u32 ofs, u8 val);
++	unsigned char (*read_byte)(struct device *dev, u32 ofs);
++};
++
++#endif /* _LINUX_RTC_M48T35_H_ */
+Index: linux-2.6.18/arch/powerpc/boot/dts/mpc7448hpc2.dts
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/boot/dts/mpc7448hpc2.dts
++++ linux-2.6.18/arch/powerpc/boot/dts/mpc7448hpc2.dts
+@@ -106,6 +106,10 @@
+ 				reg = <00e00000 00200000>;
+ 			};
+ 		};
++		rtc@2,0 {
++			compatible = "m48t35";
++			reg = <2 0 8000>;
++		};
+ 	};
+ 
+   	tsi108@c0000000 {
+Index: linux-2.6.18/drivers/rtc/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/rtc/Kconfig
++++ linux-2.6.18/drivers/rtc/Kconfig
+@@ -297,6 +297,16 @@ config RTC_DRV_M48T86
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called rtc-m48t86.
+ 
++config RTC_DRV_M48T35
++	tristate "ST M48T35"
++	depends on RTC_CLASS
++	help
++	  If you say Y here you will get support for the
++	  ST M48T35 RTC chip.
++
++	  This driver can also be built as a module, if so, the module
++	  will be called "rtc-m48t35".
++
+ config RTC_DRV_EP93XX
+ 	tristate "Cirrus Logic EP93XX"
+ 	depends on RTC_CLASS && ARCH_EP93XX
+Index: linux-2.6.18/drivers/rtc/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/rtc/Makefile
++++ linux-2.6.18/drivers/rtc/Makefile
+@@ -29,6 +29,7 @@ obj-$(CONFIG_RTC_DRV_S3C)	+= rtc-s3c.o
+ obj-$(CONFIG_RTC_DRV_RS5C348)	+= rtc-rs5c348.o
+ obj-$(CONFIG_RTC_DRV_M41T80)	+= rtc-m41t80.o
+ obj-$(CONFIG_RTC_DRV_M48T86)	+= rtc-m48t86.o
++obj-$(CONFIG_RTC_DRV_M48T35)	+= rtc-m48t35.o
+ obj-$(CONFIG_RTC_DRV_DS1553)	+= rtc-ds1553.o
+ obj-$(CONFIG_RTC_DRV_EP93XX)	+= rtc-ep93xx.o
+ obj-$(CONFIG_RTC_DRV_SA1100)	+= rtc-sa1100.o
+Index: linux-2.6.18/arch/powerpc/platforms/embedded6xx/mpc7448_hpc2.c
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/platforms/embedded6xx/mpc7448_hpc2.c
++++ linux-2.6.18/arch/powerpc/platforms/embedded6xx/mpc7448_hpc2.c
+@@ -226,6 +226,7 @@ static struct of_device_id mpc7448_hpc2_
+ static int __init mpc7448_hcp2_publish_devices(void)
+ {
+ 	of_platform_bus_probe(NULL, mpc7448_hpc2_ids, NULL);
++	of_instantiate_rtc();
+ 
+ 	return 0;
+ }
+Index: linux-2.6.18/arch/powerpc/platforms/embedded6xx/Kconfig
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/platforms/embedded6xx/Kconfig
++++ linux-2.6.18/arch/powerpc/platforms/embedded6xx/Kconfig
+@@ -93,6 +93,7 @@ config MPC7448HPC2
+ 	select TSI108_BRIDGE
+ 	select DEFAULT_UIMAGE
+ 	select PPC_UDBG_16550
++	select OF_RTC
+ 	help
+ 	  Select MPC7448HPC2 if configuring for Freescale MPC7448HPC2 (Taiga)
+ 	  platform
+Index: linux-2.6.18/arch/powerpc/sysdev/of_rtc.c
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/sysdev/of_rtc.c
++++ linux-2.6.18/arch/powerpc/sysdev/of_rtc.c
+@@ -18,6 +18,7 @@ static __initdata struct {
+ 	char *plat_name;
+ } of_rtc_table[] = {
+ 	{ "ds1743-nvram", "rtc-ds1742" },
++	{ "m48t35", "rtc-m48t35"},
+ };
+ 
+ void __init of_instantiate_rtc(void)
+Index: linux-2.6.18/mvl_patches/pro50-1979.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1979.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1979);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,497 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_cir_6446
+# Date: Fri Sep 19 14:00:35 2008
+# Source: MontaVista Software, Inc.
+# MR: 28263 
+# Type: Enhancement 
+# Disposition: Local 
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com> 
+# Description: 
+#     Add Consumer InfraRed support for TI DaVinci DM6446
+# 
+
+PATCHNUM=1574
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28263 
+Type: Enhancement 
+Disposition: Local 
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com> 
+Description: 
+    Add Consumer InfraRed support for TI DaVinci DM6446
+
+Index: linux-2.6.18/drivers/char/cir_6446.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/cir_6446.c
+@@ -0,0 +1,234 @@
++/*
++ * Copyright 2008 MontaVista Software Inc.
++ * Author: Aleksey Makarov <amakarov@ru.mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/fs.h>
++#include <linux/cdev.h>
++#include <linux/platform_device.h>
++#include <linux/delay.h>
++
++#include <linux/uaccess.h>
++
++#include <asm/arch/i2c-client.h>
++
++#define CIR_DM6446_DEV_COUNT	1
++
++static dev_t cir_dm6446_dev;
++static u32 cir_dm6446_major_number;
++static u32 cir_dm6446_minor_number;
++static struct cdev cir_dm6446_cdev;
++
++static struct class *cir_class;
++
++static void cir_dm6446_platform_release(struct device *device)
++{
++}
++
++static struct platform_device cir_dm6446_device = {
++	.name = "cir_dm6446",
++	.id = 0,
++	.dev = {
++		.release = cir_dm6446_platform_release,
++	}
++};
++
++static struct device_driver cir_dm6446_driver = {
++	.name = "cir_dm6446",
++	.bus = &platform_bus_type,
++};
++
++
++#define MESSAGE_LENGTH 255
++static u8 message[MESSAGE_LENGTH];
++static unsigned int next_value;
++
++static inline u8 get_values_number(void)
++{
++	if (message[0] < 2)
++		return 0;
++
++	return (message[0] - 2) / 2;
++}
++
++static int read_ir_values(void)
++{
++	int err;
++
++	message[0] = 2;
++	message[1] = 2;
++	err = davinci_i2c_write(2, message, 0x23);
++	if (err)
++		return err;
++
++	msleep(1);
++
++	err = davinci_i2c_read(MESSAGE_LENGTH, message, 0x23);
++	if (err)
++		return err;
++
++	msleep(1);
++
++	next_value = 0;
++
++	return 0;
++}
++
++static int get_next_value(u16 *value)
++{
++	unsigned int index;
++	int err;
++
++	if (get_values_number() <= next_value) {
++		err = read_ir_values();
++		if (err)
++			return err;
++	}
++
++	if (get_values_number() <= next_value)
++		return 1;
++
++	index = next_value * 2 + 2;
++	*value = message[index] | (message[index + 1] << 8);
++	next_value++;
++
++	return 0;
++}
++
++ssize_t cir_dm6446_read(struct file *file, char __user *buff,
++		size_t size, loff_t *loff)
++{
++	u16 value;
++	ssize_t retval = 0;
++	int err;
++
++	if (size < sizeof(u16)) {
++		printk(KERN_ERR "Invalid size requested for read\n");
++		return -EINVAL;
++	}
++
++	while (size >= sizeof(u16)) {
++
++		err = get_next_value(&value);
++		if (err < 0)
++			return err;
++		if (err == 1)
++			break;
++
++		if (copy_to_user(buff, &value, sizeof(value)) != 0)
++			return -EFAULT;
++
++		buff += sizeof(u16);
++		size -= sizeof(u16);
++		*loff += sizeof(u16);
++		retval += sizeof(u16);
++
++	}
++
++	return retval;
++}
++
++static struct file_operations cir_dm6446_fops = {
++	.owner   = THIS_MODULE,
++	.read    = cir_dm6446_read,
++};
++
++static int __init cir_dm6446_init(void)
++{
++	s8 retval = 0;
++
++	cir_dm6446_major_number = 0;
++	cir_dm6446_minor_number = 0;
++	cir_class = NULL;
++
++	retval = alloc_chrdev_region(&cir_dm6446_dev, cir_dm6446_minor_number,
++			CIR_DM6446_DEV_COUNT, "/dev/cir");
++	if (retval < 0) {
++		printk(KERN_ERR "Unable to register the CIR device\n");
++		retval = -ENODEV;
++		goto failure;
++	}
++
++	cir_dm6446_major_number = MAJOR(cir_dm6446_dev);
++
++	cdev_init(&cir_dm6446_cdev, &cir_dm6446_fops);
++	cir_dm6446_cdev.owner = THIS_MODULE;
++	cir_dm6446_cdev.ops = &cir_dm6446_fops;
++
++	retval = cdev_add(&cir_dm6446_cdev, cir_dm6446_dev,
++			CIR_DM6446_DEV_COUNT);
++	if (retval) {
++		unregister_chrdev_region(cir_dm6446_dev, CIR_DM6446_DEV_COUNT);
++		printk(KERN_ERR "Error %d adding CIR device\n", retval);
++		goto failure;
++	}
++
++	cir_class = class_create(THIS_MODULE, "cir");
++
++	if (!cir_class) {
++		unregister_chrdev_region(cir_dm6446_dev, CIR_DM6446_DEV_COUNT);
++		cdev_del(&cir_dm6446_cdev);
++		goto failure;
++	}
++
++	if (driver_register(&cir_dm6446_driver) != 0) {
++		unregister_chrdev_region(cir_dm6446_dev, CIR_DM6446_DEV_COUNT);
++		cdev_del(&cir_dm6446_cdev);
++		class_destroy(cir_class);
++		goto failure;
++	}
++	/* Register the drive as a platform device */
++	if (platform_device_register(&cir_dm6446_device) != 0) {
++		driver_unregister(&cir_dm6446_driver);
++		unregister_chrdev_region(cir_dm6446_dev, CIR_DM6446_DEV_COUNT);
++		cdev_del(&cir_dm6446_cdev);
++		class_destroy(cir_class);
++		goto failure;
++	}
++
++	cir_dm6446_dev = MKDEV(cir_dm6446_major_number, 0);
++
++	class_device_create(cir_class, NULL, cir_dm6446_dev, NULL, "cir");
++
++ failure:
++	return retval;
++}
++
++static void __exit cir_dm6446_exit(void)
++{
++	printk(KERN_INFO "Unregistering the CIR device");
++
++	driver_unregister(&cir_dm6446_driver);
++	platform_device_unregister(&cir_dm6446_device);
++	cir_dm6446_dev = MKDEV(cir_dm6446_major_number, 0);
++	class_device_destroy(cir_class, cir_dm6446_dev);
++	class_destroy(cir_class);
++	cdev_del(&cir_dm6446_cdev);
++	unregister_chrdev_region(cir_dm6446_dev, CIR_DM6446_DEV_COUNT);
++
++	return;
++}
++
++module_init(cir_dm6446_init);
++module_exit(cir_dm6446_exit);
++
++MODULE_AUTHOR("MontaVista");
++MODULE_DESCRIPTION("Consumer Infrared (CIR) Driver for TI DaVinci DM6446");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/char/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Kconfig
++++ linux-2.6.18/drivers/char/Kconfig
+@@ -1175,5 +1175,12 @@ config DM355_CIR
+ 	help
+ 	  DM355 Consumer IR Driver
+ 
++config DM6446_CIR
++	tristate "DM6446 Consumer IR Driver"
++	default n
++	depends on MACH_DAVINCI_EVM
++	help
++	  DM6446 Consumer IR Driver
++
+ endmenu
+ 
+Index: linux-2.6.18/drivers/char/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Makefile
++++ linux-2.6.18/drivers/char/Makefile
+@@ -111,6 +111,7 @@ obj-$(CONFIG_DAVINCI_PWM) += davinci_pwm
+ 
+ obj-$(CONFIG_DM646x_CIR)	+= cir.o
+ obj-$(CONFIG_DM355_CIR)		+= cir_355.o
++obj-$(CONFIG_DM6446_CIR)	+= cir_6446.o
+ 
+ # Files generated that shall be removed upon make clean
+ clean-files := consolemap_deftbl.c defkeymap.c qtronixmap.c
+Index: linux-2.6.18/mvl_patches/pro50-1574.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1574.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1574);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

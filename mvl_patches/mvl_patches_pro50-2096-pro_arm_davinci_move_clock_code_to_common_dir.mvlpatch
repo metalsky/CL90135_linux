@@ -1,0 +1,1294 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_move_clock_code_to_common_dir
+# Date: Thu Feb 19 15:00:11 2009
+# Source: MontaVista Software, Inc.
+# MR: 30941
+# Type: Enhancement
+# Disposition: needs submitting to DaVinci community
+# Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+#     DaVinci: move clock code to the common platform directory
+# 
+#     Move the common DaVinci clock code into arch/arm/plat-davinci/, move the
+#     PLL/PSC register macros to their respective headers. While at it, move
+#     DM646x PSC macros to include/asm-arm/arch-davinci/psc.h and fix up the
+#     whitespace in that file...
+# 
+#  arch/arm/mach-davinci/clock.h            |   33 ---
+#  arch/arm/mach-davinci/board-dm355-evm.c  |    2 
+#  arch/arm/mach-davinci/board-dm6467-evm.c |    2 
+#  arch/arm/mach-davinci/clock.c            |  325 -------------------------------
+#  arch/arm/plat-davinci/Makefile           |    2 
+#  arch/arm/plat-davinci/clock.c            |  303 ++++++++++++++++++++++++++++
+#  include/asm-arm/arch-davinci/clock.h     |   39 ++-
+#  include/asm-arm/arch-davinci/hardware.h  |   37 ---
+#  include/asm-arm/arch-davinci/psc.h       |  143 +++++++++----
+#  9 files changed, 440 insertions(+), 446 deletions(-)
+# 
+
+PATCHNUM=2096
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 30941
+Type: Enhancement
+Disposition: needs submitting to DaVinci community
+Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+    DaVinci: move clock code to the common platform directory
+
+    Move the common DaVinci clock code into arch/arm/plat-davinci/, move the
+    PLL/PSC register macros to their respective headers. While at it, move
+    DM646x PSC macros to include/asm-arm/arch-davinci/psc.h and fix up the
+    whitespace in that file...
+
+ arch/arm/mach-davinci/board-dm355-evm.c  |    2 
+ arch/arm/mach-davinci/board-dm6467-evm.c |    2 
+ arch/arm/mach-davinci/clock.c            |  325 -------------------------------
+ arch/arm/mach-davinci/clock.h            |   33 ---
+ arch/arm/plat-davinci/Makefile           |    2 
+ arch/arm/plat-davinci/clock.c            |  303 ++++++++++++++++++++++++++++
+ include/asm-arm/arch-davinci/clock.h     |   39 ++-
+ include/asm-arm/arch-davinci/hardware.h  |   37 ---
+ include/asm-arm/arch-davinci/psc.h       |  143 +++++++++----
+ mvl_patches/pro50-2096.c                 |   16 +
+ 10 files changed, 456 insertions(+), 446 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm355-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+@@ -43,7 +43,7 @@
+ #include <asm/arch/gpio.h>
+ #include <asm/arch/nand.h>
+ #include <linux/kgdb.h>
+-#include "clock.h"
++#include <asm/arch/clock.h>
+ #include <asm/arch/cpu.h>
+ #include <asm/arch/common.h>
+ #include <asm/arch/clock.h>
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm6467-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+@@ -45,7 +45,7 @@
+ #include <asm/arch/mux.h>
+ #include <asm/arch/nand.h>
+ #include <asm/arch/i2c-client.h>
+-#include "clock.h"
++#include <asm/arch/clock.h>
+ 
+ /**************************************************************************
+  * Definitions
+Index: linux-2.6.18/arch/arm/mach-davinci/clock.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/clock.c
++++ linux-2.6.18/arch/arm/mach-davinci/clock.c
+@@ -2,6 +2,7 @@
+  * TI DaVinci clock config file
+  *
+  * Copyright (C) 2006 Texas Instruments.
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -11,252 +12,16 @@
+ 
+ #include <linux/module.h>
+ #include <linux/kernel.h>
+-#include <linux/init.h>
+-#include <linux/errno.h>
+-#include <linux/err.h>
+-#include <linux/mutex.h>
+-#include <linux/platform_device.h>
+ 
+ #include <asm/hardware.h>
+-#include <asm/io.h>
+ 
+-#include <asm/arch/psc.h>
+-#include <asm/arch/cpu.h>
+-#include <asm/arch/mux.h>
+-#include "clock.h"
+-
+-/* PLL/Reset register offsets */
+-#define PLLM		0x110
+-
+-/* PSC register offsets */
+-#define EPCPR		0x070
+-#define PTCMD		0x120
+-#define PTSTAT		0x128
+-#define PDSTAT		0x200
+-#define PDCTL1		0x304
+-#define MDSTAT		0x800
+-#define MDCTL		0xA00
+-
+-static LIST_HEAD(clocks);
+-static DEFINE_MUTEX(clocks_mutex);
+-static DEFINE_SPINLOCK(clockfw_lock);
++#include <asm/arch/clock.h>
+ 
+ static unsigned int commonrate;
+ static unsigned int div_by_four;
+ static unsigned int div_by_six;
+-static unsigned int div_by_eight;
+ static unsigned int armrate;
+-static unsigned int fixedrate = 27000000;	/* 27 MHZ */
+-
+-void (*davinci_pinmux_setup)(unsigned int id);
+-
+-/* Enable or disable a PSC domain */
+-void davinci_psc_config(unsigned int domain, unsigned int id, char enable)
+-{
+-	u32 epcpr, ptcmd, ptstat, pdstat, pdctl1, mdstat, mdctl, mdstat_mask;
+-
+-	if (id < 0)
+-		return;
+-
+-	mdctl = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + MDCTL + 4 * id);
+-	if (enable)
+-		mdctl |= 0x00000003;	/* Enable Module */
+-	else
+-		mdctl &= 0xFFFFFFF2;	/* Disable Module */
+-	davinci_writel(mdctl, DAVINCI_PWR_SLEEP_CNTRL_BASE + MDCTL + 4 * id);
+-
+-	pdstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDSTAT);
+-	if ((pdstat & 0x00000001) == 0) {
+-		pdctl1 = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
+-		pdctl1 |= 0x1;
+-		davinci_writel(pdctl1, DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
+-
+-		ptcmd = 1 << domain;
+-		davinci_writel(ptcmd, DAVINCI_PWR_SLEEP_CNTRL_BASE + PTCMD);
+-
+-		do {
+-			epcpr = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
+-					      EPCPR);
+-		} while ((((epcpr >> domain) & 1) == 0));
+-
+-		pdctl1 = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
+-		pdctl1 |= 0x100;
+-		davinci_writel(pdctl1, DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
+-
+-		do {
+-			ptstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
+-					       PTSTAT);
+-		} while (!(((ptstat >> domain) & 1) == 0));
+-	} else {
+-		ptcmd = 1 << domain;
+-		davinci_writel(ptcmd, DAVINCI_PWR_SLEEP_CNTRL_BASE + PTCMD);
+-
+-		do {
+-			ptstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
+-					       PTSTAT);
+-		} while (!(((ptstat >> domain) & 1) == 0));
+-	}
+-
+-	if (enable)
+-		mdstat_mask = 0x3;
+-	else
+-		mdstat_mask = 0x2;
+-
+-	do {
+-		mdstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
+-				       MDSTAT + 4 * id);
+-	} while (!((mdstat & 0x0000001F) == mdstat_mask));
+-
+-	if (enable && davinci_pinmux_setup)
+-		davinci_pinmux_setup(id);
+-}
+-
+-/*
+- * Returns a clock. Note that we first try to use device id on the bus
+- * and clock name. If this fails, we try to use clock name only.
+- */
+-struct clk *clk_get(struct device *dev, const char *id)
+-{
+-	struct clk *p, *clk = ERR_PTR(-ENOENT);
+-	int idno;
+-
+-	if (dev == NULL || dev->bus != &platform_bus_type)
+-		idno = -1;
+-	else
+-		idno = to_platform_device(dev)->id;
+-
+-	mutex_lock(&clocks_mutex);
+-
+-	list_for_each_entry(p, &clocks, node) {
+-		if (p->id == idno &&
+-		    strcmp(id, p->name) == 0 && try_module_get(p->owner)) {
+-			clk = p;
+-			goto found;
+-		}
+-	}
+-
+-	list_for_each_entry(p, &clocks, node) {
+-		if (strcmp(id, p->name) == 0 && try_module_get(p->owner)) {
+-			clk = p;
+-			break;
+-		}
+-	}
+-
+-found:
+-	mutex_unlock(&clocks_mutex);
+-
+-	return clk;
+-}
+-EXPORT_SYMBOL(clk_get);
+-
+-void clk_put(struct clk *clk)
+-{
+-	if (clk && !IS_ERR(clk))
+-		module_put(clk->owner);
+-}
+-EXPORT_SYMBOL(clk_put);
+-
+-static int __clk_enable(struct clk *clk)
+-{
+-	if (clk->flags & ALWAYS_ENABLED)
+-		return 0;
+-
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, clk->lpsc, 1);
+-	return 0;
+-}
+-
+-static void __clk_disable(struct clk *clk)
+-{
+-	if (clk->usecount)
+-		return;
+-
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, clk->lpsc, 0);
+-}
+-
+-int clk_enable(struct clk *clk)
+-{
+-	unsigned long flags;
+-	int ret = 0;
+-
+-	if (clk == NULL || IS_ERR(clk))
+-		return -EINVAL;
+-
+-	if (clk->usecount++ == 0) {
+-		spin_lock_irqsave(&clockfw_lock, flags);
+-		ret = __clk_enable(clk);
+-		spin_unlock_irqrestore(&clockfw_lock, flags);
+-	}
+-
+-	return ret;
+-}
+-EXPORT_SYMBOL(clk_enable);
+-
+-void clk_disable(struct clk *clk)
+-{
+-	unsigned long flags;
+-
+-	if (clk == NULL || IS_ERR(clk))
+-		return;
+-
+-	if (clk->usecount > 0 && !(--clk->usecount)) {
+-		spin_lock_irqsave(&clockfw_lock, flags);
+-		__clk_disable(clk);
+-		spin_unlock_irqrestore(&clockfw_lock, flags);
+-	}
+-}
+-EXPORT_SYMBOL(clk_disable);
+-
+-unsigned long clk_get_rate(struct clk *clk)
+-{
+-	if (clk == NULL || IS_ERR(clk))
+-		return -EINVAL;
+-
+-	return *(clk->rate);
+-}
+-EXPORT_SYMBOL(clk_get_rate);
+-
+-long clk_round_rate(struct clk *clk, unsigned long rate)
+-{
+-	if (clk == NULL || IS_ERR(clk))
+-		return -EINVAL;
+-
+-	return *(clk->rate);
+-}
+-EXPORT_SYMBOL(clk_round_rate);
+-
+-int clk_set_rate(struct clk *clk, unsigned long rate)
+-{
+-	if (clk == NULL || IS_ERR(clk))
+-		return -EINVAL;
+-
+-	/* changing the clk rate is not supported */
+-	return -EINVAL;
+-}
+-EXPORT_SYMBOL(clk_set_rate);
+-
+-int clk_register(struct clk *clk)
+-{
+-	if (clk == NULL || IS_ERR(clk))
+-		return -EINVAL;
+-
+-	mutex_lock(&clocks_mutex);
+-	list_add(&clk->node, &clocks);
+-	mutex_unlock(&clocks_mutex);
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL(clk_register);
+-
+-void clk_unregister(struct clk *clk)
+-{
+-	if (clk == NULL || IS_ERR(clk))
+-		return;
+-
+-	mutex_lock(&clocks_mutex);
+-	list_del(&clk->node);
+-	mutex_unlock(&clocks_mutex);
+-}
+-EXPORT_SYMBOL(clk_unregister);
++static unsigned int fixedrate;
+ 
+ static struct clk davinci_dm644x_clks[] = {
+ 	{
+@@ -533,9 +298,8 @@ static struct clk davinci_dm355_clks[] =
+ 
+ int __init davinci_clk_init(void)
+ {
+-	struct clk *clkp;
+-	static struct clk *board_clks;
+-	int count = 0, num_clks;
++	struct clk *clk_list;
++	int num_clks;
+ 	u32 pll_mult;
+ 
+ 	pll_mult = davinci_readl(DAVINCI_PLL_CNTRL0_BASE + PLLM);
+@@ -561,16 +325,15 @@ int __init davinci_clk_init(void)
+ 		armrate = (pll_mult + 1) * (fixedrate / (16 * postdiv));
+ 		commonrate = armrate / 2;
+ 
+-		board_clks = davinci_dm355_clks;
++		clk_list = davinci_dm355_clks;
+ 		num_clks = ARRAY_SIZE(davinci_dm355_clks);
+ 	} else if (cpu_is_davinci_dm6467()) {
+ 		fixedrate = 24000000;
+ 		div_by_four = ((pll_mult + 1) * 27000000) / 4;
+ 		div_by_six = ((pll_mult + 1) * 27000000) / 6;
+-		div_by_eight = ((pll_mult + 1) * 27000000) / 8;
+ 		armrate = ((pll_mult + 1) * 27000000) / 2;
+ 
+-		board_clks = davinci_dm6467_clks;
++		clk_list = davinci_dm6467_clks;
+ 		num_clks = ARRAY_SIZE(davinci_dm6467_clks);
+ 	} else {
+ 
+@@ -578,79 +341,9 @@ int __init davinci_clk_init(void)
+ 		armrate = (pll_mult + 1) * (fixedrate / 2);
+ 		commonrate = armrate / 3;
+ 
+-		board_clks = davinci_dm644x_clks;
++		clk_list = davinci_dm644x_clks;
+ 		num_clks = ARRAY_SIZE(davinci_dm644x_clks);
+ 	}
+ 
+-	for (clkp = board_clks; count < num_clks; count++, clkp++) {
+-		clk_register(clkp);
+-
+-		/* Turn on clocks that have been enabled in the
+-		 * table above */
+-		if (clkp->usecount)
+-			clk_enable(clkp);
+-	}
+-
+-	return 0;
+-}
+-
+-#ifdef CONFIG_PROC_FS
+-#include <linux/proc_fs.h>
+-#include <linux/seq_file.h>
+-
+-static void *davinci_ck_start(struct seq_file *m, loff_t *pos)
+-{
+-	return *pos < 1 ? (void *)1 : NULL;
+-}
+-
+-static void *davinci_ck_next(struct seq_file *m, void *v, loff_t *pos)
+-{
+-	++*pos;
+-	return NULL;
+-}
+-
+-static void davinci_ck_stop(struct seq_file *m, void *v)
+-{
+-}
+-
+-static int davinci_ck_show(struct seq_file *m, void *v)
+-{
+-	struct clk *cp;
+-
+-	list_for_each_entry(cp, &clocks, node)
+-		seq_printf(m,"%s %d %d\n", cp->name, *(cp->rate), cp->usecount);
+-
+-	return 0;
+-}
+-
+-static struct seq_operations davinci_ck_op = {
+-	.start	= davinci_ck_start,
+-	.next	= davinci_ck_next,
+-	.stop	= davinci_ck_stop,
+-	.show	= davinci_ck_show
+-};
+-
+-static int davinci_ck_open(struct inode *inode, struct file *file)
+-{
+-	return seq_open(file, &davinci_ck_op);
+-}
+-
+-static struct file_operations proc_davinci_ck_operations = {
+-	.open		= davinci_ck_open,
+-	.read		= seq_read,
+-	.llseek		= seq_lseek,
+-	.release	= seq_release,
+-};
+-
+-static int __init davinci_ck_proc_init(void)
+-{
+-	struct proc_dir_entry *entry;
+-
+-	entry = create_proc_entry("davinci_clocks", 0, NULL);
+-	if (entry)
+-		entry->proc_fops = &proc_davinci_ck_operations;
+-	return 0;
+-
++	return davinci_enable_clks(clk_list, num_clks);
+ }
+-__initcall(davinci_ck_proc_init);
+-#endif	/* CONFIG_DEBUG_PROC_FS */
+Index: linux-2.6.18/arch/arm/mach-davinci/clock.h
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/clock.h
++++ /dev/null
+@@ -1,33 +0,0 @@
+-/*
+- * TI DaVinci clock definitions
+- *
+- * Copyright (C) 2006 Texas Instruments.
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License version 2 as
+- * published by the Free Software Foundation.
+- */
+-
+-#ifndef __ARCH_ARM_DAVINCI_CLOCK_H
+-#define __ARCH_ARM_DAVINCI_CLOCK_H
+-
+-struct clk {
+-	struct list_head	node;
+-	struct module		*owner;
+-	const char		*name;
+-	unsigned int		*rate;
+-	int			id;
+-	__s8			usecount;
+-	__u8			flags;
+-	__u8			lpsc;
+-};
+-
+-/* Clock flags */
+-#define RATE_CKCTL		1
+-#define RATE_FIXED		2
+-#define RATE_PROPAGATES		4
+-#define VIRTUAL_CLOCK		8
+-#define ALWAYS_ENABLED		16
+-#define ENABLE_REG_32BIT	32
+-
+-#endif
+Index: linux-2.6.18/arch/arm/plat-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/Makefile
++++ linux-2.6.18/arch/arm/plat-davinci/Makefile
+@@ -4,4 +4,4 @@
+ #
+ 
+ # Common objects
+-obj-y := dma.o
++obj-y := clock.o dma.o
+Index: linux-2.6.18/arch/arm/plat-davinci/clock.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/plat-davinci/clock.c
+@@ -0,0 +1,303 @@
++/*
++ * TI DaVinci clock configuration code
++ *
++ * Copyright (C) 2006 Texas Instruments.
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/err.h>
++#include <linux/platform_device.h>
++
++#include <asm/hardware.h>
++
++#include <asm/arch/clock.h>
++#include <asm/arch/mux.h>
++
++static LIST_HEAD(clocks);
++static DEFINE_MUTEX(clocks_mutex);
++static DEFINE_SPINLOCK(clockfw_lock);
++
++void (*davinci_pinmux_setup)(unsigned int id);
++
++/* Enable or disable a PSC domain */
++void davinci_psc_config(unsigned domain, unsigned id, int enable)
++{
++	u32 epcpr, ptcmd, ptstat, pdstat, pdctl1, mdstat, mdctl;
++	u32 state = enable ? 0x00000003 : 0x00000002;
++
++	mdctl = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + MDCTL(id));
++	mdctl &= ~0x0000001F;
++	mdctl |= state;
++	davinci_writel(mdctl, DAVINCI_PWR_SLEEP_CNTRL_BASE + MDCTL(id));
++
++	pdstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDSTAT);
++	if (!(pdstat & 0x00000001)) {
++		pdctl1 = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++		pdctl1 |= 0x1;
++		davinci_writel(pdctl1, DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++
++		ptcmd = 1 << domain;
++		davinci_writel(ptcmd, DAVINCI_PWR_SLEEP_CNTRL_BASE + PTCMD);
++
++		do {
++			epcpr = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
++					      EPCPR);
++		} while (!((epcpr >> domain) & 1));
++
++		pdctl1 = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++		pdctl1 |= 0x100;
++		davinci_writel(pdctl1, DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++
++		do {
++			ptstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
++					       PTSTAT);
++		} while ((ptstat >> domain) & 1);
++	} else {
++		ptcmd = 1 << domain;
++		davinci_writel(ptcmd, DAVINCI_PWR_SLEEP_CNTRL_BASE + PTCMD);
++
++		do {
++			ptstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
++					       PTSTAT);
++		} while ((ptstat >> domain) & 1);
++	}
++
++	do {
++		mdstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
++				       MDSTAT(id));
++	} while ((mdstat & 0x0000001F) != state);
++
++	if (enable && davinci_pinmux_setup)
++		davinci_pinmux_setup(id);
++}
++
++/*
++ * Returns a clock. Note that we first try to use device ID on the bus
++ * and clock name. If this fails, we try to use clock name only.
++ */
++struct clk *clk_get(struct device *dev, const char *id)
++{
++	struct clk *p, *clk = ERR_PTR(-ENOENT);
++	int idno;
++
++	if (dev == NULL || dev->bus != &platform_bus_type)
++		idno = -1;
++	else
++		idno = to_platform_device(dev)->id;
++
++	mutex_lock(&clocks_mutex);
++
++	list_for_each_entry(p, &clocks, node)
++		if (p->id == idno &&
++		    strcmp(id, p->name) == 0 && try_module_get(p->owner)) {
++			clk = p;
++			goto found;
++		}
++
++	list_for_each_entry(p, &clocks, node)
++		if (strcmp(id, p->name) == 0 && try_module_get(p->owner)) {
++			clk = p;
++			break;
++		}
++
++found:
++	mutex_unlock(&clocks_mutex);
++
++	return clk;
++}
++EXPORT_SYMBOL(clk_get);
++
++void clk_put(struct clk *clk)
++{
++	if (clk && !IS_ERR(clk))
++		module_put(clk->owner);
++}
++EXPORT_SYMBOL(clk_put);
++
++static int __clk_enable(struct clk *clk)
++{
++	if (clk->flags & ALWAYS_ENABLED)
++		return 0;
++
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, clk->lpsc, 1);
++	return 0;
++}
++
++static void __clk_disable(struct clk *clk)
++{
++	if (clk->usecount)
++		return;
++
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, clk->lpsc, 0);
++}
++
++int clk_enable(struct clk *clk)
++{
++	unsigned long flags;
++	int ret = 0;
++
++	if (clk == NULL || IS_ERR(clk))
++		return -EINVAL;
++
++	if (clk->usecount++ == 0) {
++		spin_lock_irqsave(&clockfw_lock, flags);
++		ret = __clk_enable(clk);
++		spin_unlock_irqrestore(&clockfw_lock, flags);
++	}
++
++	return ret;
++}
++EXPORT_SYMBOL(clk_enable);
++
++void clk_disable(struct clk *clk)
++{
++	unsigned long flags;
++
++	if (clk == NULL || IS_ERR(clk))
++		return;
++
++	if (clk->usecount > 0 && !(--clk->usecount)) {
++		spin_lock_irqsave(&clockfw_lock, flags);
++		__clk_disable(clk);
++		spin_unlock_irqrestore(&clockfw_lock, flags);
++	}
++}
++EXPORT_SYMBOL(clk_disable);
++
++unsigned long clk_get_rate(struct clk *clk)
++{
++	if (clk == NULL || IS_ERR(clk))
++		return -EINVAL;
++
++	return *(clk->rate);
++}
++EXPORT_SYMBOL(clk_get_rate);
++
++long clk_round_rate(struct clk *clk, unsigned long rate)
++{
++	if (clk == NULL || IS_ERR(clk))
++		return -EINVAL;
++
++	return *(clk->rate);
++}
++EXPORT_SYMBOL(clk_round_rate);
++
++int clk_set_rate(struct clk *clk, unsigned long rate)
++{
++	if (clk == NULL || IS_ERR(clk))
++		return -EINVAL;
++
++	/* changing the clk rate is not supported */
++	return -EINVAL;
++}
++EXPORT_SYMBOL(clk_set_rate);
++
++int clk_register(struct clk *clk)
++{
++	if (clk == NULL || IS_ERR(clk))
++		return -EINVAL;
++
++	mutex_lock(&clocks_mutex);
++	list_add(&clk->node, &clocks);
++	mutex_unlock(&clocks_mutex);
++
++	return 0;
++}
++EXPORT_SYMBOL(clk_register);
++
++void clk_unregister(struct clk *clk)
++{
++	if (clk == NULL || IS_ERR(clk))
++		return;
++
++	mutex_lock(&clocks_mutex);
++	list_del(&clk->node);
++	mutex_unlock(&clocks_mutex);
++}
++EXPORT_SYMBOL(clk_unregister);
++
++int __init davinci_enable_clks(struct clk *clk_list, int num_clks)
++{
++	struct clk *clkp;
++	int i;
++
++	for (i = 0, clkp = clk_list; i < num_clks; i++, clkp++) {
++		clk_register(clkp);
++
++		/* Turn on clocks that have been enabled in the table above */
++		if (clkp->usecount)
++			clk_enable(clkp);
++	}
++
++	return 0;
++}
++
++#ifdef CONFIG_PROC_FS
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
++
++static void *davinci_ck_start(struct seq_file *m, loff_t *pos)
++{
++	return *pos < 1 ? (void *)1 : NULL;
++}
++
++static void *davinci_ck_next(struct seq_file *m, void *v, loff_t *pos)
++{
++	++*pos;
++	return NULL;
++}
++
++static void davinci_ck_stop(struct seq_file *m, void *v)
++{
++}
++
++static int davinci_ck_show(struct seq_file *m, void *v)
++{
++	struct clk *cp;
++
++	list_for_each_entry(cp, &clocks, node)
++		seq_printf(m, "%s %d %d\n", cp->name, *(cp->rate),
++				cp->usecount);
++
++	return 0;
++}
++
++static struct seq_operations davinci_ck_op = {
++	.start	= davinci_ck_start,
++	.next	= davinci_ck_next,
++	.stop	= davinci_ck_stop,
++	.show	= davinci_ck_show
++};
++
++static int davinci_ck_open(struct inode *inode, struct file *file)
++{
++	return seq_open(file, &davinci_ck_op);
++}
++
++static struct file_operations proc_davinci_ck_operations = {
++	.open		= davinci_ck_open,
++	.read		= seq_read,
++	.llseek		= seq_lseek,
++	.release	= seq_release,
++};
++
++static int __init davinci_ck_proc_init(void)
++{
++	struct proc_dir_entry *entry;
++
++	entry = create_proc_entry("davinci_clocks", 0, NULL);
++	if (entry)
++		entry->proc_fops = &proc_davinci_ck_operations;
++	return 0;
++
++}
++device_initcall(davinci_ck_proc_init);
++#endif	/* CONFIG_DEBUG_PROC_FS */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/clock.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/clock.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/clock.h
+@@ -3,21 +3,42 @@
+  *
+  * Clock control driver for DaVinci - header file
+  *
+- * Authors: Vladimir Barinov <source@mvista.com>
++ * Author: Vladimir Barinov
++ * Copyright (C) 2007-2008 MontaVista Software, Inc. <source@mvista.com>
+  *
+- * 2007 (c) MontaVista Software, Inc. This file is licensed under
+- * the terms of the GNU General Public License version 2. This program
+- * is licensed "as is" without any warranty of any kind, whether express
+- * or implied.
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
+  */
+ #ifndef __ASM_ARCH_DAVINCI_CLOCK_H
+ #define __ASM_ARCH_DAVINCI_CLOCK_H
+ 
+-struct clk;
++/* PLL/Reset register offsets */
++#define PLLM		0x110
+ 
+-extern int clk_register(struct clk *clk);
++struct clk {
++	struct list_head	node;
++	struct module		*owner;
++	const char		*name;
++	unsigned int		*rate;
++	int			id;
++	s8			usecount;
++	u8			flags;
++	u8			lpsc;
++};
++
++/* Clock flags */
++#define RATE_CKCTL		0x01
++#define RATE_FIXED		0x02
++#define RATE_PROPAGATES 	0x04
++#define VIRTUAL_CLOCK		0x08
++#define ALWAYS_ENABLED		0x10
++#define ENABLE_REG_32BIT	0x20
++
++extern int  clk_register(struct clk *clk);
+ extern void clk_unregister(struct clk *clk);
+-extern int davinci_clk_init(void);
+-void davinci_psc_config(unsigned int domain, unsigned int id, char enable);
++extern int  davinci_clk_init(void);
++extern void davinci_psc_config(unsigned domain, unsigned id, int enable);
++extern int  davinci_enable_clks(struct clk *clk_list, int num_clks);
+ 
+ #endif
+Index: linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/hardware.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+@@ -95,43 +95,6 @@
+ #define DAVINCI_DM646X_VLYNQ_REMOTE_BASE          (0x4C000000)
+ 
+ /*
+- * LPSC Assignments
+- */
+-#define DAVINCI_DM646X_LPSC_RESERVED       0       /* Reserved */
+-#define DAVINCI_DM646X_LPSC_C64X_CPU       1       /* C64x + CPU */
+-#define DAVINCI_DM646X_LPSC_HDVICP0        2       /* HDVICP0 */
+-#define DAVINCI_DM646X_LPSC_HDVICP1        3       /* HDVICP1 */
+-#define DAVINCI_DM646X_LPSC_TPCC           4       /* TPCC LPSC */
+-#define DAVINCI_DM646X_LPSC_TPTC0          5       /* TPTC0 LPSC */
+-#define DAVINCI_DM646X_LPSC_TPTC1          6       /* TPTC1 LPSC */
+-#define DAVINCI_DM646X_LPSC_TPTC2          7       /* TPTC2 LPSC */
+-#define DAVINCI_DM646X_LPSC_TPTC3          8       /* TPTC3 LPSC */
+-#define DAVINCI_DM646X_LPSC_PCI            13      /* PCI LPSC */
+-#define DAVINCI_DM646X_LPSC_EMAC           14      /* EMAC LPSC */
+-#define DAVINCI_DM646X_LPSC_VDCE           15      /* VDCE LPSC */
+-#define DAVINCI_DM646X_LPSC_VPSSMSTR       16      /* VPSS Master LPSC */
+-#define DAVINCI_DM646X_LPSC_VPSSSLV        17      /* VPSS Slave LPSC */
+-#define DAVINCI_DM646X_LPSC_TSIF0          18      /* TSIF0 LPSC */
+-#define DAVINCI_DM646X_LPSC_TSIF1          19      /* TSIF1 LPSC */
+-#define DAVINCI_DM646X_LPSC_DDR_EMIF       20      /* DDR_EMIF LPSC */
+-#define DAVINCI_DM646X_LPSC_AEMIF          21      /* AEMIF LPSC */
+-#define DAVINCI_DM646X_LPSC_McASP0         22      /* McASP0 LPSC */
+-#define DAVINCI_DM646X_LPSC_McASP1         23      /* McASP1 LPSC */
+-#define DAVINCI_DM646X_LPSC_CRGEN0         24      /* CRGEN0 LPSC */
+-#define DAVINCI_DM646X_LPSC_CRGEN1         25      /* CRGEN1 LPSC */
+-#define DAVINCI_DM646X_LPSC_UART0          26      /* UART0 LPSC */
+-#define DAVINCI_DM646X_LPSC_UART1          27      /* UART1 LPSC */
+-#define DAVINCI_DM646X_LPSC_UART2          28      /* UART2 LPSC */
+-#define DAVINCI_DM646X_LPSC_PWM0           29      /* PWM0 LPSC */
+-#define DAVINCI_DM646X_LPSC_PWM1           30      /* PWM1 LPSC */
+-#define DAVINCI_DM646X_LPSC_I2C            31      /* I2C LPSC */
+-#define DAVINCI_DM646X_LPSC_SPI            32      /* SPI LPSC */
+-#define DAVINCI_DM646X_LPSC_GPIO           33      /* GPIO LPSC */
+-#define DAVINCI_DM646X_LPSC_TIMER0         34      /* TIMER0 LPSC */
+-#define DAVINCI_DM646X_LPSC_TIMER1         35      /* TIMER1 LPSC */
+-#define DAVINCI_DM646X_LPSC_ARM_INTC       45      /* ARM INTC LPSC */
+-
+-/*
+  * Macro to access device power control
+  */
+ #define DAVINCI_VDD3P3V_PWDN            (DAVINCI_SYSTEM_MODULE_BASE + 0x48)
+Index: linux-2.6.18/include/asm-arm/arch-davinci/psc.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/psc.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/psc.h
+@@ -2,6 +2,7 @@
+  *  DaVinci Power & Sleep Controller (PSC) defines
+  *
+  *  Copyright (C) 2006 Texas Instruments.
++ *  Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
+  *
+  *  This program is free software; you can redistribute  it and/or modify it
+  *  under  the terms of  the GNU General  Public License as published by the
+@@ -27,55 +28,101 @@
+ #ifndef __ASM_ARCH_PSC_H
+ #define __ASM_ARCH_PSC_H
+ 
++/* PSC register offsets */
++#define EPCPR		0x070
++#define PTCMD		0x120
++#define PTSTAT		0x128
++#define PDSTAT		0x200
++#define PDCTL1		0x304
++#define MDSTAT(n)	(0x800 + (n) * 4)
++#define MDCTL(n)	(0xA00 + (n) * 4)
++
+ /* Power and Sleep Controller (PSC) Domains */
+-#define DAVINCI_GPSC_ARMDOMAIN      0
+-#define DAVINCI_GPSC_DSPDOMAIN      1
++#define DAVINCI_GPSC_ARMDOMAIN		0
++#define DAVINCI_GPSC_DSPDOMAIN		1
++
++/*
++ * LPSC Assignments
++ */
++#define DAVINCI_LPSC_VPSSMSTR		0
++#define DAVINCI_LPSC_VPSSSLV		1
++#define DAVINCI_LPSC_TPCC		2
++#define DAVINCI_LPSC_TPTC0		3
++#define DAVINCI_LPSC_TPTC1		4
++#define DAVINCI_LPSC_EMAC		5
++#define DAVINCI_LPSC_EMAC_WRAPPER	6
++#define DAVINCI_LPSC_MDIO		7	/* DM644x only */
++#define DAVINCI_LPSC_MMC_SD1		7	/* DM355  only */
++#define DAVINCI_LPSC_IEEE1394		8	/* DM644x only */
++#define DAVINCI_LPSC_McBSP1		8	/* DM355  only */
++#define DAVINCI_LPSC_USB		9
++#define DAVINCI_LPSC_ATA		10	/* DM644x only */
++#define DAVINCI_LPSC_PWM3		10	/* DM355  only */
++#define DAVINCI_LPSC_VLYNQ		11
++#define DAVINCI_LPSC_UHPI		12
++#define DAVINCI_LPSC_DDR_EMIF		13
++#define DAVINCI_LPSC_AEMIF		14
++#define DAVINCI_LPSC_MMC_SD		15	/* DM644x only */
++#define DAVINCI_LPSC_MMC_SD0		15	/* DM355  only */
++#define DAVINCI_LPSC_MEMSTICK		16
++#define DAVINCI_LPSC_McBSP		17	/* DM644x only */
++#define DAVINCI_LPSC_McBSP0		17	/* DM355  only */
++#define DAVINCI_LPSC_I2C		18
++#define DAVINCI_LPSC_UART0		19
++#define DAVINCI_LPSC_UART1		20
++#define DAVINCI_LPSC_UART2		21
++#define DAVINCI_LPSC_SPI		22
++#define DAVINCI_LPSC_PWM0		23
++#define DAVINCI_LPSC_PWM1		24
++#define DAVINCI_LPSC_PWM2		25
++#define DAVINCI_LPSC_GPIO		26
++#define DAVINCI_LPSC_TIMER0		27
++#define DAVINCI_LPSC_TIMER1		28
++#define DAVINCI_LPSC_TIMER2		29
++#define DAVINCI_LPSC_SYSTEM_SUBSYS	30
++#define DAVINCI_LPSC_ARM		31
++#define DAVINCI_LPSC_SCR2		32
++#define DAVINCI_LPSC_SCR3		33
++#define DAVINCI_LPSC_SCR4		34
++#define DAVINCI_LPSC_CROSSBAR		35
++#define DAVINCI_LPSC_CFG27		36
++#define DAVINCI_LPSC_CFG3		37
++#define DAVINCI_LPSC_CFG5		38
++#define DAVINCI_LPSC_GEM		39
++#define DAVINCI_LPSC_IMCOP		40
+ 
+-#define DAVINCI_LPSC_VPSSMSTR       0
+-#define DAVINCI_LPSC_VPSSSLV        1
+-#define DAVINCI_LPSC_TPCC           2
+-#define DAVINCI_LPSC_TPTC0          3
+-#define DAVINCI_LPSC_TPTC1          4
+-#define DAVINCI_LPSC_EMAC           5
+-#define DAVINCI_LPSC_EMAC_WRAPPER   6
+-#define DAVINCI_LPSC_MDIO           7
+-#define DAVINCI_LPSC_MMC_SD1        7
+-#define DAVINCI_LPSC_IEEE1394       8
+-#define DAVINCI_LPSC_McBSP1         8
+-#define DAVINCI_LPSC_USB            9
+-#define DAVINCI_LPSC_ATA            10
+-#define DAVINCI_LPSC_PWM3           10
+-#define DAVINCI_LPSC_VLYNQ          11
+-#define DAVINCI_LPSC_UHPI           12
+-#define DAVINCI_LPSC_DDR_EMIF       13
+-#define DAVINCI_LPSC_AEMIF          14
+-#define DAVINCI_LPSC_MMC_SD         15
+-#define DAVINCI_LPSC_MMC_SD0        15
+-#define DAVINCI_LPSC_MEMSTICK       16
+-#define DAVINCI_LPSC_McBSP          17
+-#define DAVINCI_LPSC_McBSP0         17
+-#define DAVINCI_LPSC_I2C            18
+-#define DAVINCI_LPSC_UART0          19
+-#define DAVINCI_LPSC_UART1          20
+-#define DAVINCI_LPSC_UART2          21
+-#define DAVINCI_LPSC_SPI            22
+-#define DAVINCI_LPSC_PWM0           23
+-#define DAVINCI_LPSC_PWM1           24
+-#define DAVINCI_LPSC_PWM2           25
+-#define DAVINCI_LPSC_GPIO           26
+-#define DAVINCI_LPSC_TIMER0         27
+-#define DAVINCI_LPSC_TIMER1         28
+-#define DAVINCI_LPSC_TIMER2         29
+-#define DAVINCI_LPSC_SYSTEM_SUBSYS  30
+-#define DAVINCI_LPSC_ARM            31
+-#define DAVINCI_LPSC_SCR2           32
+-#define DAVINCI_LPSC_SCR3           33
+-#define DAVINCI_LPSC_SCR4           34
+-#define DAVINCI_LPSC_CROSSBAR       35
+-#define DAVINCI_LPSC_CFG27          36
+-#define DAVINCI_LPSC_CFG3           37
+-#define DAVINCI_LPSC_CFG5           38
+-#define DAVINCI_LPSC_GEM            39
+-#define DAVINCI_LPSC_IMCOP          40
++#define DAVINCI_DM646X_LPSC_RESERVED	0	/* Reserved */
++#define DAVINCI_DM646X_LPSC_C64X_CPU	1	/* C64x + CPU */
++#define DAVINCI_DM646X_LPSC_HDVICP0	2	/* HDVICP0 */
++#define DAVINCI_DM646X_LPSC_HDVICP1	3	/* HDVICP1 */
++#define DAVINCI_DM646X_LPSC_TPCC	4	/* TPCC LPSC */
++#define DAVINCI_DM646X_LPSC_TPTC0	5	/* TPTC0 LPSC */
++#define DAVINCI_DM646X_LPSC_TPTC1	6	/* TPTC1 LPSC */
++#define DAVINCI_DM646X_LPSC_TPTC2	7	/* TPTC2 LPSC */
++#define DAVINCI_DM646X_LPSC_TPTC3	8	/* TPTC3 LPSC */
++#define DAVINCI_DM646X_LPSC_PCI 	13	/* PCI LPSC */
++#define DAVINCI_DM646X_LPSC_EMAC	14	/* EMAC LPSC */
++#define DAVINCI_DM646X_LPSC_VDCE	15	/* VDCE LPSC */
++#define DAVINCI_DM646X_LPSC_VPSSMSTR	16	/* VPSS Master LPSC */
++#define DAVINCI_DM646X_LPSC_VPSSSLV	17	/* VPSS Slave LPSC */
++#define DAVINCI_DM646X_LPSC_TSIF0	18	/* TSIF0 LPSC */
++#define DAVINCI_DM646X_LPSC_TSIF1	19	/* TSIF1 LPSC */
++#define DAVINCI_DM646X_LPSC_DDR_EMIF	20	/* DDR_EMIF LPSC */
++#define DAVINCI_DM646X_LPSC_AEMIF	21	/* AEMIF LPSC */
++#define DAVINCI_DM646X_LPSC_McASP0	22	/* McASP0 LPSC */
++#define DAVINCI_DM646X_LPSC_McASP1	23	/* McASP1 LPSC */
++#define DAVINCI_DM646X_LPSC_CRGEN0	24	/* CRGEN0 LPSC */
++#define DAVINCI_DM646X_LPSC_CRGEN1	25	/* CRGEN1 LPSC */
++#define DAVINCI_DM646X_LPSC_UART0	26	/* UART0 LPSC */
++#define DAVINCI_DM646X_LPSC_UART1	27	/* UART1 LPSC */
++#define DAVINCI_DM646X_LPSC_UART2	28	/* UART2 LPSC */
++#define DAVINCI_DM646X_LPSC_PWM0	29	/* PWM0 LPSC */
++#define DAVINCI_DM646X_LPSC_PWM1	30	/* PWM1 LPSC */
++#define DAVINCI_DM646X_LPSC_I2C 	31	/* I2C LPSC */
++#define DAVINCI_DM646X_LPSC_SPI 	32	/* SPI LPSC */
++#define DAVINCI_DM646X_LPSC_GPIO	33	/* GPIO LPSC */
++#define DAVINCI_DM646X_LPSC_TIMER0	34	/* TIMER0 LPSC */
++#define DAVINCI_DM646X_LPSC_TIMER1	35	/* TIMER1 LPSC */
++#define DAVINCI_DM646X_LPSC_ARM_INTC	45	/* ARM INTC LPSC */
+ 
+ #endif /* __ASM_ARCH_PSC_H */
+Index: linux-2.6.18/mvl_patches/pro50-2096.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2096.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2096);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

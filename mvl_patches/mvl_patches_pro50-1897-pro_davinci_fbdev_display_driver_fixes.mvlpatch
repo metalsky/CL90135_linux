@@ -1,0 +1,411 @@
+#! /usr/bin/env bash
+# Patch: -pro_davinci_fbdev_display_driver_fixes
+# Date: Fri Sep 19 14:30:05 2008
+# Source: Texas Instruments Inc.
+# MR: 29653
+# Type: Defect Fix
+# Disposition: local
+# Signed-off-by: Owen Chu <ochu@ti.com>
+# Signed-off-by: Philby John <pjohn@in.mvista.com>
+# Description:
+#         This fbdev patch fixes the following issues with DaVinci fbdev display
+# 	driver:
+# 	1. fbdev driver writing to VPBE during incorrect frame
+# 	2. Setting display mode to 480P-60 does not work, image only shows
+# 	half-screen on the display TV
+# 
+
+PATCHNUM=1897
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Texas Instruments Inc.
+MR: 29653
+Type: Defect Fix
+Disposition: local
+Signed-off-by: Owen Chu <ochu@ti.com>
+Signed-off-by: Philby John <pjohn@in.mvista.com>
+Description:
+        This fbdev patch fixes the following issues with DaVinci fbdev display
+	driver:
+	1. fbdev driver writing to VPBE during incorrect frame
+	2. Setting display mode to 480P-60 does not work, image only shows
+	half-screen on the display TV
+
+Index: linux-2.6.18/drivers/video/davincifb.c
+===================================================================
+--- linux-2.6.18.orig/drivers/video/davincifb.c
++++ linux-2.6.18/drivers/video/davincifb.c
+@@ -540,9 +540,89 @@ static int davincifb_wait_for_vsync(stru
+ static void davincifb_vsync_callback(unsigned event, void *arg)
+ {
+ 	struct vpbe_dm_info *dm = (struct vpbe_dm_info *)arg;
++	unsigned long addr = 0;
++	static unsigned last_event;
+ 
+-	++dm->vsync_cnt;
+-	wake_up_interruptible(&dm->vsync_wait);
++	event &= ~DAVINCI_DISP_END_OF_FRAME;
++	if (event == last_event) {
++		/* progressive */
++		xchg(&addr, dm->win[WIN_OSD0].sdram_address);
++		if (addr) {
++			davinci_disp_start_layer(dm->win[WIN_OSD0].layer,
++						 dm->win[WIN_OSD0].
++						 sdram_address);
++			dm->win[WIN_OSD0].sdram_address = 0;
++		}
++		addr = 0;
++		xchg(&addr, dm->win[WIN_OSD1].sdram_address);
++		if (addr) {
++			davinci_disp_start_layer(dm->win[WIN_OSD1].layer,
++						 dm->win[WIN_OSD1].
++						 sdram_address);
++			dm->win[WIN_OSD1].sdram_address = 0;
++		}
++		addr = 0;
++		xchg(&addr, dm->win[WIN_VID0].sdram_address);
++		if (addr) {
++			davinci_disp_start_layer(dm->win[WIN_VID0].layer,
++						 dm->win[WIN_VID0].
++						 sdram_address);
++			dm->win[WIN_VID0].sdram_address = 0;
++		}
++		addr = 0;
++		xchg(&addr, dm->win[WIN_VID1].sdram_address);
++		if (addr) {
++			davinci_disp_start_layer(dm->win[WIN_VID1].layer,
++						 dm->win[WIN_VID1].
++						 sdram_address);
++			dm->win[WIN_VID1].sdram_address = 0;
++		}
++		++dm->vsync_cnt;
++		wake_up_interruptible(&dm->vsync_wait);
++	} else {
++		/* interlaced */
++		if (event & DAVINCI_DISP_SECOND_FIELD) {
++			xchg(&addr, dm->win[WIN_OSD0].sdram_address);
++			if (addr) {
++				davinci_disp_start_layer(dm->win[WIN_OSD0].
++							 layer,
++							 dm->win[WIN_OSD0].
++							 sdram_address);
++				dm->win[WIN_OSD0].sdram_address = 0;
++			}
++			addr = 0;
++			xchg(&addr, dm->win[WIN_OSD1].sdram_address);
++			if (addr) {
++				davinci_disp_start_layer(dm->win[WIN_OSD1].
++							 layer,
++							 dm->win[WIN_OSD1].
++							 sdram_address);
++				dm->win[WIN_OSD1].sdram_address = 0;
++			}
++			addr = 0;
++			xchg(&addr, dm->win[WIN_VID0].sdram_address);
++			if (addr) {
++				davinci_disp_start_layer(dm->win[WIN_VID0].
++							 layer,
++							 dm->win[WIN_VID0].
++							 sdram_address);
++				dm->win[WIN_VID0].sdram_address = 0;
++			}
++			addr = 0;
++			xchg(&addr, dm->win[WIN_VID1].sdram_address);
++			if (addr) {
++				davinci_disp_start_layer(dm->win[WIN_VID1].
++							 layer,
++							 dm->win[WIN_VID1].
++							 sdram_address);
++				dm->win[WIN_VID1].sdram_address = 0;
++			}
++		} else {
++			++dm->vsync_cnt;
++			wake_up_interruptible(&dm->vsync_wait);
++		}
++	}
++	last_event = event;
+ }
+ 
+ /*
+@@ -1519,6 +1599,8 @@ static int davincifb_set_par(struct fb_i
+ 	 */
+ 	construct_fb_var(var, &win->dm->mode, &lconfig);
+ 
++	/* need to update interlaced since the mode may have changed */
++	lconfig.interlaced = var->vmode = win->dm->mode.vmode;
+ 	/*
+ 	 * xres, yres, xres_virtual, or yres_virtual equal to zero is treated as
+ 	 * a special case.  It indicates that the window should be disabled.  If
+@@ -1661,7 +1743,10 @@ davincifb_pan_display(struct fb_var_scre
+ 	    info->fix.smem_start +
+ 	    (var->xoffset * info->var.bits_per_pixel) / 8 +
+ 	    var->yoffset * info->fix.line_length;
+-	davinci_disp_start_layer(win->layer, start);
++	if (davinci_disp_is_second_field()) {
++		davinci_disp_start_layer(win->layer, start);
++	} else
++		win->sdram_address = start;
+ 
+ 	return 0;
+ }
+@@ -2166,6 +2251,7 @@ static int davincifb_probe(struct device
+ 	/* initialize OSD0 */
+ 	dm->win[WIN_OSD0].layer = WIN_OSD0;
+ 	dm->win[WIN_OSD0].dm = dm;
++	dm->win[WIN_OSD0].sdram_address = 0;
+ 	davincifb_get_default_win_config(dev, &dm->win[WIN_OSD0], &lconfig,
+ 					 &fb_size, options);
+ 	err =
+@@ -2177,6 +2263,7 @@ static int davincifb_probe(struct device
+ 	/* initialize VID0 */
+ 	dm->win[WIN_VID0].layer = WIN_VID0;
+ 	dm->win[WIN_VID0].dm = dm;
++	dm->win[WIN_VID0].sdram_address = 0;
+ 	if (!davincifb_get_default_win_config
+ 	    (dev, &dm->win[WIN_VID0], &lconfig, &fb_size, options)) {
+ 		err =
+@@ -2189,6 +2276,7 @@ static int davincifb_probe(struct device
+ 	/* initialize OSD1 */
+ 	dm->win[WIN_OSD1].layer = WIN_OSD1;
+ 	dm->win[WIN_OSD1].dm = dm;
++	dm->win[WIN_OSD1].sdram_address = 0;
+ 	davincifb_get_default_win_config(dev, &dm->win[WIN_OSD1], &lconfig,
+ 					 &fb_size, options);
+ 	err =
+@@ -2200,6 +2288,7 @@ static int davincifb_probe(struct device
+ 	/* initialize VID1 */
+ 	dm->win[WIN_VID1].layer = WIN_VID1;
+ 	dm->win[WIN_VID1].dm = dm;
++	dm->win[WIN_VID1].sdram_address = 0;
+ 	if (!davincifb_get_default_win_config
+ 	    (dev, &dm->win[WIN_VID1], &lconfig, &fb_size, options)) {
+ 		err =
+@@ -2214,7 +2303,9 @@ static int davincifb_probe(struct device
+ 	dm->timeout = HZ / 5;
+ 
+ 	/* register the end-of-frame callback */
+-	dm->vsync_callback.mask = DAVINCI_DISP_END_OF_FRAME;
++	dm->vsync_callback.mask = DAVINCI_DISP_FIRST_FIELD |
++	    DAVINCI_DISP_SECOND_FIELD | DAVINCI_DISP_END_OF_FRAME;
++
+ 	dm->vsync_callback.handler = davincifb_vsync_callback;
+ 	dm->vsync_callback.arg = dm;
+ 	davinci_disp_register_callback(&dm->vsync_callback);
+Index: linux-2.6.18/include/video/davincifb.h
+===================================================================
+--- linux-2.6.18.orig/include/video/davincifb.h
++++ linux-2.6.18/include/video/davincifb.h
+@@ -37,6 +37,7 @@ struct vpbe_dm_win_info {
+ 	unsigned ypos;
+ 	unsigned own_window; /* Does the framebuffer driver own this window? */
+ 	unsigned display_window;
++	unsigned sdram_address;
+ 	u32 pseudo_palette[16];
+ };
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1897.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1897.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1897);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,648 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_davinci
+# Date: Fri Sep 19 14:03:18 2008
+# From 0d664cf1b23eaa77bf954daa10cdbba0794a39fe Mon Sep 17 00:00:00 2001
+# From: David Brownell <dbrownell@users.sourceforge.net>
+# Date: Thu, 9 Nov 2006 22:19:53 +0200
+# Subject: [PATCH] musb_hdrc: davinci
+# 
+# Update how DaVinci handles powering up VBUS, and make cable based role
+# switching work more or less as well as on TUSB6010.
+# 
+#   - Work around VBUS_ERROR IRQs triggering during enumeration, which
+#     seems to be a design botch from Mentor (TUSB 6010 has it too).
+# 
+# 	This is particularly nasty on the EVM (30 second delay) because
+# 	of differences between its RTL and the newer stuff in tusb6010.
+# 
+#   - Work around lack of ID change IRQ, a design botch in how the Mentor
+#     core was integrated into DaVinci.
+# 
+# 	This builds on the polling mechanism used to cope with VBUS
+# 	errors.  OTG devices will probe every few seconds until either
+# 	the ID pin grounds, or the device leaves B_IDLE.
+# 
+#   - Rename vbus_power() to source_power(), better matching its role.
+#     (DaVinci doesn't sink VBUS e.g. to charge batteries -- yet.)
+# 
+#   - Provide more complete tracing of IRQ events.
+# 
+#   - Provide a symbol for the DRVVBUS irq.
+# 
+# Basically, with this driver's core behaving better (thanks to OTG/host
+# updates for TUSB), the DaVinci stuff doesn't need to fight them so much;
+# and it's more clear when problems are in the core vs its integration.
+# 
+# Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+# (cherry picked from commit 636fa27e047a8b5853076ad54660ed06de79fcf7)
+
+PATCHNUM=1611
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 0d664cf1b23eaa77bf954daa10cdbba0794a39fe Mon Sep 17 00:00:00 2001
+From: David Brownell <dbrownell@users.sourceforge.net>
+Date: Thu, 9 Nov 2006 22:19:53 +0200
+Subject: [PATCH] musb_hdrc: davinci
+
+Update how DaVinci handles powering up VBUS, and make cable based role
+switching work more or less as well as on TUSB6010.
+
+  - Work around VBUS_ERROR IRQs triggering during enumeration, which
+    seems to be a design botch from Mentor (TUSB 6010 has it too).
+
+	This is particularly nasty on the EVM (30 second delay) because
+	of differences between its RTL and the newer stuff in tusb6010.
+
+  - Work around lack of ID change IRQ, a design botch in how the Mentor
+    core was integrated into DaVinci.
+
+	This builds on the polling mechanism used to cope with VBUS
+	errors.  OTG devices will probe every few seconds until either
+	the ID pin grounds, or the device leaves B_IDLE.
+
+  - Rename vbus_power() to source_power(), better matching its role.
+    (DaVinci doesn't sink VBUS e.g. to charge batteries -- yet.)
+
+  - Provide more complete tracing of IRQ events.
+
+  - Provide a symbol for the DRVVBUS irq.
+
+Basically, with this driver's core behaving better (thanks to OTG/host
+updates for TUSB), the DaVinci stuff doesn't need to fight them so much;
+and it's more clear when problems are in the core vs its integration.
+
+Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+(cherry picked from commit 636fa27e047a8b5853076ad54660ed06de79fcf7)
+Index: linux-2.6.18/drivers/usb/musb/davinci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/davinci.c
++++ linux-2.6.18/drivers/usb/musb/davinci.c
+@@ -95,6 +95,11 @@ void musb_platform_enable(struct musb *m
+ 				__FILE__, __FUNCTION__);
+ 	else
+ 		dma_off = 0;
++
++	/* force a DRVVBUS irq so we can start polling for ID change */
++	if (is_otg_enabled(musb))
++		musb_writel(musb->ctrl_base, DAVINCI_USB_INT_SET_REG,
++			DAVINCI_INTR_DRVVBUS << DAVINCI_USB_USBINT_SHIFT);
+ }
+ 
+ /*
+@@ -119,12 +124,8 @@ void musb_platform_disable(struct musb *
+ }
+ 
+ 
+-/* REVISIT this file shouldn't modify the OTG state machine ...
+- *
+- * The OTG infrastructure needs updating, to include things like
+- * offchip DRVVBUS support and replacing MGC_OtgMachineInputs with
+- * musb struct members (so e.g. vbus_state vanishes).
+- */
++/* REVISIT it's not clear whether DaVinci can support full OTG.  */
++
+ static int vbus_state = -1;
+ 
+ #ifdef CONFIG_USB_MUSB_HDRC_HCD
+@@ -133,50 +134,6 @@ static int vbus_state = -1;
+ #define	portstate(stmt)
+ #endif
+ 
+-static void session(struct musb *musb, int is_on)
+-{
+-	void	*__iomem mregs = musb->pRegs;
+-
+-	if (musb->xceiv.default_a) {
+-		u8	devctl = musb_readb(mregs, MGC_O_HDRC_DEVCTL);
+-
+-		if (is_on)
+-			devctl |= MGC_M_DEVCTL_SESSION;
+-		else
+-			devctl &= ~MGC_M_DEVCTL_SESSION;
+-		musb_writeb(mregs, MGC_O_HDRC_DEVCTL, devctl);
+-	} else
+-		is_on = 0;
+-
+-	if (is_on) {
+-		/* NOTE: assumes VBUS already exceeds A-valid */
+-		musb->xceiv.state = OTG_STATE_A_WAIT_BCON;
+-		portstate(musb->port1_status |= USB_PORT_STAT_POWER);
+-		MUSB_HST_MODE(musb);
+-	} else {
+-		switch (musb->xceiv.state) {
+-		case OTG_STATE_UNDEFINED:
+-		case OTG_STATE_B_IDLE:
+-			MUSB_DEV_MODE(musb);
+-			musb->xceiv.state = OTG_STATE_B_IDLE;
+-			break;
+-		case OTG_STATE_A_IDLE:
+-			break;
+-		default:
+-			musb->xceiv.state = OTG_STATE_A_WAIT_VFALL;
+-			break;
+-		}
+-		portstate(musb->port1_status &= ~USB_PORT_STAT_POWER);
+-	}
+-
+-	DBG(2, "Default-%c, VBUS power %s, %s, devctl %02x, %s\n",
+-		musb->xceiv.default_a ? 'A' : 'B',
+-		is_on ? "on" : "off",
+-		MUSB_MODE(musb),
+-		musb_readb(musb->pRegs, MGC_O_HDRC_DEVCTL),
+-		otg_state_string(musb));
+-}
+-
+ 
+ /* VBUS SWITCHING IS BOARD-SPECIFIC */
+ 
+@@ -189,25 +146,22 @@ static void session(struct musb *musb, i
+  */
+ static void evm_deferred_drvvbus(void *_musb)
+ {
+-	struct musb	*musb = _musb;
+-	int		is_on = (musb->xceiv.state == OTG_STATE_A_IDLE);
+-
+-	davinci_i2c_expander_op(0x3a, USB_DRVVBUS, !is_on);
+-	vbus_state = is_on;
+-	session(musb, is_on);
++	davinci_i2c_expander_op(0x3a, USB_DRVVBUS, vbus_state);
++	vbus_state = !vbus_state;
+ }
+ DECLARE_WORK(evm_vbus_work, evm_deferred_drvvbus, 0);
+ 
+ #endif	/* modified board */
+ #endif	/* EVM */
+ 
+-static void davinci_vbus_power(struct musb *musb, int is_on, int immediate)
++static void davinci_source_power(struct musb *musb, int is_on, int immediate)
+ {
+ 	if (is_on)
+ 		is_on = 1;
+ 
+ 	if (vbus_state == is_on)
+ 		return;
++	vbus_state = !is_on;		/* 0/1 vs "-1 == unknown/init" */
+ 
+ #ifdef CONFIG_MACH_DAVINCI_EVM
+ 	if (machine_is_davinci_evm()) {
+@@ -228,21 +182,77 @@ static void davinci_vbus_power(struct mu
+ #endif
+ 	}
+ #endif
+-	if (immediate) {
++	if (immediate)
+ 		vbus_state = is_on;
+-		session(musb, is_on);
+-	} else {
+-		/* REVISIT:  if is_on, start in A_WAIT_VRISE, then OTG timer
+-		 * should watch for session valid before calling session().
+-		 * EVM charges C133 VERY quickly (but discharge is sloooow).
+-		 */
+-	}
+ }
+ 
+ static void davinci_set_vbus(struct musb *musb, int is_on)
+ {
+ 	WARN_ON(is_on && is_peripheral_active(musb));
+-	return davinci_vbus_power(musb, is_on, 0);
++	return davinci_source_power(musb, is_on, 0);
++}
++
++
++#define	POLL_SECONDS	2
++
++static struct timer_list otg_workaround;
++
++static void otg_timer(unsigned long _musb)
++{
++	struct musb		*musb = (void *)_musb;
++	void	*__iomem	mregs = musb->pRegs;
++	u8			devctl;
++	unsigned long		flags;
++
++	/* We poll because DaVinci's won't expose several OTG-critical
++	* status change events (from the transceiver) otherwise.
++	 */
++	devctl = musb_readb(mregs, MGC_O_HDRC_DEVCTL);
++	DBG(7, "poll devctl %02x (%s)\n", devctl, otg_state_string(musb));
++
++	spin_lock_irqsave(&musb->Lock, flags);
++	switch (musb->xceiv.state) {
++	case OTG_STATE_A_WAIT_VFALL:
++		/* Wait till VBUS falls below SessionEnd (~0.2V); the 1.3 RTL
++		 * seems to mis-handle session "start" otherwise (or in our
++		 * case "recover"), in routine "VBUS was valid by the time
++		 * VBUSERR got reported during enumeration" cases.
++		 */
++		if (devctl & MGC_M_DEVCTL_VBUS) {
++			mod_timer(&otg_workaround, jiffies + POLL_SECONDS * HZ);
++			break;
++		}
++		musb->xceiv.state = OTG_STATE_A_WAIT_VRISE;
++		musb_writel(musb->ctrl_base, DAVINCI_USB_INT_SET_REG,
++			MGC_M_INTR_VBUSERROR << DAVINCI_USB_USBINT_SHIFT);
++		break;
++	case OTG_STATE_B_IDLE:
++		if (!is_peripheral_enabled(musb))
++			break;
++
++		/* There's no ID-changed IRQ, so we have no good way to tell
++		 * when to switch to the A-Default state machine (by setting
++		 * the DEVCTL.SESSION flag).
++		 *
++		 * Workaround:  whenever we're in B_IDLE, try setting the
++		 * session flag every few seconds.  If it works, ID was
++		 * grounded and we're now in the A-Default state machine.
++		 *
++		 * NOTE setting the session flag is _supposed_ to trigger
++		 * SRP, but clearly it doesn't.
++		 */
++		musb_writeb(mregs, MGC_O_HDRC_DEVCTL,
++				devctl | MGC_M_DEVCTL_SESSION);
++		devctl = musb_readb(mregs, MGC_O_HDRC_DEVCTL);
++		if (devctl & MGC_M_DEVCTL_BDEVICE)
++			mod_timer(&otg_workaround, jiffies + POLL_SECONDS * HZ);
++		else
++			musb->xceiv.state = OTG_STATE_A_IDLE;
++		break;
++	default:
++		break;
++	}
++	spin_unlock_irqrestore(&musb->Lock, flags);
+ }
+ 
+ static irqreturn_t davinci_interrupt(int irq, void *__hci)
+@@ -272,7 +282,7 @@ static irqreturn_t davinci_interrupt(int
+ 		u32 cppi_rx = musb_readl(tibase, DAVINCI_RXCPPI_MASKED_REG);
+ 
+ 		if (cppi_tx || cppi_rx) {
+-			DBG(4, "<== CPPI IRQ t%x r%x\n", cppi_tx, cppi_rx);
++			DBG(4, "CPPI IRQ t%x r%x\n", cppi_tx, cppi_rx);
+ 			cppi_completion(musb, cppi_rx, cppi_tx);
+ 			retval = IRQ_HANDLED;
+ 		}
+@@ -281,6 +291,7 @@ static irqreturn_t davinci_interrupt(int
+ 	/* ack and handle non-CPPI interrupts */
+ 	tmp = musb_readl(tibase, DAVINCI_USB_INT_SRC_MASKED_REG);
+ 	musb_writel(tibase, DAVINCI_USB_INT_SRC_CLR_REG, tmp);
++	DBG(4, "IRQ %08x\n", tmp);
+ 
+ 	musb->int_rx = (tmp & DAVINCI_USB_RXINT_MASK)
+ 			>> DAVINCI_USB_RXINT_SHIFT;
+@@ -289,23 +300,58 @@ static irqreturn_t davinci_interrupt(int
+ 	musb->int_usb = (tmp & DAVINCI_USB_USBINT_MASK)
+ 			>> DAVINCI_USB_USBINT_SHIFT;
+ 
+-	/* treat DRVVBUS irq like an ID change IRQ (for now) */
+-	if (tmp & (1 << (8 + DAVINCI_USB_USBINT_SHIFT))) {
++	/* DRVVBUS irqs are the only proxy we have (a very poor one!) for
++	 * DaVinci's missing ID change IRQ.  We need an ID change IRQ to
++	 * switch appropriately between halves of the OTG state machine.
++	 * Managing DEVCTL.SESSION per Mentor docs requires we know its
++	 * value, but DEVCTL.BDEVICE is invalid without DEVCTL.SESSION set.
++	 * Also, DRVVBUS pulses for SRP (but not at 5V) ...
++	 */
++	if (tmp & (DAVINCI_INTR_DRVVBUS << DAVINCI_USB_USBINT_SHIFT)) {
+ 		int	drvvbus = musb_readl(tibase, DAVINCI_USB_STAT_REG);
++		void	*__iomem mregs = musb->pRegs;
++		u8	devctl = musb_readb(mregs, MGC_O_HDRC_DEVCTL);
++		int	err = musb->int_usb & MGC_M_INTR_VBUSERROR;
+ 
+-		if (drvvbus) {
++		err = is_host_enabled(musb)
++				&& (musb->int_usb & MGC_M_INTR_VBUSERROR);
++		if (err) {
++			/* The Mentor core doesn't debounce VBUS as needed
++			 * to cope with device connect current spikes. This
++			 * means it's not uncommon for bus-powered devices
++			 * to get VBUS errors during enumeration.
++			 *
++			 * This is a workaround, but newer RTL from Mentor
++			 * seems to lalow a better one: "re"starting sessions
++			 * without waiting (on EVM, a **long** time) for VBUS
++			 * to stop registering in devctl.
++			 */
++			musb->int_usb &= ~MGC_M_INTR_VBUSERROR;
++			musb->xceiv.state = OTG_STATE_A_WAIT_VFALL;
++			mod_timer(&otg_workaround, jiffies + POLL_SECONDS * HZ);
++			WARN("VBUS error workaround (delay coming)\n");
++		} else if (is_host_enabled(musb) && drvvbus) {
++			musb->is_active = 1;
+ 			MUSB_HST_MODE(musb);
+ 			musb->xceiv.default_a = 1;
+-			musb->xceiv.state = OTG_STATE_A_IDLE;
++			musb->xceiv.state = OTG_STATE_A_WAIT_VRISE;
++			portstate(musb->port1_status |= USB_PORT_STAT_POWER);
++			del_timer(&otg_workaround);
+ 		} else {
++			musb->is_active = 0;
+ 			MUSB_DEV_MODE(musb);
+ 			musb->xceiv.default_a = 0;
+ 			musb->xceiv.state = OTG_STATE_B_IDLE;
++			portstate(musb->port1_status &= ~USB_PORT_STAT_POWER);
+ 		}
+ 
+ 		/* NOTE:  this must complete poweron within 100 msec */
+-		davinci_vbus_power(musb, drvvbus, 0);
+-		DBG(2, "DRVVBUS %d (%s)\n", drvvbus, otg_state_string(musb));
++		davinci_source_power(musb, drvvbus, 0);
++		DBG(2, "VBUS %s (%s)%s, devctl %02x\n",
++				drvvbus ? "on" : "off",
++				otg_state_string(musb),
++				err ? " ERROR" : "",
++				devctl);
+ 		retval = IRQ_HANDLED;
+ 	}
+ 
+@@ -315,6 +361,11 @@ static irqreturn_t davinci_interrupt(int
+ 	/* irq stays asserted until EOI is written */
+ 	musb_writel(tibase, DAVINCI_USB_EOI_REG, 0);
+ 
++	/* poll for ID change */
++	if (is_otg_enabled(musb)
++			&& musb->xceiv.state == OTG_STATE_B_IDLE)
++		mod_timer(&otg_workaround, jiffies + POLL_SECONDS * HZ);
++
+ 	spin_unlock_irqrestore(&musb->Lock, flags);
+ 
+ 	/* REVISIT we sometimes get unhandled IRQs
+@@ -354,8 +405,11 @@ int __devinit musb_platform_init(struct 
+ 		evm_vbus_work.data = musb;
+ #endif
+ 
++	if (is_host_enabled(musb))
++		setup_timer(&otg_workaround, otg_timer, (unsigned long) musb);
++
+ 	musb->board_set_vbus = davinci_set_vbus;
+-	davinci_vbus_power(musb, 0, 1);
++	davinci_source_power(musb, 0, 1);
+ 
+ 	/* reset the controller */
+ 	musb_writel(tibase, DAVINCI_USB_CTRL_REG, 0x1);
+@@ -377,7 +431,10 @@ int __devinit musb_platform_init(struct 
+ 
+ int musb_platform_exit(struct musb *musb)
+ {
+-	davinci_vbus_power(musb, 0 /*off*/, 1);
++	if (is_host_enabled(musb))
++		del_timer_sync(&otg_workaround);
++
++	davinci_source_power(musb, 0 /*off*/, 1);
+ 
+ 	/* delay, to avoid problems with module reload */
+ 	if (is_host_enabled(musb)) {
+Index: linux-2.6.18/drivers/usb/musb/davinci.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/davinci.h
++++ linux-2.6.18/drivers/usb/musb/davinci.h
+@@ -108,6 +108,8 @@ struct cppi_rx_stateram {
+ #define DAVINCI_USB_TXINT_SHIFT		0
+ #define DAVINCI_USB_RXINT_SHIFT		8
+ 
++#define DAVINCI_INTR_DRVVBUS		0x0100
++
+ #define DAVINCI_USB_USBINT_MASK		0x01ff0000	/* 8 Mentor, DRVVBUS */
+ #define DAVINCI_USB_TXINT_MASK \
+ 	(DAVINCI_USB_TX_ENDPTS_MASK << DAVINCI_USB_TXINT_SHIFT)
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -1458,7 +1458,9 @@ static int musb_gadget_wakeup(struct usb
+ 		goto done;
+ 	case OTG_STATE_B_IDLE:
+ 		/* REVISIT we might be able to do SRP even without OTG,
+-		 * though Linux doesn't yet expose that capability
++		 * though Linux doesn't yet expose that capability.  SRP
++		 * starts by setting DEVCTL.SESSION (not POWER.RESUME);
++		 * though DaVinci can't do it.
+ 		 */
+ 		if (is_otg_enabled(musb)) {
+ 			musb->xceiv.state = OTG_STATE_B_SRP_INIT;
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -694,8 +694,6 @@ void musb_start(struct musb *musb)
+ 
+ 	musb_writeb(regs, MGC_O_HDRC_TESTMODE, 0);
+ 
+-	musb_platform_enable(musb);
+-
+ 	/* put into basic highspeed mode and start session */
+ 	musb_writeb(regs, MGC_O_HDRC_POWER, MGC_M_POWER_ISOUPDATE
+ 						| MGC_M_POWER_SOFTCONN
+@@ -727,6 +725,7 @@ void musb_start(struct musb *musb)
+ 		if ((devctl & MGC_M_DEVCTL_VBUS) == MGC_M_DEVCTL_VBUS)
+ 			musb->is_active = 1;
+ 	}
++	musb_platform_enable(musb);
+ 	musb_writeb(regs, MGC_O_HDRC_DEVCTL, devctl);
+ }
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1611.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1611.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1611);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

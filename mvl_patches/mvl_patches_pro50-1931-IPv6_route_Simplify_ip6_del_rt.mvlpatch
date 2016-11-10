@@ -1,0 +1,410 @@
+#! /usr/bin/env bash
+# Patch: -IPv6_route_Simplify_ip6_del_rt
+# Date: Wed Nov  5 15:01:39 2008
+# Source: kernel.org
+# MR: 30531
+# Type: Defect Fix
+# Disposition: backport
+# Signed-off-by: Tadashi Abe <tabe@mvista.com>
+# Description:
+# 
+# commit: e0a1ad73d34fd6dfdb630479400511e9879069c0
+# Author: Thomas Graf <tgraf@suug.ch>
+# Date:   Tue Aug 22 00:00:21 2006 -0700
+# 
+#     [IPv6] route: Simplify ip6_del_rt()
+# 
+#     Provide a simple ip6_del_rt() for the majority of users and
+#     an alternative for the exception via netlink. Avoids code
+#     obfuscation.
+# 
+#     Signed-off-by: Thomas Graf <tgraf@suug.ch>
+#     Signed-off-by: David S. Miller <davem@davemloft.net>
+# 
+#  include/net/ip6_route.h |    5 +----
+#  net/ipv6/addrconf.c     |    6 +++---
+#  net/ipv6/ndisc.c        |    4 ++--
+#  net/ipv6/route.c        |   21 ++++++++++++---------
+#  4 files changed, 18 insertions(+), 18 deletions(-)
+# 
+
+PATCHNUM=1931
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 30531
+Type: Defect Fix
+Disposition: backport
+Signed-off-by: Tadashi Abe <tabe@mvista.com>
+Description:
+
+commit: e0a1ad73d34fd6dfdb630479400511e9879069c0
+Author: Thomas Graf <tgraf@suug.ch>
+Date:   Tue Aug 22 00:00:21 2006 -0700
+
+    [IPv6] route: Simplify ip6_del_rt()
+
+    Provide a simple ip6_del_rt() for the majority of users and
+    an alternative for the exception via netlink. Avoids code
+    obfuscation.
+
+    Signed-off-by: Thomas Graf <tgraf@suug.ch>
+    Signed-off-by: David S. Miller <davem@davemloft.net>
+
+ include/net/ip6_route.h  |    5 +----
+ mvl_patches/pro50-1931.c |   16 ++++++++++++++++
+ net/ipv6/addrconf.c      |    6 +++---
+ net/ipv6/ndisc.c         |    4 ++--
+ net/ipv6/route.c         |   21 ++++++++++++---------
+ 5 files changed, 34 insertions(+), 18 deletions(-)
+
+Index: linux-2.6.18/include/net/ip6_route.h
+===================================================================
+--- linux-2.6.18.orig/include/net/ip6_route.h
++++ linux-2.6.18/include/net/ip6_route.h
+@@ -84,10 +84,7 @@ extern int			ip6_ins_rt(struct rt6_info 
+ 					   struct nlmsghdr *,
+ 					   void *rtattr,
+ 					   struct netlink_skb_parms *req);
+-extern int			ip6_del_rt(struct rt6_info *,
+-					   struct nlmsghdr *,
+-					   void *rtattr,
+-					   struct netlink_skb_parms *req);
++extern int			ip6_del_rt(struct rt6_info *);
+ 
+ extern int			ip6_rt_addr_add(struct in6_addr *addr,
+ 						struct net_device *dev,
+Index: linux-2.6.18/net/ipv6/addrconf.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv6/addrconf.c
++++ linux-2.6.18/net/ipv6/addrconf.c
+@@ -745,7 +745,7 @@ static void ipv6_del_addr(struct inet6_i
+ 
+ 		if (rt && ((rt->rt6i_flags & (RTF_GATEWAY | RTF_DEFAULT)) == 0)) {
+ 			if (onlink == 0) {
+-				ip6_del_rt(rt, NULL, NULL, NULL);
++				ip6_del_rt(rt);
+ 				rt = NULL;
+ 			} else if (!(rt->rt6i_flags & RTF_EXPIRES)) {
+ 				rt->rt6i_expires = expires;
+@@ -1709,7 +1709,7 @@ void addrconf_prefix_rcv(struct net_devi
+ 		if (rt && ((rt->rt6i_flags & (RTF_GATEWAY | RTF_DEFAULT)) == 0)) {
+ 			if (rt->rt6i_flags&RTF_EXPIRES) {
+ 				if (valid_lft == 0) {
+-					ip6_del_rt(rt, NULL, NULL, NULL);
++					ip6_del_rt(rt);
+ 					rt = NULL;
+ 				} else {
+ 					rt->rt6i_expires = jiffies + rt_expires;
+@@ -3672,7 +3672,7 @@ static void __ipv6_ifa_notify(int event,
+ 			addrconf_leave_anycast(ifp);
+ 		addrconf_leave_solict(ifp->idev, &ifp->addr);
+ 		dst_hold(&ifp->rt->u.dst);
+-		if (ip6_del_rt(ifp->rt, NULL, NULL, NULL))
++		if (ip6_del_rt(ifp->rt))
+ 			dst_free(&ifp->rt->u.dst);
+ #ifdef CONFIG_IPV6_SUBTREES
+ 		rt6_ifa_del(ifp);
+Index: linux-2.6.18/net/ipv6/ndisc.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv6/ndisc.c
++++ linux-2.6.18/net/ipv6/ndisc.c
+@@ -1009,7 +1009,7 @@ static void ndisc_recv_na(struct sk_buff
+ 			struct rt6_info *rt;
+ 			rt = rt6_get_dflt_router(saddr, dev);
+ 			if (rt)
+-				ip6_del_rt(rt, NULL, NULL, NULL);
++				ip6_del_rt(rt);
+ 		}
+ 
+ out:
+@@ -1162,7 +1162,7 @@ static void ndisc_router_discovery(struc
+ 
+ 	if (rt && lifetime == 0) {
+ 		neigh_clone(neigh);
+-		ip6_del_rt(rt, NULL, NULL, NULL);
++		ip6_del_rt(rt);
+ 		rt = NULL;
+ 	}
+ 
+Index: linux-2.6.18/net/ipv6/route.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv6/route.c
++++ linux-2.6.18/net/ipv6/route.c
+@@ -458,7 +458,7 @@ int rt6_route_rcv(struct net_device *dev
+ 	rt = rt6_get_route_info(prefix, rinfo->prefix_len, gwaddr, dev->ifindex);
+ 
+ 	if (rt && !lifetime) {
+-		ip6_del_rt(rt, NULL, NULL, NULL);
++		ip6_del_rt(rt);
+ 		rt = NULL;
+ 	}
+ 
+@@ -865,7 +865,7 @@ static struct dst_entry *ip6_negative_ad
+ 
+ 	if (rt) {
+ 		if (rt->rt6i_flags & RTF_CACHE)
+-			ip6_del_rt(rt, NULL, NULL, NULL);
++			ip6_del_rt(rt);
+ 		else
+ 			dst_release(dst);
+ 	}
+@@ -1270,7 +1270,8 @@ out:
+ 	return err;
+ }
+ 
+-int ip6_del_rt(struct rt6_info *rt, struct nlmsghdr *nlh, void *_rtattr, struct netlink_skb_parms *req)
++static int __ip6_del_rt(struct rt6_info *rt, struct nlmsghdr *nlh,
++			void *_rtattr, struct netlink_skb_parms *req)
+ {
+ 	int err;
+ 
+@@ -1290,6 +1291,11 @@ int ip6_del_rt(struct rt6_info *rt, stru
+ 	return err;
+ }
+ 
++int ip6_del_rt(struct rt6_info *rt)
++{
++	return __ip6_del_rt(rt, NULL, NULL, NULL);
++}
++
+ static int ip6_route_del(struct in6_rtmsg *rtmsg, struct nlmsghdr *nlh,
+ 			 void *_rtattr, struct netlink_skb_parms *req,
+ 			 unsigned char table_id)
+@@ -1323,7 +1329,7 @@ static int ip6_route_del(struct in6_rtms
+ 				continue;
+ 			dst_hold(&rt->u.dst);
+ 			read_unlock_bh(&table->tb6_lock);
+-			err = ip6_del_rt(rt, nlh, _rtattr, req);
++			err = __ip6_del_rt(rt, nlh, _rtattr, req);
+ 			return err;
+ 		}
+ 	}
+@@ -1496,7 +1502,7 @@ void rt6_redirect(struct in6_addr *dest,
+ 	call_netevent_notifiers(NETEVENT_REDIRECT, &netevent);
+ 
+ 	if (rt->rt6i_flags&RTF_CACHE) {
+-		ip6_del_rt(rt, NULL, NULL, NULL);
++		ip6_del_rt(rt);
+ 		return;
+ 	}
+ 
+@@ -1731,11 +1737,8 @@ restart:
+ 	for (rt = table->tb6_root.leaf; rt; rt = rt->u.next) {
+ 		if (rt->rt6i_flags & (RTF_DEFAULT | RTF_ADDRCONF)) {
+ 			dst_hold(&rt->u.dst);
+-
+ 			read_unlock_bh(&table->tb6_lock);
+-
+-			ip6_del_rt(rt, NULL, NULL, NULL);
+-
++			ip6_del_rt(rt);
+ 			goto restart;
+ 		}
+ 	}
+Index: linux-2.6.18/mvl_patches/pro50-1931.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1931.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1931);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,415 @@
+#! /usr/bin/env bash
+# Patch: -fsldma_fix_fsldma_c_warning_messages_when_its_compiled_under_ppc64
+# Date: Wed Dec 10 13:43:59 2008
+# Source: kernel.org
+# MR: 30590
+# Type: Defect Fix
+# Disposition: backport from 2.6.25-rc6 (56822843ff99c88c778a614851328fcbb1503d10)
+# Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+# Description:
+# 
+# commit 56822843ff99c88c778a614851328fcbb1503d10
+# Author: Zhang Wei <wei.zhang@freescale.com>
+# Date:   Thu Mar 13 10:45:27 2008 -0700
+# 
+#     fsldma: Fix fsldma.c warning messages when it's compiled under PPC64.
+#     
+#     There are warning messages reported by Stephen Rothwell with
+#     ARCH=powerpc allmodconfig build:
+#     
+#     drivers/dma/fsldma.c: In function 'fsl_dma_prep_memcpy':
+#     drivers/dma/fsldma.c:439: warning: comparison of distinct pointer types
+#     lacks a cast
+#     drivers/dma/fsldma.c: In function 'fsl_chan_xfer_ld_queue':
+#     drivers/dma/fsldma.c:584: warning: format '%016llx' expects type 'long long
+#     unsigned int', but argument 4 has type 'dma_addr_t'
+#     drivers/dma/fsldma.c: In function 'fsl_dma_chan_do_interrupt':
+#     drivers/dma/fsldma.c:668: warning: format '%x' expects type 'unsigned int',
+#     but argument 5 has type 'dma_addr_t'
+#     drivers/dma/fsldma.c:684: warning: format '%016llx' expects type 'long long
+#     unsigned int', but argument 4 has type 'dma_addr_t'
+#     drivers/dma/fsldma.c:684: warning: format '%016llx' expects type 'long long
+#     unsigned int', but argument 5 has type 'dma_addr_t'
+#     drivers/dma/fsldma.c:701: warning: format '%02x' expects type 'unsigned
+#     int', but argument 4 has type 'dma_addr_t'
+#     drivers/dma/fsldma.c: In function 'fsl_dma_self_test':
+#     drivers/dma/fsldma.c:840: warning: format '%d' expects type 'int', but
+#     argument 5 has type 'size_t'
+#     drivers/dma/fsldma.c: In function 'of_fsl_dma_probe':
+#     drivers/dma/fsldma.c:1010: warning: format '%08x' expects type 'unsigned
+#     int', but argument 5 has type 'resource_size_t'
+#     
+#     This patch fixed the above warning messages.
+#     
+#     Signed-off-by: Zhang Wei <wei.zhang@freescale.com>
+#     Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+# 
+#  drivers/dma/fsldma.c |   29 ++++++++++++++++-------------
+#  1 files changed, 16 insertions(+), 13 deletions(-)
+# 
+# 
+
+PATCHNUM=1998
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 30590
+Type: Defect Fix
+Disposition: backport from 2.6.25-rc6 (56822843ff99c88c778a614851328fcbb1503d10)
+Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+Description:
+
+commit 56822843ff99c88c778a614851328fcbb1503d10
+Author: Zhang Wei <wei.zhang@freescale.com>
+Date:   Thu Mar 13 10:45:27 2008 -0700
+
+    fsldma: Fix fsldma.c warning messages when it's compiled under PPC64.
+    
+    There are warning messages reported by Stephen Rothwell with
+    ARCH=powerpc allmodconfig build:
+    
+    drivers/dma/fsldma.c: In function 'fsl_dma_prep_memcpy':
+    drivers/dma/fsldma.c:439: warning: comparison of distinct pointer types
+    lacks a cast
+    drivers/dma/fsldma.c: In function 'fsl_chan_xfer_ld_queue':
+    drivers/dma/fsldma.c:584: warning: format '%016llx' expects type 'long long
+    unsigned int', but argument 4 has type 'dma_addr_t'
+    drivers/dma/fsldma.c: In function 'fsl_dma_chan_do_interrupt':
+    drivers/dma/fsldma.c:668: warning: format '%x' expects type 'unsigned int',
+    but argument 5 has type 'dma_addr_t'
+    drivers/dma/fsldma.c:684: warning: format '%016llx' expects type 'long long
+    unsigned int', but argument 4 has type 'dma_addr_t'
+    drivers/dma/fsldma.c:684: warning: format '%016llx' expects type 'long long
+    unsigned int', but argument 5 has type 'dma_addr_t'
+    drivers/dma/fsldma.c:701: warning: format '%02x' expects type 'unsigned
+    int', but argument 4 has type 'dma_addr_t'
+    drivers/dma/fsldma.c: In function 'fsl_dma_self_test':
+    drivers/dma/fsldma.c:840: warning: format '%d' expects type 'int', but
+    argument 5 has type 'size_t'
+    drivers/dma/fsldma.c: In function 'of_fsl_dma_probe':
+    drivers/dma/fsldma.c:1010: warning: format '%08x' expects type 'unsigned
+    int', but argument 5 has type 'resource_size_t'
+    
+    This patch fixed the above warning messages.
+    
+    Signed-off-by: Zhang Wei <wei.zhang@freescale.com>
+    Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+
+ drivers/dma/fsldma.c     |   29 ++++++++++++++++-------------
+ mvl_patches/pro50-1998.c |   16 ++++++++++++++++
+ 2 files changed, 32 insertions(+), 13 deletions(-)
+
+
+Index: linux-2.6.18/drivers/dma/fsldma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/dma/fsldma.c
++++ linux-2.6.18/drivers/dma/fsldma.c
+@@ -57,12 +57,12 @@ static void dma_init(struct fsl_dma_chan
+ 
+ }
+ 
+-static void set_sr(struct fsl_dma_chan *fsl_chan, dma_addr_t val)
++static void set_sr(struct fsl_dma_chan *fsl_chan, u32 val)
+ {
+ 	DMA_OUT(fsl_chan, &fsl_chan->reg_base->sr, val, 32);
+ }
+ 
+-static dma_addr_t get_sr(struct fsl_dma_chan *fsl_chan)
++static u32 get_sr(struct fsl_dma_chan *fsl_chan)
+ {
+ 	return DMA_IN(fsl_chan, &fsl_chan->reg_base->sr, 32);
+ }
+@@ -436,7 +436,7 @@ static struct dma_async_tx_descriptor *f
+ 		dev_dbg(fsl_chan->dev, "new link desc alloc %p\n", new);
+ #endif
+ 
+-		copy = min(len, FSL_DMA_BCR_MAX_CNT);
++		copy = min(len, (size_t)FSL_DMA_BCR_MAX_CNT);
+ 
+ 		set_desc_cnt(fsl_chan, &new->hw, copy);
+ 		set_desc_src(fsl_chan, &new->hw, dma_src);
+@@ -581,8 +581,8 @@ static void fsl_chan_xfer_ld_queue(struc
+ 	if (ld_node != &fsl_chan->ld_queue) {
+ 		/* Get the ld start address from ld_queue */
+ 		next_dest_addr = to_fsl_desc(ld_node)->async_tx.phys;
+-		dev_dbg(fsl_chan->dev, "xfer LDs staring from 0x%016llx\n",
+-				(u64)next_dest_addr);
++		dev_dbg(fsl_chan->dev, "xfer LDs staring from %p\n",
++				(void *)next_dest_addr);
+ 		set_cdar(fsl_chan, next_dest_addr);
+ 		dma_start(fsl_chan);
+ 	} else {
+@@ -663,7 +663,7 @@ static irqreturn_t fsl_dma_chan_do_inter
+ 					     struct pt_regs *reg)
+ {
+ 	struct fsl_dma_chan *fsl_chan = (struct fsl_dma_chan *)data;
+-	dma_addr_t stat;
++	u32 stat;
+ 
+ 	stat = get_sr(fsl_chan);
+ 	dev_dbg(fsl_chan->dev, "event: channel %d, stat = 0x%x\n",
+@@ -682,9 +682,8 @@ static irqreturn_t fsl_dma_chan_do_inter
+ 	 */
+ 	if (stat & FSL_DMA_SR_EOSI) {
+ 		dev_dbg(fsl_chan->dev, "event: End-of-segments INT\n");
+-		dev_dbg(fsl_chan->dev, "event: clndar 0x%016llx, "
+-				"nlndar 0x%016llx\n", (u64)get_cdar(fsl_chan),
+-				(u64)get_ndar(fsl_chan));
++		dev_dbg(fsl_chan->dev, "event: clndar %p, nlndar %p\n",
++			(void *)get_cdar(fsl_chan), (void *)get_ndar(fsl_chan));
+ 		stat &= ~FSL_DMA_SR_EOSI;
+ 	}
+ 
+@@ -728,12 +727,15 @@ static void dma_do_tasklet(unsigned long
+ 	fsl_chan_ld_cleanup(fsl_chan);
+ }
+ 
++#ifdef FSL_DMA_CALLBACKTEST
+ static void fsl_dma_callback_test(struct fsl_dma_chan *fsl_chan)
+ {
+ 	if (fsl_chan)
+ 		dev_info(fsl_chan->dev, "selftest: callback is ok!\n");
+ }
++#endif
+ 
++#ifdef CONFIG_FSL_DMA_SELFTEST
+ static int fsl_dma_self_test(struct fsl_dma_chan *fsl_chan)
+ {
+ 	struct dma_chan *chan;
+@@ -839,9 +841,9 @@ static int fsl_dma_self_test(struct fsl_
+ 	if (err) {
+ 		for (i = 0; (*(src + i) == *(dest + i)) && (i < test_size);
+ 				i++);
+-		dev_err(fsl_chan->dev, "selftest: Test failed, data %d/%d is "
++		dev_err(fsl_chan->dev, "selftest: Test failed, data %d/%ld is "
+ 				"error! src 0x%x, dest 0x%x\n",
+-				i, test_size, *(src + i), *(dest + i));
++				i, (long)test_size, *(src + i), *(dest + i));
+ 	}
+ 
+ free_resources:
+@@ -850,6 +852,7 @@ out:
+ 	kfree(src);
+ 	return err;
+ }
++#endif
+ 
+ static int __devinit of_fsl_dma_chan_probe(struct of_device *dev,
+ 			const struct of_device_id *match)
+@@ -1010,8 +1013,8 @@ static int __devinit of_fsl_dma_probe(st
+ 	}
+ 
+ 	dev_info(&dev->dev, "Probe the Freescale DMA driver for %s "
+-			"controller at 0x%08x...\n",
+-			match->compatible, fdev->reg.start);
++			"controller at %p...\n",
++			match->compatible, (void *)fdev->reg.start);
+ 	fdev->reg_base = ioremap(fdev->reg.start, fdev->reg.end
+ 						- fdev->reg.start + 1);
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1998.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1998.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1998);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

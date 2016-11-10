@@ -1,0 +1,432 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_musb_undo_cppi_iso_dma_support
+# Date: Thu Feb 19 14:56:40 2009
+# Source: MontaVista Software, Inc.
+# MR: 29116
+# Type: Defect Fix
+# Disposition: local
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Undo the TI's CPPI 3.0 isochronous DMA support hack that used a wrong approach
+# to the problem, so that a patch fitting for upstream submission can follow up.
+# 
+#  drivers/usb/musb/cppi_dma.c  |   31 +------------------
+#  drivers/usb/musb/musb_core.h |    3 -
+#  drivers/usb/musb/musb_host.c |   67 +++++++------------------------------------
+#  3 files changed, 14 insertions(+), 87 deletions(-)
+# 
+
+PATCHNUM=2044
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 29116
+Type: Defect Fix
+Disposition: local
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Undo the TI's CPPI 3.0 isochronous DMA support hack that used a wrong approach
+to the problem, so that a patch fitting for upstream submission can follow up.
+
+ drivers/usb/musb/cppi_dma.c  |   31 +------------------
+ drivers/usb/musb/musb_core.h |    3 -
+ drivers/usb/musb/musb_host.c |   67 +++++++------------------------------------
+ mvl_patches/pro50-2044.c     |   16 ++++++++++
+ 4 files changed, 30 insertions(+), 87 deletions(-)
+
+Index: linux-2.6.18/drivers/usb/musb/cppi_dma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/cppi_dma.c
++++ linux-2.6.18/drivers/usb/musb/cppi_dma.c
+@@ -573,18 +573,6 @@ cppi_next_tx_segment(struct musb *musb, 
+ 	struct cppi_tx_stateram	__iomem *tx_ram = tx->state_ram;
+ 	int			rndis;
+ 
+-	struct usb_iso_packet_descriptor *iso_desc = tx->hw_ep->iso_frame_desc;
+-	int 			iso_idx = tx->hw_ep->iso_idx;
+-
+-
+-	if (iso_desc) {
+-		n_bds = tx->hw_ep->num_iso_packets - iso_idx;
+-		n_bds = min(n_bds, (unsigned)NUM_TXCHAN_BD);
+-
+-		tx->offset = iso_desc[iso_idx].offset;
+-		goto set_bds;
+-	}
+-
+ 	/* TX can use the CPPI "rndis" mode, where we can probably fit this
+ 	 * transfer in one BD and one IRQ.  The only time we would NOT want
+ 	 * to use it is when hardware constraints prevent it, or if we'd
+@@ -619,7 +607,7 @@ cppi_next_tx_segment(struct musb *musb, 
+ 	 * for one outstanding request only (no queues, not even
+ 	 * the implicit ones of an iso urb).
+ 	 */
+-set_bds:
++
+ 	bd = tx->freelist;
+ 	tx->head = bd;
+ 	tx->last_processed = NULL;
+@@ -643,22 +631,7 @@ set_bds:
+ 		/* FIXME set EOP only on the last packet,
+ 		 * SOP only on the first ... avoid IRQs
+ 		 */
+-
+-		if (iso_desc) {
+-			/*FIXME check if length < tx->buf_len ?*/
+-
+-			bd->hw_off_len = iso_desc[iso_idx].length;
+-			bd->hw_options = CPPI_SOP_SET | CPPI_EOP_SET
+-						    | CPPI_OWN_SET;
+-
+-			if (iso_desc[iso_idx].length == 0)
+-				bd->hw_options |= CPPI_ZERO_SET | 1;
+-			else
+-				bd->hw_options |= iso_desc[iso_idx].length;
+-
+-			tx->offset =  iso_desc[++iso_idx].offset;
+-
+-		} else if ((tx->offset + maxpacket) <= tx->buf_len) {
++		if ((tx->offset + maxpacket) <= tx->buf_len) {
+ 			tx->offset += maxpacket;
+ 			bd->hw_off_len = maxpacket;
+ 			bd->hw_options = CPPI_SOP_SET | CPPI_EOP_SET
+Index: linux-2.6.18/drivers/usb/musb/musb_core.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.h
++++ linux-2.6.18/drivers/usb/musb/musb_core.h
+@@ -292,9 +292,6 @@ struct musb_hw_ep {
+ 	struct musb_ep		ep_in;			/* TX */
+ 	struct musb_ep		ep_out;			/* RX */
+ #endif
+-	struct usb_iso_packet_descriptor	*iso_frame_desc;
+-	int			num_iso_packets;
+-	u8			iso_idx;
+ };
+ 
+ static inline struct usb_request *next_in_request(struct musb_hw_ep *hw_ep)
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -168,7 +168,7 @@ static void
+ musb_start_urb(struct musb *musb, int is_in, struct musb_qh *qh)
+ {
+ 	u16			frame;
+-	u32			len = 0;
++	u32			len;
+ 	void			*buf;
+ 	void __iomem		*mbase =  musb->mregs;
+ 	struct urb		*urb = next_urb(qh);
+@@ -176,16 +176,11 @@ musb_start_urb(struct musb *musb, int is
+ 	unsigned		pipe = urb->pipe;
+ 	u8			address = usb_pipedevice(pipe);
+ 	int			epnum = hw_ep->epnum;
+-	struct usb_iso_packet_descriptor	*d;
+-	int			npack;
+-	u8 			iso_dma;
+ 
+ 	/* initialize software qh state */
+ 	qh->offset = 0;
+ 	qh->segsize = 0;
+ 
+-	hw_ep->iso_frame_desc = 0;
+-
+ 	/* gather right source of data */
+ 	switch (qh->type) {
+ 	case USB_ENDPOINT_XFER_CONTROL:
+@@ -197,30 +192,10 @@ musb_start_urb(struct musb *musb, int is
+ 		len = 8;
+ 		break;
+ 	case USB_ENDPOINT_XFER_ISOC:
+-		/*
+-		 * for now ISO DMA is only available for CPPI DMA (DaVinci)
+-		 */
+-		iso_dma = is_cppi_enabled() && hw_ep->musb->dma_controller;
+-		hw_ep->iso_idx = 0;
+ 		qh->iso_idx = 0;
+ 		qh->frame = 0;
+-
+-		hw_ep->iso_frame_desc = urb->iso_frame_desc;
+-		hw_ep->num_iso_packets = urb->number_of_packets;
+-
+-		d = urb->iso_frame_desc;
+-
+-		buf = urb->transfer_buffer + d->offset;
+-		npack = urb->number_of_packets;
+-		/*
+-		 * if Tx DMA, take all packets,
+-		 * if PIO or Rx DMA, just the first one
+-		 */
+-		do {
+-			len += d->length;
+-			d++;
+-		} while (--npack && iso_dma && !is_in);
+-
++		buf = urb->transfer_buffer + urb->iso_frame_desc[0].offset;
++		len = urb->iso_frame_desc[0].length;
+ 		break;
+ 	default:		/* bulk, interrupt */
+ 		buf = urb->transfer_buffer;
+@@ -1259,25 +1234,19 @@ void musb_host_tx(struct musb *musb, u8 
+ 
+ 	}
+ 
+-	/* ISO needs special care */
+-	if (usb_pipeisoc(pipe)) {
+-		struct usb_iso_packet_descriptor *d;
+-
+-		if (dma) {
++	/* REVISIT this looks wrong... */
++	if (!status || dma || usb_pipeisoc(pipe)) {
++		if (dma)
+ 			wLength = dma->actual_len;
+-
+-			do {
+-				d = &urb->iso_frame_desc[hw_ep->iso_idx];
+-				d->status = 0;
+-			} while (++hw_ep->iso_idx < urb->number_of_packets);
+-
+-			done = true;
+-		} else {
++		else
+ 			wLength = qh->segsize;
++		qh->offset += wLength;
++
++		if (usb_pipeisoc(pipe)) {
++			struct usb_iso_packet_descriptor	*d;
+ 
+ 			d = urb->iso_frame_desc + qh->iso_idx;
+ 			d->actual_length = qh->segsize;
+-			d->status = status;
+ 			if (++qh->iso_idx >= urb->number_of_packets) {
+ 				done = true;
+ 			} else {
+@@ -1285,19 +1254,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 				buf = urb->transfer_buffer + d->offset;
+ 				wLength = d->length;
+ 			}
+-		}
+-
+-		qh->offset += wLength;
+-	/* non-ISO case	*/
+-	} else if (!status || dma) {
+-
+-		if (dma)
+-			wLength = dma->actual_len;
+-		else
+-			wLength = qh->segsize;
+-		qh->offset += wLength;
+-
+-		if (dma) {
++		} else if (dma) {
+ 			done = true;
+ 		} else {
+ 			/* see if we need to send more data, or ZLP */
+Index: linux-2.6.18/mvl_patches/pro50-2044.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2044.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2044);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

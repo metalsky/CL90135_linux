@@ -1,0 +1,545 @@
+#! /usr/bin/env bash
+# Patch: -POWERPC_Make_pci_read_irq_line_the_default_on_mpc7
+# Date: Wed Dec  3 14:03:14 2008
+# Source: git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+# MR: 30078
+# Type: Enhancement
+# Disposition: backport
+# Signed-off-by: Randy Vinson <rvinson@mvista.com>
+# Description:
+# From 5873c9bdb05e9cc68ff4c45a192032a61f705067 Mon Sep 17 00:00:00 2001
+# From: Zang Roy-r61911 <tie-fei.zang@freescale.com>
+# Date: Tue, 14 Nov 2006 14:31:50 +0800
+# Subject: [PATCH] [POWERPC] Make pci_read_irq_line the default on mpc7448hpc2 board
+# 
+# The following patch adds a tsi108/9 pci interrupt controller host.
+# On mpc7448hpc2 board, pci_irq_fixup function is removed, which makes the
+# pci_read_irq_line be the default pci irq fixup.
+# 
+# Signed-off-by: Roy Zang <tie-fei.zang@freescale.com>
+# Signed-off-by: Paul Mackerras <paulus@samba.org>
+
+PATCHNUM=1945
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+MR: 30078
+Type: Enhancement
+Disposition: backport
+Signed-off-by: Randy Vinson <rvinson@mvista.com>
+Description:
+From 5873c9bdb05e9cc68ff4c45a192032a61f705067 Mon Sep 17 00:00:00 2001
+From: Zang Roy-r61911 <tie-fei.zang@freescale.com>
+Date: Tue, 14 Nov 2006 14:31:50 +0800
+Subject: [PATCH] [POWERPC] Make pci_read_irq_line the default on mpc7448hpc2 board
+
+The following patch adds a tsi108/9 pci interrupt controller host.
+On mpc7448hpc2 board, pci_irq_fixup function is removed, which makes the
+pci_read_irq_line be the default pci irq fixup.
+
+Signed-off-by: Roy Zang <tie-fei.zang@freescale.com>
+Signed-off-by: Paul Mackerras <paulus@samba.org>
+Index: linux-2.6.18/arch/powerpc/boot/dts/mpc7448hpc2.dts
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/boot/dts/mpc7448hpc2.dts
++++ linux-2.6.18/arch/powerpc/boot/dts/mpc7448hpc2.dts
+@@ -160,29 +160,41 @@
+ 			interrupt-map = <
+ 
+ 				/* IDSEL 0x11 */
+-				0800 0 0 1 7400 24 0
+-				0800 0 0 2 7400 25 0
+-				0800 0 0 3 7400 26 0
+-				0800 0 0 4 7400 27 0
++				0800 0 0 1 1180 24 0
++				0800 0 0 2 1180 25 0
++				0800 0 0 3 1180 26 0
++				0800 0 0 4 1180 27 0
+ 
+ 				/* IDSEL 0x12 */
+-				1000 0 0 1 7400 25 0
+-				1000 0 0 2 7400 26 0
+-				1000 0 0 3 7400 27 0
+-				1000 0 0 4 7400 24 0
++				1000 0 0 1 1180 25 0
++				1000 0 0 2 1180 26 0
++				1000 0 0 3 1180 27 0
++				1000 0 0 4 1180 24 0
+ 
+ 				/* IDSEL 0x13 */
+-				1800 0 0 1 7400 26 0
+-				1800 0 0 2 7400 27 0
+-				1800 0 0 3 7400 24 0
+-				1800 0 0 4 7400 25 0
++				1800 0 0 1 1180 26 0
++				1800 0 0 2 1180 27 0
++				1800 0 0 3 1180 24 0
++				1800 0 0 4 1180 25 0
+ 
+ 				/* IDSEL 0x14 */
+-				2000 0 0 1 7400 27 0
+-				2000 0 0 2 7400 24 0
+-				2000 0 0 3 7400 25 0
+-				2000 0 0 4 7400 26 0
++				2000 0 0 1 1180 27 0
++				2000 0 0 2 1180 24 0
++				2000 0 0 3 1180 25 0
++				2000 0 0 4 1180 26 0
+ 				>;
++			router@1180 {
++				linux,phandle = <1180>;
++				clock-frequency = <0>;
++				interrupt-controller;
++				device_type = "pic-router";
++				#address-cells = <0>;
++				#interrupt-cells = <2>;
++				built-in;
++				big-endian;
++				interrupts = <17 2>;
++				interrupt-parent = <7400>;
++			};
+ 		};
+ 	};
+ 
+Index: linux-2.6.18/arch/powerpc/platforms/embedded6xx/mpc7448_hpc2.c
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/platforms/embedded6xx/mpc7448_hpc2.c
++++ linux-2.6.18/arch/powerpc/platforms/embedded6xx/mpc7448_hpc2.c
+@@ -55,7 +55,7 @@
+ 
+ extern int tsi108_setup_pci(struct device_node *dev);
+ extern void _nmask_and_or_msr(unsigned long nmask, unsigned long or_val);
+-extern void tsi108_pci_int_init(void);
++extern void tsi108_pci_int_init(struct device_node *node);
+ extern void tsi108_irq_cascade(unsigned int irq, struct irq_desc *desc,
+ 			    struct pt_regs *regs);
+ 
+@@ -68,59 +68,6 @@ int mpc7448_hpc2_exclude_device(struct p
+ 		return PCIBIOS_SUCCESSFUL;
+ }
+ 
+-/*
+- * find pci slot by devfn in interrupt map of OF tree
+- */
+-u8 find_slot_by_devfn(unsigned int *interrupt_map, unsigned int devfn)
+-{
+-	int i;
+-	unsigned int tmp;
+-	for (i = 0; i < 4; i++){
+-		tmp = interrupt_map[i*4*7];
+-		if ((tmp >> 11) == (devfn >> 3))
+-			return i;
+-	}
+-	return i;
+-}
+-
+-/*
+- * Scans the interrupt map for pci device
+- */
+-void __devinit mpc7448_hpc2_fixup_irq(struct pci_dev *dev)
+-{
+-	struct pci_controller *hose;
+-	struct device_node *node;
+-	const unsigned int *interrupt;
+-	int busnr;
+-	int len;
+-	u8 slot;
+-	u8 pin;
+-
+-	/* Lookup the hose */
+-	busnr = dev->bus->number;
+-	hose = pci_bus_to_hose(busnr);
+-	if (!hose)
+-		printk(KERN_ERR "No pci hose found\n");
+-
+-	/* Check it has an OF node associated */
+-	node = hose->dn;
+-	if (!node)
+-		printk(KERN_ERR "No pci node found\n");
+-
+-	interrupt = get_property(node, "interrupt-map", &len);
+-	slot = find_slot_by_devfn(interrupt, dev->devfn);
+-	pci_read_config_byte(dev, PCI_INTERRUPT_PIN, &pin);
+-	if (pin == 0 || pin > 4)
+-		pin = 1;
+-	pin--;
+-	dev->irq  = interrupt[slot*4*7 + pin*7 + 5];
+-
+-	pci_write_config_byte(dev, PCI_INTERRUPT_LINE, dev->irq);
+-
+-	DBG("TSI_PCI: dev->irq = 0x%x\n", dev->irq);
+-}
+-/* temporary pci irq map fixup*/
+-
+ static void __init mpc7448_hpc2_setup_arch(void)
+ {
+ 	struct device_node *cpu;
+@@ -183,9 +130,12 @@ static void __init mpc7448_hpc2_init_IRQ
+ {
+ 	struct mpic *mpic;
+ 	phys_addr_t mpic_paddr = 0;
++	struct device_node *tsi_pic;
++#ifdef CONFIG_PCI
+ 	unsigned int cascade_pci_irq;
+ 	struct device_node *tsi_pci;
+-	struct device_node *tsi_pic;
++	struct device_node *cascade_node = NULL;
++#endif
+ 
+ 	tsi_pic = of_find_node_by_type(NULL, "open-pic");
+ 	if (tsi_pic) {
+@@ -199,31 +149,41 @@ static void __init mpc7448_hpc2_init_IRQ
+ 		return;
+ 	}
+ 
+-	DBG("%s: tsi108pic phys_addr = 0x%x\n", __FUNCTION__,
++	DBG("%s: tsi108 pic phys_addr = 0x%x\n", __FUNCTION__,
+ 	    (u32) mpic_paddr);
+ 
+ 	mpic = mpic_alloc(tsi_pic, mpic_paddr,
+ 			MPIC_PRIMARY | MPIC_BIG_ENDIAN | MPIC_WANTS_RESET |
+ 			MPIC_SPV_EOI | MPIC_NO_PTHROU_DIS | MPIC_REGSET_TSI108,
+-			0, /* num_sources used */
+-			0, /* num_sources used */
++			24,
++			NR_IRQS-4, /* num_sources used */
+ 			"Tsi108_PIC");
+ 
+-	BUG_ON(mpic == NULL); /* XXXX */
++	BUG_ON(mpic == NULL);
++
++	mpic_assign_isu(mpic, 0, mpic_paddr + 0x100);
++
+ 	mpic_init(mpic);
+ 
++#ifdef CONFIG_PCI
+ 	tsi_pci = of_find_node_by_type(NULL, "pci");
+-	if (tsi_pci == 0) {
++	if (tsi_pci == NULL) {
+ 		printk("%s: No tsi108 pci node found !\n", __FUNCTION__);
+ 		return;
+ 	}
++	cascade_node = of_find_node_by_type(NULL, "pic-router");
++	if (cascade_node == NULL) {
++		printk("%s: No tsi108 pci cascade node found !\n", __FUNCTION__);
++		return;
++	}
+ 
+ 	cascade_pci_irq = irq_of_parse_and_map(tsi_pci, 0);
++	DBG("%s: tsi108 cascade_pci_irq = 0x%x\n", __FUNCTION__,
++	    (u32) cascade_pci_irq);
++	tsi108_pci_int_init(cascade_node);
+ 	set_irq_data(cascade_pci_irq, mpic);
+ 	set_irq_chained_handler(cascade_pci_irq, tsi108_irq_cascade);
+-
+-	tsi108_pci_int_init();
+-
++#endif
+ 	/* Configure MPIC outputs to CPU0 */
+ 	tsi108_write_reg(TSI108_MPIC_OFFSET + 0x30c, 0);
+ 	of_node_put(tsi_pic);
+@@ -281,7 +241,6 @@ static int mpc7448_machine_check_excepti
+ 		return 1;
+ 	}
+ 	return 0;
+-
+ }
+ 
+ define_machine(mpc7448_hpc2){
+@@ -291,7 +250,6 @@ define_machine(mpc7448_hpc2){
+ 	.init_IRQ 		= mpc7448_hpc2_init_IRQ,
+ 	.show_cpuinfo 		= mpc7448_hpc2_show_cpuinfo,
+ 	.get_irq 		= mpic_get_irq,
+-	.pci_irq_fixup 		= mpc7448_hpc2_fixup_irq,
+ 	.restart 		= mpc7448_hpc2_restart,
+ 	.calibrate_decr 	= generic_calibrate_decr,
+ 	.machine_check_exception= mpc7448_machine_check_exception,
+Index: linux-2.6.18/arch/powerpc/sysdev/tsi108_pci.c
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/sysdev/tsi108_pci.c
++++ linux-2.6.18/arch/powerpc/sysdev/tsi108_pci.c
+@@ -3,6 +3,8 @@
+  *
+  * 2004-2005 (c) Tundra Semiconductor Corp.
+  * Author: Alex Bounine (alexandreb@tundra.com)
++ * Author: Roy Zang (tie-fei.zang@freescale.com)
++ * 	   Add pci interrupt router host
+  *
+  * This program is free software; you can redistribute it and/or modify it
+  * under the terms of the GNU General Public License as published by the Free
+@@ -48,6 +50,8 @@
+ 
+ u32 tsi108_pci_cfg_base;
+ u32 tsi108_csr_vir_base;
++static struct device_node *pci_irq_node;
++static struct irq_host *pci_irq_host;
+ 
+ extern u32 get_vir_csrbase(void);
+ extern u32 tsi108_read_reg(u32 reg_offset);
+@@ -378,6 +382,38 @@ static struct irq_chip tsi108_pci_irq = 
+ 	.unmask = tsi108_pci_irq_enable,
+ };
+ 
++static int pci_irq_host_xlate(struct irq_host *h, struct device_node *ct,
++			    u32 *intspec, unsigned int intsize,
++			    irq_hw_number_t *out_hwirq, unsigned int *out_flags)
++{
++	*out_hwirq = intspec[0];
++	*out_flags = IRQ_TYPE_LEVEL_HIGH;
++	return 0;
++}
++
++static int pci_irq_host_map(struct irq_host *h, unsigned int virq,
++			  irq_hw_number_t hw)
++{	unsigned int irq;
++	DBG("%s(%d, 0x%lx)\n", __FUNCTION__, virq, hw);
++	if ((virq >= 1) && (virq <= 4)){
++		irq = virq + IRQ_PCI_INTAD_BASE - 1;
++		get_irq_desc(irq)->status |= IRQ_LEVEL;
++		set_irq_chip(irq, &tsi108_pci_irq);
++	}
++	return 0;
++}
++
++static int pci_irq_host_match(struct irq_host *h, struct device_node *node)
++{
++	return pci_irq_node == node;
++}
++
++static struct irq_host_ops pci_irq_host_ops = {
++	.match = pci_irq_host_match,
++	.map = pci_irq_host_map,
++	.xlate = pci_irq_host_xlate,
++};
++
+ /*
+  * Exported functions
+  */
+@@ -391,15 +427,15 @@ static struct irq_chip tsi108_pci_irq = 
+  * to the MPIC.
+  */
+ 
+-void __init tsi108_pci_int_init(void)
++void __init tsi108_pci_int_init(struct device_node *node)
+ {
+-	u_int i;
+-
+ 	DBG("Tsi108_pci_int_init: initializing PCI interrupts\n");
+ 
+-	for (i = 0; i < NUM_PCI_IRQS; i++) {
+-		irq_desc[i + IRQ_PCI_INTAD_BASE].chip = &tsi108_pci_irq;
+-		irq_desc[i + IRQ_PCI_INTAD_BASE].status |= IRQ_LEVEL;
++	pci_irq_node = of_node_get(node);
++	pci_irq_host = irq_alloc_host(IRQ_HOST_MAP_LEGACY, 0, &pci_irq_host_ops, 0);
++	if (pci_irq_host == NULL) {
++		printk(KERN_ERR "pci_irq_host: failed to allocate irq host !\n");
++		return;
+ 	}
+ 
+ 	init_pci_source();
+Index: linux-2.6.18/mvl_patches/pro50-1945.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1945.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1945);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

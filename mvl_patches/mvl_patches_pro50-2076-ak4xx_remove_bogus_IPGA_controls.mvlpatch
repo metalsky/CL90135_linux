@@ -1,0 +1,517 @@
+#! /usr/bin/env bash
+# Patch: -ak4xx_remove_bogus_IPGA_controls
+# Date: Thu Feb 19 14:58:50 2009
+# Source: kernel.org
+# MR: 28687
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+# 
+# [ALSA] ak4xxx - Remove bogus IPGA controls
+# 
+# Remove IPGA volume controls and merge the IPGA range to ADC volume
+# controls.  These two volumes are not really independent but connected
+# simply in different ranges 0-0x7f and 0x80-max.  It doesn't make sense
+# to provide two controls.
+# Since both 0x7f and 0x80 specify 0dB, a hack is needed for IPGA range
+# to skip 0x80 (increment one) for such controls.
+# 
+# Signed-off-by: Takashi Iwai <tiwai@suse.de>
+# Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+# 
+# commit 854b66e44260320c21ebe4b8a18e189f2e45b5be
+# tree 2e9636686f69d9f7ab659d3afa1b7495ef6de7d8
+# parent 8f88820ee49359ea33af42845456ce9dbf54d39a
+# author Takashi Iwai <tiwai@suse.de> Fri, 08 Sep 2006 12:27:38 +0200
+# committer Jaroslav Kysela <perex@suse.cz> Sat, 23 Sep 2006 10:46:55 +0200
+# 
+#  include/sound/ak4xxx-adda.h   |   10 ---
+#  sound/i2c/other/ak4xxx-adda.c |  128 ++++++-----------------------------------
+#  sound/pci/ice1712/revo.c      |    1 
+#  3 files changed, 18 insertions(+), 121 deletions(-)
+# 
+
+PATCHNUM=2076
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 28687
+Type: Enhancement
+Disposition: local
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+
+[ALSA] ak4xxx - Remove bogus IPGA controls
+
+Remove IPGA volume controls and merge the IPGA range to ADC volume
+controls.  These two volumes are not really independent but connected
+simply in different ranges 0-0x7f and 0x80-max.  It doesn't make sense
+to provide two controls.
+Since both 0x7f and 0x80 specify 0dB, a hack is needed for IPGA range
+to skip 0x80 (increment one) for such controls.
+
+Signed-off-by: Takashi Iwai <tiwai@suse.de>
+Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+
+commit 854b66e44260320c21ebe4b8a18e189f2e45b5be
+tree 2e9636686f69d9f7ab659d3afa1b7495ef6de7d8
+parent 8f88820ee49359ea33af42845456ce9dbf54d39a
+author Takashi Iwai <tiwai@suse.de> Fri, 08 Sep 2006 12:27:38 +0200
+committer Jaroslav Kysela <perex@suse.cz> Sat, 23 Sep 2006 10:46:55 +0200
+
+ include/sound/ak4xxx-adda.h   |   10 ---
+ mvl_patches/pro50-2076.c      |   16 +++++
+ sound/i2c/other/ak4xxx-adda.c |  128 +++++-------------------------------------
+ sound/pci/ice1712/revo.c      |    1 
+ 4 files changed, 34 insertions(+), 121 deletions(-)
+
+diff --git a/include/sound/ak4xxx-adda.h b/include/sound/ak4xxx-adda.h
+index 026e407..d0deca6 100644
+Index: linux-2.6.18/include/sound/ak4xxx-adda.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/ak4xxx-adda.h
++++ linux-2.6.18/include/sound/ak4xxx-adda.h
+@@ -48,7 +48,6 @@ struct snd_akm4xxx_dac_channel {
+ /* ADC labels and channels */
+ struct snd_akm4xxx_adc_channel {
+ 	char *name;		/* capture gain volume label */
+-	char *gain_name;	/* IPGA */
+ 	char *switch_name;	/* capture switch */
+ 	unsigned int num_channels;
+ };
+@@ -91,13 +90,4 @@ int snd_akm4xxx_build_controls(struct sn
+ #define snd_akm4xxx_set_vol(ak,chip,reg,val) \
+ 	((ak)->volumes[(chip) * 16 + (reg)] = (val))
+ 
+-/* Warning: IPGA is tricky - we assume the addr + 4 is unused
+- *   so far, it's OK for all AK codecs with IPGA:
+- *   AK4524, AK4528 and EK5365
+- */
+-#define snd_akm4xxx_get_ipga(ak,chip,reg) \
+-	snd_akm4xxx_get_vol(ak, chip, (reg) + 4)
+-#define snd_akm4xxx_set_ipga(ak,chip,reg,val) \
+-	snd_akm4xxx_set_vol(ak, chip, (reg) + 4, val)
+-
+ #endif /* __SOUND_AK4XXX_ADDA_H */
+Index: linux-2.6.18/sound/i2c/other/ak4xxx-adda.c
+===================================================================
+--- linux-2.6.18.orig/sound/i2c/other/ak4xxx-adda.c
++++ linux-2.6.18/sound/i2c/other/ak4xxx-adda.c
+@@ -43,10 +43,7 @@ void snd_akm4xxx_write(struct snd_akm4xx
+ 	ak->ops.write(ak, chip, reg, val);
+ 
+ 	/* save the data */
+-	/* don't overwrite with IPGA data */
+-	if ((ak->type != SND_AK4524 && ak->type != SND_AK5365) ||
+-	    (reg != 0x04 && reg != 0x05) || (val & 0x80) == 0)
+-		snd_akm4xxx_set(ak, chip, reg, val);
++	snd_akm4xxx_set(ak, chip, reg, val);
+ 	ak->ops.unlock(ak, chip);
+ }
+ 
+@@ -70,12 +67,6 @@ static void ak4524_reset(struct snd_akm4
+ 		for (reg = 0x04; reg < maxreg; reg++)
+ 			snd_akm4xxx_write(ak, chip, reg,
+ 					  snd_akm4xxx_get(ak, chip, reg));
+-		if (ak->type == SND_AK4528)
+-			continue;
+-		/* IPGA */
+-		for (reg = 0x04; reg < 0x06; reg++)
+-			snd_akm4xxx_write(ak, chip, reg,
+-					  snd_akm4xxx_get_ipga(ak, chip, reg) | 0x80);
+ 	}
+ }
+ 
+@@ -175,7 +166,6 @@ static DECLARE_TLV_DB_SCALE(db_scale_vol
+ static DECLARE_TLV_DB_SCALE(db_scale_8bit, -12750, 50, 1);
+ static DECLARE_TLV_DB_SCALE(db_scale_7bit, -6350, 50, 1);
+ static DECLARE_TLV_DB_LINEAR(db_scale_linear, TLV_DB_GAIN_MUTE, 0);
+-static DECLARE_TLV_DB_SCALE(db_scale_ipga, 0, 50, 0);
+ 
+ /*
+  * initialize all the ak4xxx chips
+@@ -190,8 +180,6 @@ void snd_akm4xxx_init(struct snd_akm4xxx
+ 		0x01, 0x03, /* 1: ADC/DAC enable */
+ 		0x04, 0x00, /* 4: ADC left muted */
+ 		0x05, 0x00, /* 5: ADC right muted */
+-		0x04, 0x80, /* 4: ADC IPGA gain 0dB */
+-		0x05, 0x80, /* 5: ADC IPGA gain 0dB */
+ 		0x06, 0x00, /* 6: DAC left muted */
+ 		0x07, 0x00, /* 7: DAC right muted */
+ 		0xff, 0xff
+@@ -324,13 +312,15 @@ EXPORT_SYMBOL(snd_akm4xxx_init);
+ /*
+  * Mixer callbacks
+  */
++#define AK_IPGA 			(1<<20)	/* including IPGA */
+ #define AK_VOL_CVT 			(1<<21)	/* need dB conversion */
+ #define AK_NEEDSMSB 			(1<<22)	/* need MSB update bit */
+ #define AK_INVERT 			(1<<23)	/* data is inverted */
+ #define AK_GET_CHIP(val)		(((val) >> 8) & 0xff)
+ #define AK_GET_ADDR(val)		((val) & 0xff)
+-#define AK_GET_SHIFT(val)		(((val) >> 16) & 0x1f)
++#define AK_GET_SHIFT(val)		(((val) >> 16) & 0x0f)
+ #define AK_GET_VOL_CVT(val)		(((val) >> 21) & 1)
++#define AK_GET_IPGA(val)		(((val) >> 20) & 1)
+ #define AK_GET_NEEDSMSB(val)		(((val) >> 22) & 1)
+ #define AK_GET_INVERT(val)		(((val) >> 23) & 1)
+ #define AK_GET_MASK(val)		(((val) >> 24) & 0xff)
+@@ -371,8 +361,10 @@ static int put_ak_reg(struct snd_kcontro
+ 		return 0;
+ 
+ 	snd_akm4xxx_set_vol(ak, chip, addr, nval);
+-	if (AK_GET_VOL_CVT(kcontrol->private_value))
++	if (AK_GET_VOL_CVT(kcontrol->private_value) && nval < 128)
+ 		nval = vol_cvt_datt[nval];
++	if (AK_GET_IPGA(kcontrol->private_value) && nval >= 128)
++		nval++; /* need to correct + 1 since both 127 and 128 are 0dB */
+ 	if (AK_GET_INVERT(kcontrol->private_value))
+ 		nval = mask - nval;
+ 	if (AK_GET_NEEDSMSB(kcontrol->private_value))
+@@ -424,68 +416,6 @@ static int snd_akm4xxx_stereo_volume_put
+ 	return change;
+ }
+ 
+-#define snd_akm4xxx_ipga_gain_info	snd_akm4xxx_volume_info
+-
+-static int snd_akm4xxx_ipga_gain_get(struct snd_kcontrol *kcontrol,
+-				     struct snd_ctl_elem_value *ucontrol)
+-{
+-	struct snd_akm4xxx *ak = snd_kcontrol_chip(kcontrol);
+-	int chip = AK_GET_CHIP(kcontrol->private_value);
+-	int addr = AK_GET_ADDR(kcontrol->private_value);
+-
+-	ucontrol->value.integer.value[0] =
+-		snd_akm4xxx_get_ipga(ak, chip, addr);
+-	return 0;
+-}
+-
+-static int put_ak_ipga(struct snd_kcontrol *kcontrol, int addr,
+-		       unsigned char nval)
+-{
+-	struct snd_akm4xxx *ak = snd_kcontrol_chip(kcontrol);
+-	int chip = AK_GET_CHIP(kcontrol->private_value);
+-
+-	if (snd_akm4xxx_get_ipga(ak, chip, addr) == nval)
+-		return 0;
+-	snd_akm4xxx_set_ipga(ak, chip, addr, nval);
+-	snd_akm4xxx_write(ak, chip, addr, nval | 0x80); /* need MSB */
+-	return 1;
+-}
+-
+-static int snd_akm4xxx_ipga_gain_put(struct snd_kcontrol *kcontrol,
+-				     struct snd_ctl_elem_value *ucontrol)
+-{
+-	return put_ak_ipga(kcontrol, AK_GET_ADDR(kcontrol->private_value),
+-			   ucontrol->value.integer.value[0]);
+-}
+-
+-#define snd_akm4xxx_stereo_gain_info	snd_akm4xxx_stereo_volume_info
+-
+-static int snd_akm4xxx_stereo_gain_get(struct snd_kcontrol *kcontrol,
+-				       struct snd_ctl_elem_value *ucontrol)
+-{
+-	struct snd_akm4xxx *ak = snd_kcontrol_chip(kcontrol);
+-	int chip = AK_GET_CHIP(kcontrol->private_value);
+-	int addr = AK_GET_ADDR(kcontrol->private_value);
+-
+-	ucontrol->value.integer.value[0] =
+-		snd_akm4xxx_get_ipga(ak, chip, addr);
+-	ucontrol->value.integer.value[1] =
+-		snd_akm4xxx_get_ipga(ak, chip, addr + 1);
+-	return 0;
+-}
+-
+-static int snd_akm4xxx_stereo_gain_put(struct snd_kcontrol *kcontrol,
+-				       struct snd_ctl_elem_value *ucontrol)
+-{
+-	int addr = AK_GET_ADDR(kcontrol->private_value);
+-	int change;
+-
+-	change = put_ak_ipga(kcontrol, addr, ucontrol->value.integer.value[0]);
+-	change |= put_ak_ipga(kcontrol, addr + 1,
+-			      ucontrol->value.integer.value[1]);
+-	return change;
+-}
+-
+ static int snd_akm4xxx_deemphasis_info(struct snd_kcontrol *kcontrol,
+ 				       struct snd_ctl_elem_info *uinfo)
+ {
+@@ -702,35 +632,15 @@ static int build_adc_controls(struct snd
+ 			knew.put = snd_akm4xxx_volume_put;
+ 		}
+ 		/* register 4 & 5 */
+-		knew.private_value =
+-			AK_COMPOSE(idx/2, (idx%2) + 4, 0, 127) |
+-			AK_VOL_CVT;
+-		knew.tlv.p = db_scale_vol_datt;
+-		err = snd_ctl_add(ak->card, snd_ctl_new1(&knew, ak));
+-		if (err < 0)
+-			return err;
+-
+-		if (! ak->adc_info || ! ak->adc_info[mixer_ch].gain_name)
+-			knew.name = "IPGA Analog Capture Volume";
++		if (ak->type == SND_AK5365)
++			knew.private_value =
++				AK_COMPOSE(idx/2, (idx%2) + 4, 0, 151) |
++				AK_VOL_CVT | AK_IPGA;
+ 		else
+-			knew.name = ak->adc_info[mixer_ch].gain_name;
+-		if (num_stereo == 2) {
+-			knew.info = snd_akm4xxx_stereo_gain_info;
+-			knew.get = snd_akm4xxx_stereo_gain_get;
+-			knew.put = snd_akm4xxx_stereo_gain_put;
+-		} else {
+-			knew.info = snd_akm4xxx_ipga_gain_info;
+-			knew.get = snd_akm4xxx_ipga_gain_get;
+-			knew.put = snd_akm4xxx_ipga_gain_put;
+-		}
+-		/* register 4 & 5 */
+-		if (ak->type == SND_AK4524)
+-			knew.private_value = AK_COMPOSE(idx/2, (idx%2) + 4, 0,
+-							24);
+-		else /* AK5365 */
+-			knew.private_value = AK_COMPOSE(idx/2, (idx%2) + 4, 0,
+-							36);
+-		knew.tlv.p = db_scale_ipga;
++			knew.private_value =
++				AK_COMPOSE(idx/2, (idx%2) + 4, 0, 163) |
++				AK_VOL_CVT | AK_IPGA;
++		knew.tlv.p = db_scale_vol_datt;
+ 		err = snd_ctl_add(ak->card, snd_ctl_new1(&knew, ak));
+ 		if (err < 0)
+ 			return err;
+@@ -811,11 +721,9 @@ int snd_akm4xxx_build_controls(struct sn
+ 	if (err < 0)
+ 		return err;
+ 
+-	if (ak->type == SND_AK4524 || ak->type == SND_AK5365) {
+-		err = build_adc_controls(ak);
+-		if (err < 0)
+-			return err;
+-	}
++	err = build_adc_controls(ak);
++	if (err < 0)
++		return err;
+ 
+ 	if (ak->type == SND_AK4355 || ak->type == SND_AK4358)
+ 		num_emphs = 1;
+Index: linux-2.6.18/sound/pci/ice1712/revo.c
+===================================================================
+--- linux-2.6.18.orig/sound/pci/ice1712/revo.c
++++ linux-2.6.18/sound/pci/ice1712/revo.c
+@@ -110,7 +110,6 @@ static struct snd_akm4xxx_dac_channel re
+ static struct snd_akm4xxx_adc_channel revo51_adc[] = {
+ 	{
+ 		.name = "PCM Capture Volume",
+-		.gain_name = "PCM Capture Gain Volume",
+ 		.switch_name = "PCM Capture Switch",
+ 		.num_channels = 2
+ 	},
+Index: linux-2.6.18/mvl_patches/pro50-2076.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2076.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2076);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

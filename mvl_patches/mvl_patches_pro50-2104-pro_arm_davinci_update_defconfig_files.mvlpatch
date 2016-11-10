@@ -1,0 +1,531 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_update_defconfig_files
+# Date: Thu Feb 19 15:00:43 2009
+# Source: MontaVista Software, Inc. | URL | Some Guy <email@addr>
+# MR: 30941
+# Type: Enhancement
+# Disposition: needs submitting to arm community
+# Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+# Description:
+#     Update the defconfig files for the DaVinci platforms.
+# 
+
+PATCHNUM=2104
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc. | URL | Some Guy <email@addr>
+MR: 30941
+Type: Enhancement
+Disposition: needs submitting to arm community
+Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+Description:
+    Update the defconfig files for the DaVinci platforms.
+
+Index: linux-2.6.18/arch/arm/configs/davinci_dm355_defconfig
+===================================================================
+--- linux-2.6.18.orig/arch/arm/configs/davinci_dm355_defconfig
++++ linux-2.6.18/arch/arm/configs/davinci_dm355_defconfig
+@@ -1,7 +1,7 @@
+ #
+ # Automatically generated make config: don't edit
+ # Linux kernel version: 2.6.18
+-# Wed Aug 13 16:48:06 2008
++# Tue Nov 25 21:43:42 2008
+ #
+ CONFIG_ARM=y
+ CONFIG_GENERIC_GPIO=y
+@@ -63,7 +63,7 @@ CONFIG_SLAB=y
+ CONFIG_VM_EVENT_COUNTERS=y
+ CONFIG_RT_MUTEXES=y
+ # CONFIG_TINY_SHMEM is not set
+-CONFIG_BASE_SMALL=1
++CONFIG_BASE_SMALL=0
+ # CONFIG_SLOB is not set
+ 
+ #
+@@ -130,24 +130,19 @@ CONFIG_ARCH_DAVINCI=y
+ #
+ # TI DaVinci Implementations
+ #
+-
+-#
+-# DaVinci Core Type
+-#
+ # CONFIG_ARCH_DAVINCI644x is not set
+ CONFIG_ARCH_DAVINCI_DM355=y
+ # CONFIG_ARCH_DAVINCI_DM646x is not set
+-
+-#
+-# DaVinci Board Type
+-#
+-CONFIG_MACH_DAVINCI_DM355_EVM=y
++# CONFIG_ARCH_DA8XX is not set
++CONFIG_ARCH_DAVINCI_TRUE=y
+ CONFIG_DAVINCI_MUX=y
+ # CONFIG_DAVINCI_MUX_DEBUG is not set
+ CONFIG_DAVINCI_MUX_WARNINGS=y
+ CONFIG_DAVINCI_I2C_EXPANDER=y
++# CONFIG_MACH_DAVINCI_EVM is not set
++CONFIG_MACH_DAVINCI_DM355_EVM=y
++# CONFIG_MACH_DAVINCI_DM6467_EVM is not set
+ CONFIG_DM355_NAND_256KB_BLOCKS=y
+-CONFIG_DAVINCI_SPI=y
+ 
+ #
+ # Processor Type
+@@ -448,6 +443,7 @@ CONFIG_MTD_CFI_I2=y
+ #
+ # CONFIG_MTD_DATAFLASH is not set
+ # CONFIG_MTD_M25P80 is not set
++# CONFIG_MTD_SPI_FLASH is not set
+ # CONFIG_MTD_SLRAM is not set
+ # CONFIG_MTD_PHRAM is not set
+ # CONFIG_MTD_MTDRAM is not set
+@@ -590,6 +586,9 @@ CONFIG_DM9000=y
+ # CONFIG_IBM_NEW_EMAC_RGMII is not set
+ # CONFIG_IBM_NEW_EMAC_TAH is not set
+ # CONFIG_IBM_NEW_EMAC_EMAC4 is not set
++# CONFIG_IBM_NEW_EMAC_NO_FLOW_CTRL is not set
++# CONFIG_IBM_NEW_EMAC_MAL_CLR_ICINTSTAT is not set
++# CONFIG_IBM_NEW_EMAC_MAL_COMMON_ERR is not set
+ 
+ #
+ # Ethernet (1000 Mbit)
+@@ -1036,9 +1035,12 @@ CONFIG_USB_MUSB_HOST=y
+ # CONFIG_USB_MUSB_OTG is not set
+ CONFIG_USB_MUSB_HDRC_HCD=y
+ # CONFIG_MUSB_PIO_ONLY is not set
++CONFIG_MUSB_RESERVE_BULK_EP=y
+ # CONFIG_MUSB_RESERVE_ISO_EP is not set
++# CONFIG_MUSB_SCHEDULE_INTR_EP is not set
+ # CONFIG_USB_INVENTRA_DMA is not set
+ CONFIG_USB_TI_CPPI_DMA=y
++# CONFIG_USB_TI_CPPI41_DMA is not set
+ CONFIG_USB_MUSB_LOGLEVEL=0
+ 
+ #
+Index: linux-2.6.18/arch/arm/configs/davinci_dm644x_defconfig
+===================================================================
+--- linux-2.6.18.orig/arch/arm/configs/davinci_dm644x_defconfig
++++ linux-2.6.18/arch/arm/configs/davinci_dm644x_defconfig
+@@ -1,7 +1,7 @@
+ #
+ # Automatically generated make config: don't edit
+ # Linux kernel version: 2.6.18
+-# Wed Aug 13 16:53:24 2008
++# Tue Nov 25 21:32:35 2008
+ #
+ CONFIG_ARM=y
+ CONFIG_GENERIC_GPIO=y
+@@ -130,24 +130,19 @@ CONFIG_ARCH_DAVINCI=y
+ #
+ # TI DaVinci Implementations
+ #
+-
+-#
+-# DaVinci Core Type
+-#
+ CONFIG_ARCH_DAVINCI644x=y
+ # CONFIG_ARCH_DAVINCI_DM355 is not set
+ # CONFIG_ARCH_DAVINCI_DM646x is not set
+-
+-#
+-# DaVinci Board Type
+-#
+-CONFIG_MACH_DAVINCI_EVM=y
+-# CONFIG_DAVINCI_EVM_CF_SUPPORT is not set
++# CONFIG_ARCH_DA8XX is not set
++CONFIG_ARCH_DAVINCI_TRUE=y
+ CONFIG_DAVINCI_MUX=y
+ # CONFIG_DAVINCI_MUX_DEBUG is not set
+ CONFIG_DAVINCI_MUX_WARNINGS=y
+ CONFIG_DAVINCI_I2C_EXPANDER=y
+-CONFIG_DAVINCI_SPI=y
++CONFIG_MACH_DAVINCI_EVM=y
++# CONFIG_MACH_DAVINCI_DM355_EVM is not set
++# CONFIG_MACH_DAVINCI_DM6467_EVM is not set
++# CONFIG_DAVINCI_EVM_CF_SUPPORT is not set
+ 
+ #
+ # Processor Type
+@@ -634,7 +629,21 @@ CONFIG_TUN=m
+ #
+ # PHY device support
+ #
+-# CONFIG_PHYLIB is not set
++CONFIG_PHYLIB=y
++
++#
++# MII PHY device drivers
++#
++# CONFIG_MARVELL_PHY is not set
++# CONFIG_DAVICOM_PHY is not set
++# CONFIG_QSEMI_PHY is not set
++# CONFIG_LXT_PHY is not set
++# CONFIG_CICADA_PHY is not set
++# CONFIG_VITESSE_PHY is not set
++# CONFIG_SMSC_PHY is not set
++# CONFIG_ICPLUS_PHY is not set
++# CONFIG_BROADCOM_PHY is not set
++# CONFIG_FIXED_PHY is not set
+ 
+ #
+ # Ethernet (10 or 100Mbit)
+@@ -649,6 +658,9 @@ CONFIG_TI_DAVINCI_EMAC=y
+ # CONFIG_IBM_NEW_EMAC_RGMII is not set
+ # CONFIG_IBM_NEW_EMAC_TAH is not set
+ # CONFIG_IBM_NEW_EMAC_EMAC4 is not set
++# CONFIG_IBM_NEW_EMAC_NO_FLOW_CTRL is not set
++# CONFIG_IBM_NEW_EMAC_MAL_CLR_ICINTSTAT is not set
++# CONFIG_IBM_NEW_EMAC_MAL_COMMON_ERR is not set
+ 
+ #
+ # Ethernet (1000 Mbit)
+@@ -1084,9 +1096,12 @@ CONFIG_USB_MUSB_HOST=y
+ # CONFIG_USB_MUSB_OTG is not set
+ CONFIG_USB_MUSB_HDRC_HCD=y
+ # CONFIG_MUSB_PIO_ONLY is not set
++CONFIG_MUSB_RESERVE_BULK_EP=y
+ # CONFIG_MUSB_RESERVE_ISO_EP is not set
++# CONFIG_MUSB_SCHEDULE_INTR_EP is not set
+ # CONFIG_USB_INVENTRA_DMA is not set
+ CONFIG_USB_TI_CPPI_DMA=y
++# CONFIG_USB_TI_CPPI41_DMA is not set
+ CONFIG_USB_MUSB_LOGLEVEL=0
+ 
+ #
+@@ -1233,6 +1248,7 @@ CONFIG_RTC_DRV_DAVINCI_EVM=y
+ # CONFIG_RTC_DRV_M48T86 is not set
+ # CONFIG_RTC_DRV_TEST is not set
+ # CONFIG_RTC_DRV_V3020 is not set
++# CONFIG_RTC_DRV_DA8XX is not set
+ 
+ #
+ # Synchronous Serial Interfaces (SSI)
+Index: linux-2.6.18/arch/arm/configs/davinci_dm6467_defconfig
+===================================================================
+--- linux-2.6.18.orig/arch/arm/configs/davinci_dm6467_defconfig
++++ linux-2.6.18/arch/arm/configs/davinci_dm6467_defconfig
+@@ -1,7 +1,7 @@
+ #
+ # Automatically generated make config: don't edit
+ # Linux kernel version: 2.6.18
+-# Wed Aug 13 17:03:32 2008
++# Tue Nov 25 21:38:42 2008
+ #
+ CONFIG_ARM=y
+ CONFIG_GENERIC_GPIO=y
+@@ -130,23 +130,18 @@ CONFIG_ARCH_DAVINCI=y
+ #
+ # TI DaVinci Implementations
+ #
+-
+-#
+-# DaVinci Core Type
+-#
+ # CONFIG_ARCH_DAVINCI644x is not set
+ # CONFIG_ARCH_DAVINCI_DM355 is not set
+ CONFIG_ARCH_DAVINCI_DM646x=y
+-
+-#
+-# DaVinci Board Type
+-#
+-CONFIG_MACH_DAVINCI_DM6467_EVM=y
++# CONFIG_ARCH_DA8XX is not set
++CONFIG_ARCH_DAVINCI_TRUE=y
+ CONFIG_DAVINCI_MUX=y
+ # CONFIG_DAVINCI_MUX_DEBUG is not set
+ CONFIG_DAVINCI_MUX_WARNINGS=y
+ CONFIG_DAVINCI_I2C_EXPANDER=y
+-CONFIG_DAVINCI_SPI=y
++# CONFIG_MACH_DAVINCI_EVM is not set
++# CONFIG_MACH_DAVINCI_DM355_EVM is not set
++CONFIG_MACH_DAVINCI_DM6467_EVM=y
+ 
+ #
+ # Processor Type
+@@ -523,7 +518,7 @@ CONFIG_IDE_GENERIC=y
+ # CONFIG_BLK_DEV_PLATFORM is not set
+ CONFIG_BLK_DEV_IDEDMA_PCI=y
+ # CONFIG_BLK_DEV_IDEDMA_FORCED is not set
+-# CONFIG_IDEDMA_PCI_AUTO is not set
++# CONFIG_IDEDMA_ONLYDISK is not set
+ # CONFIG_BLK_DEV_AEC62XX is not set
+ # CONFIG_BLK_DEV_ALI15X3 is not set
+ # CONFIG_BLK_DEV_AMD74XX is not set
+@@ -550,7 +545,6 @@ CONFIG_BLK_DEV_IDEDMA_PCI=y
+ CONFIG_BLK_DEV_PALMCHIP_BK3710=y
+ CONFIG_BLK_DEV_IDEDMA=y
+ # CONFIG_IDEDMA_IVB is not set
+-# CONFIG_IDEDMA_AUTO is not set
+ # CONFIG_BLK_DEV_HD is not set
+ 
+ #
+@@ -622,7 +616,21 @@ CONFIG_TUN=m
+ #
+ # PHY device support
+ #
+-# CONFIG_PHYLIB is not set
++CONFIG_PHYLIB=y
++
++#
++# MII PHY device drivers
++#
++# CONFIG_MARVELL_PHY is not set
++# CONFIG_DAVICOM_PHY is not set
++# CONFIG_QSEMI_PHY is not set
++# CONFIG_LXT_PHY is not set
++# CONFIG_CICADA_PHY is not set
++# CONFIG_VITESSE_PHY is not set
++# CONFIG_SMSC_PHY is not set
++# CONFIG_ICPLUS_PHY is not set
++# CONFIG_BROADCOM_PHY is not set
++# CONFIG_FIXED_PHY is not set
+ 
+ #
+ # Ethernet (10 or 100Mbit)
+@@ -637,6 +645,9 @@ CONFIG_TI_DAVINCI_EMAC=y
+ # CONFIG_IBM_NEW_EMAC_RGMII is not set
+ # CONFIG_IBM_NEW_EMAC_TAH is not set
+ # CONFIG_IBM_NEW_EMAC_EMAC4 is not set
++# CONFIG_IBM_NEW_EMAC_NO_FLOW_CTRL is not set
++# CONFIG_IBM_NEW_EMAC_MAL_CLR_ICINTSTAT is not set
++# CONFIG_IBM_NEW_EMAC_MAL_COMMON_ERR is not set
+ 
+ #
+ # Ethernet (1000 Mbit)
+@@ -1022,7 +1033,6 @@ CONFIG_SND_SOC=y
+ #
+ CONFIG_SND_DAVINCI_SOC=y
+ CONFIG_SND_DAVINCI_SOC_I2S=y
+-CONFIG_SND_DAVINCI_SOC_I2S_MCBSP=y
+ CONFIG_SND_DAVINCI_SOC_I2S_MCASP=y
+ CONFIG_SND_DM6467_SOC_EVM=y
+ CONFIG_SND_SOC_TLV320AIC3X=y
+@@ -1070,9 +1080,12 @@ CONFIG_USB_MUSB_HOST=y
+ # CONFIG_USB_MUSB_OTG is not set
+ CONFIG_USB_MUSB_HDRC_HCD=y
+ # CONFIG_MUSB_PIO_ONLY is not set
++CONFIG_MUSB_RESERVE_BULK_EP=y
+ # CONFIG_MUSB_RESERVE_ISO_EP is not set
++# CONFIG_MUSB_SCHEDULE_INTR_EP is not set
+ # CONFIG_USB_INVENTRA_DMA is not set
+ CONFIG_USB_TI_CPPI_DMA=y
++# CONFIG_USB_TI_CPPI41_DMA is not set
+ CONFIG_USB_MUSB_LOGLEVEL=0
+ 
+ #
+@@ -1215,6 +1228,7 @@ CONFIG_RTC_INTF_DEV=y
+ # CONFIG_RTC_DRV_M48T86 is not set
+ # CONFIG_RTC_DRV_TEST is not set
+ # CONFIG_RTC_DRV_V3020 is not set
++# CONFIG_RTC_DRV_DA8XX is not set
+ 
+ #
+ # Synchronous Serial Interfaces (SSI)
+Index: linux-2.6.18/mvl_patches/pro50-2104.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2104.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2104);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

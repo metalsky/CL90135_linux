@@ -1,0 +1,579 @@
+#! /usr/bin/env bash
+# Patch: -pro_davinci_emac_l2_switch_support
+# Date: Thu Feb 19 15:03:31 2009
+# Source: MontaVista Software, Inc.
+# MR: 31840
+# Type:  Enhancement
+# Disposition: local
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+#  Add EMAC interface to layer 2 switch via MII. Updates include
+#  1.  Multiple phy access.
+#  2.  Add special handling for the KSZ8893MQL switch.
+#  3.  Add special handling to skip broadcast ID.
+#  4.  Disable ethtool set for layer 2 switch since the phy is controlled by
+#      the switch and can not be changed from ethtool interface.
+#  5.  Ethtool read interface always the settings of the MII link (which
+#      is fixed).
+#  6.  Enhance proc/emac_link to return correct status for multiple phys.
+#  7.  Scan entire range to look for valid phys, and scan broadcast phy if no
+#      other phy is discovered.
+# 
+#  drivers/net/davinci_emac.c |  189 +++++++++++++++++++++++++++++++--------------
+#  1 files changed, 133 insertions(+), 56 deletions(-)
+# 
+
+PATCHNUM=2142
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 31840
+Type:  Enhancement
+Disposition: local
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+ Add EMAC interface to layer 2 switch via MII. Updates include
+ 1.  Multiple phy access.
+ 2.  Add special handling for the KSZ8893MQL switch.
+ 3.  Add special handling to skip broadcast ID.
+ 4.  Disable ethtool set for layer 2 switch since the phy is controlled by
+     the switch and can not be changed from ethtool interface.
+ 5.  Ethtool read interface always the settings of the MII link (which
+     is fixed).
+ 6.  Enhance proc/emac_link to return correct status for multiple phys.
+ 7.  Scan entire range to look for valid phys, and scan broadcast phy if no
+     other phy is discovered.
+
+ drivers/net/davinci_emac.c |  189 +++++++++++++++++++++++++++++++--------------
+ mvl_patches/pro50-2142.c   |   16 +++
+ 2 files changed, 149 insertions(+), 56 deletions(-)
+
+Index: linux-2.6.18/drivers/net/davinci_emac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac.c
++++ linux-2.6.18/drivers/net/davinci_emac.c
+@@ -1352,7 +1352,7 @@ struct emac_dev {
+ 	/* mii bus */
+ 	struct mii_bus mdio_bus;
+ 	unsigned long mdio_base_address;
+-	struct phy_device *phydev;
++	struct phy_device *phydev[PHY_MAX_ADDR];
+ 
+ 	struct mib2_if_hccounters mib2if_hccounter;
+ 
+@@ -1857,7 +1857,7 @@ static int emac_p_read_link(char *buf, c
+ 			    int *eof, void *data)
+ {
+ 	struct list_head *pos, *tmp;
+-
++	int i;
+ 	int len = 0;
+ 
+ 	list_for_each_safe(pos, tmp, &emac_devices) {
+@@ -1865,23 +1865,23 @@ static int emac_p_read_link(char *buf, c
+ 			list_entry(pos, struct emac_dev, emac_devices);
+ 		struct net_device *netdev = dev->owner;
+ 
+-		if (netif_carrier_ok(netdev)) {
+-			len +=
+-			    sprintf(buf + len,
+-				    "%s: Link State: %s    "
+-				    "Phy %d, Speed = %s, Duplex = %s\n",
+-				    netdev->name, "UP",
+-				    dev->ddc_status.phy_num,
+-				    (dev->link_speed ==
+-				     100000000) ? "100" :
+-				    ((dev->link_speed == 10000000) ?
+-				     "10" : "1000"),
+-				    (dev->link_mode == 2) ? "Half" : "Full");
++		for (i = 0; i < PHY_MAX_ADDR; i++) {
++			if (dev->phydev[i] == NULL)
++				continue;
++
++			if (!dev->phydev[i]->link) {
++				len +=
++				    sprintf(buf + len, "%s: Link State: DOWN  "
++					    "Phy %d\n", netdev->name, i);
++				continue;
+ 
+-		} else {
++			}
+ 			len +=
+-			    sprintf(buf + len, "%s: Link State: DOWN\n",
+-				    netdev->name);
++			    sprintf(buf + len, "%s: Link State: UP    "
++				    "Phy %d, Speed = %d, Duplex = %s\n",
++				    netdev->name, i, dev->phydev[i]->speed,
++				    dev->phydev[i]->duplex == DUPLEX_HALF ?
++						"Half" : "Full");
+ 		}
+ 	}
+ 
+@@ -2651,9 +2651,28 @@ static int
+ emac_ethtool_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+ {
+ 	struct emac_dev *dev = netdev_priv(netdev);
++	int i;
+ 
+-	if (dev->phydev)
+-		return phy_ethtool_gset(dev->phydev, cmd);
++	if (dev->init_cfg.phy_mode & SNWAY_NOPHY) {
++		cmd->speed = SPEED_100;
++		cmd->duplex = DUPLEX_FULL;
++		cmd->port = PORT_MII;
++		cmd->phy_address = 0;
++		cmd->transceiver = XCVR_EXTERNAL;
++		cmd->autoneg = 0;
++		cmd->supported = SUPPORTED_100baseT_Full;
++		cmd->advertising = SUPPORTED_100baseT_Full;
++		return 0;
++	}
++
++	for (i = 0; i < PHY_MAX_ADDR; i++)
++		if ((dev->phydev[i] != NULL) && (dev->phydev[i]->link))
++			return phy_ethtool_gset(dev->phydev[i], cmd);
++
++	/* if no link is detected on any phy, show the status of first phy */
++	for (i = 0; i < PHY_MAX_ADDR; i++)
++		if (dev->phydev[i] != NULL)
++			return phy_ethtool_gset(dev->phydev[i], cmd);
+ 
+ 	return -EINVAL;
+ }
+@@ -2662,12 +2681,22 @@ static int
+ emac_ethtool_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+ {
+ 	struct emac_dev *dev = netdev_priv(netdev);
++	int i;
+ 
+ 	if (!capable(CAP_NET_ADMIN))
+ 		return -EPERM;
+ 
+-	if (dev->phydev)
+-		return phy_ethtool_sset(dev->phydev, cmd);
++	if (dev->init_cfg.phy_mode & SNWAY_NOPHY)
++		return -EOPNOTSUPP;
++
++	for (i = 0; i < PHY_MAX_ADDR; i++)
++		if ((dev->phydev[i] != NULL) && (dev->phydev[i]->link))
++			return phy_ethtool_sset(dev->phydev[i], cmd);
++
++	/* if no link is detected on any phy, configure the first phy */
++	for (i = 0; i < PHY_MAX_ADDR; i++)
++		if (dev->phydev[i] != NULL)
++			return phy_ethtool_sset(dev->phydev[i], cmd);
+ 
+ 	return -EINVAL;
+ }
+@@ -2822,28 +2851,33 @@ static int emac_dev_init(struct net_devi
+ 
+ int davinci_mdio_read(struct mii_bus *bus, int mii_id, int regnum);
+ 
+-#define LXT971_ID_MASK 0xfffffff0
+-#define LXT971_ID      0x001378e0
++#define PHY_ID_MASK	0xfffffff0
++#define LXT971_ID	0x001378e0
++#define KSZ8893MQL_ID	0x00221430
+ 
+-static int phy_init(struct emac_dev *dev)
++static int emac_phy_init(struct emac_dev *dev, u8 phy_num, u8 *phy_cnt,
++			 u8 *phy_max)
+ {
+ 	char phy_id[BUS_ID_SIZE];
+ 
+-	snprintf(phy_id, BUS_ID_SIZE, PHY_ID_FMT, 1, 1);
++	snprintf(phy_id, BUS_ID_SIZE, PHY_ID_FMT, 1, phy_num);
+ 
+-	dev->phydev = phy_connect(dev->owner, phy_id,
++	dev->phydev[phy_num] = phy_connect(dev->owner, phy_id,
+ 		&emac_update_phy_status, 0, PHY_INTERFACE_MODE_MII);
+-	if (IS_ERR(dev->phydev))
+-		return PTR_ERR(dev->phydev);
++	if (IS_ERR(dev->phydev[phy_num])) {
++		if (dev->phydev[phy_num] == ERR_PTR(-ENODEV))
++			dev->phydev[phy_num] = NULL;
++		return PTR_ERR(dev->phydev[phy_num]);
++	}
+ 
+-	dev->phydev->supported =  PHY_BASIC_FEATURES;
++	dev->phydev[phy_num]->supported = PHY_BASIC_FEATURES;
+ 
+ 	if (dev->init_cfg.gigabit)
+-		dev->phydev->supported |= SUPPORTED_1000baseT_Full;
++		dev->phydev[phy_num]->supported |= SUPPORTED_1000baseT_Full;
+ 
+-	dev->phydev->advertising = dev->phydev->supported;
++	dev->phydev[phy_num]->advertising = dev->phydev[phy_num]->supported;
+ 
+-	if ((dev->phydev->phy_id & LXT971_ID_MASK) == LXT971_ID) {
++	if ((dev->phydev[phy_num]->phy_id & PHY_ID_MASK) == LXT971_ID) {
+ 		/*
+ 		 * CRITICAL: Fix for increasing PHY signal drive strength for
+ 		 * TX lockup issue. On DaVinci EVM, the Intel LXT971 PHY
+@@ -2855,11 +2889,27 @@ static int phy_init(struct emac_dev *dev
+ 
+ 		pr_info("applying Intel LTX971 workaround..\n");
+ 
+-		control = phy_read(dev->phydev, 26);
+-		phy_write(dev->phydev, 26, (control | 0x800));
+-		phy_read(dev->phydev, 26);
++		control = phy_read(dev->phydev[phy_num], 26);
++		phy_write(dev->phydev[phy_num], 26, (control | 0x800));
++		phy_read(dev->phydev[phy_num], 26);
++	} else if ((dev->phydev[phy_num]->phy_id & PHY_ID_MASK) ==
++		    KSZ8893MQL_ID) {
++		/*
++		 * KSZ8893MQL is a layer 2 switch that connects to EMAC via
++		 * MII.  The MII setting is required to be fixed with autoneg
++		 * off, 100Mbps, and full duplex.  This happens to be the
++		 * settings and behavior when phy_mode is set to SNWAY_NOPHY.
++		 * Therefore, we set the phy_mode to SNWAY_NOPHY whenever
++		 * KSZ8893MQL is detected.
++		 */
++		dev->init_cfg.phy_mode = SNWAY_NOPHY;
++
++		/* The third phy is used for MII, so only expect 2 phys */
++		*phy_max = 2;
+ 	}
+-	phy_start(dev->phydev);
++
++	*phy_cnt = *phy_cnt + 1;
++	phy_start(dev->phydev[phy_num]);
+ 
+ 	return 0;
+ }
+@@ -2867,6 +2917,7 @@ static int phy_init(struct emac_dev *dev
+ /* open the adapter */
+ static int emac_dev_open(struct net_device *netdev)
+ {
++	u8 phy_cnt, phy_max;
+   	struct emac_dev *dev = NETDEV_PRIV(netdev);
+ 	struct platform_device *pdev =
+ 		to_platform_device(netdev->class_dev.dev);
+@@ -2926,8 +2977,25 @@ static int emac_dev_open(struct net_devi
+                   }
+         }
+ 
+-	err = phy_init(dev);
+-	if(err)
++	phy_max = 1;
++	phy_cnt = 0;
++	for (i = 1; i < PHY_MAX_ADDR; i++) {
++		err = emac_phy_init(dev, i, &phy_cnt, &phy_max);
++		if ((dev->phydev[i] != NULL) && err)
++			break;
++
++		/* break when we found all the phys we expected */
++		if (phy_cnt == phy_max)
++			break;
++
++		err = 0;
++	}
++
++	/* if no phys are found, scan for broadcast phy */
++	if (phy_cnt == 0)
++		err = emac_phy_init(dev, 0, &phy_cnt, &phy_max);
++
++	if (err)
+ 		goto error;
+ 
+ 	if (netif_carrier_ok(netdev))
+@@ -2965,7 +3033,9 @@ static int emac_dev_close(struct net_dev
+ 	/* inform the upper layers. */
+ 	netif_stop_queue(dev->owner);
+ 
+-	phy_disconnect(dev->phydev);
++	for (i = 0; i < PHY_MAX_ADDR; i++)
++		if (dev->phydev[i] != NULL)
++			phy_disconnect(dev->phydev[i]);
+ 
+ 	/* prepare to close */
+ 	set_bit(0, &dev->set_to_close);
+@@ -3407,18 +3477,10 @@ static void emac_all_multi(struct emac_d
+ /************************ PHY related functions ************************/
+ 
+ /* Cpmac Update Phy Status - updates phy status variables in hDDC->status "CpmacDDCStatus" structure */
+-static void emac_update_phy_status(struct net_device *netdev)
++static void _emac_update_phy_status(struct net_device *netdev, int phy_num)
+ {
+ 	struct emac_dev *dev = NETDEV_PRIV(netdev);
+ 
+-	/* verify proper device state */
+-	if (dev->drv_state != DRV_OPENED)
+-		return;
+-
+-
+-	if (!dev->phydev)
+-		return;
+-
+ 	/* no phy condition */
+ 	if (dev->init_cfg.phy_mode & SNWAY_NOPHY) {
+ 		/*  no phy condition, always linked */
+@@ -3442,15 +3504,14 @@ static void emac_update_phy_status(struc
+ 		return;
+ 	}
+ 
+-	dev->status.phy_linked = dev->phydev->link;
+-
+-	if (dev->status.phy_linked) {
++	if (dev->phydev[phy_num]->link) {
++		dev->status.phy_linked = dev->phydev[phy_num]->link;
+ 
+ 		/*  retreive duplex and speed and the phy number  */
+-		dev->status.phy_duplex = dev->phydev->duplex ?
++		dev->status.phy_duplex = dev->phydev[phy_num]->duplex ?
+ 			PHY_DUPLEX_FULL : PHY_DUPLEX_HALF;
+-		dev->status.phy_speed = dev->phydev->speed;
+-		dev->status.phy_num = dev->phydev->addr;
++		dev->status.phy_speed = dev->phydev[phy_num]->speed;
++		dev->status.phy_num = dev->phydev[phy_num]->addr;
+ 
+ 		if (dev->status.phy_speed == 100)
+ 			dev->mac_control |= EMAC_MACCONTROL_RMIISPEED_MASK;
+@@ -3485,6 +3546,20 @@ static void emac_update_phy_status(struc
+ 
+ }
+ 
++static void emac_update_phy_status(struct net_device *netdev)
++{
++	struct emac_dev *dev = NETDEV_PRIV(netdev);
++	int i;
++
++	/* verify proper device state */
++	if (dev->drv_state != DRV_OPENED)
++		return;
++
++	for (i = 0; i < PHY_MAX_ADDR; i++)
++		if (dev->phydev[i] != NULL)
++			_emac_update_phy_status(netdev, i);
++}
++
+ /* set phy mode */
+ static int emac_set_phy_mode(struct emac_dev *dev)
+ {
+@@ -4055,7 +4130,8 @@ emac_control(struct emac_dev *dev, int c
+ 			emac_phy_params *phy_params =
+ 			    (emac_phy_params *) cmd_arg;
+ 
+-			phy_params->data = phy_read(dev->phydev,
++			phy_params->data =
++				phy_read(dev->phydev[phy_params->phy_num],
+ 					phy_params->reg_addr);
+ 		}
+ 		break;
+@@ -4070,7 +4146,8 @@ emac_control(struct emac_dev *dev, int c
+ 			/* \warning: Write to the phy registers - Note
+ 			   that this code loops on a completion bit in
+ 			   the phy so there are chances of hanging" */
+-			phy_write(dev->phydev, phy_params->reg_addr,
++			phy_write(dev->phydev[phy_params->phy_num],
++					phy_params->reg_addr,
+ 					phy_params->data);
+ 		}
+ 		break;
+Index: linux-2.6.18/mvl_patches/pro50-2142.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2142.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2142);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

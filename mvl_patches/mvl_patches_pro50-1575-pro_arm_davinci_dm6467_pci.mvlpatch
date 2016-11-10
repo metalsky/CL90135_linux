@@ -1,0 +1,843 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_dm6467_pci
+# Date: Fri Sep 19 14:00:39 2008
+# Source: Texas Instruments, Inc.
+# MR: 28400
+# Type: Enhancements 
+# Disposition: local
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+# Driver to allow DaVinci HD board to boot as PCI module.
+# 
+
+PATCHNUM=1575
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Texas Instruments, Inc.
+MR: 28400
+Type: Enhancements 
+Disposition: local
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+Driver to allow DaVinci HD board to boot as PCI module.
+
+Index: linux-2.6.18/drivers/char/pcimodule.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/pcimodule.c
+@@ -0,0 +1,341 @@
++/*
++ *
++ * TI DaVinciHD PCI Module file
++ *
++ * Copyright (C) 2007 Texas Instruments
++ *
++ * ----------------------------------------------------------------------------
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++ * ----------------------------------------------------------------------------
++ *
++ */
++#include <linux/config.h>
++#include <linux/module.h>
++#include <linux/types.h>
++#include <linux/kernel.h>
++#include <linux/pci.h>
++#include <linux/delay.h>
++#include <linux/fs.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/ioport.h>
++#include <linux/cdev.h>
++#include <linux/spinlock.h>
++#include <linux/io.h>
++#include <linux/uaccess.h>
++#include <asm/arch/pcimodule.h>
++#include <asm/arch/pcihal.h>
++
++/** ============================================================================
++ *  @const  async_queue
++ *
++ *  @desc   Structure for sending asynchronous messages to user applications
++ *  ============================================================================
++ */
++static struct fasync_struct *async_queue;
++
++/** ============================================================================
++ *  @const  pcimodule_sh_int
++ *
++ *  @desc   Argument required for passing to shared interrupt handlers
++ *  ============================================================================
++ */
++static int pcimodule_sh_int;
++
++/** ============================================================================
++ *  @name   pcimodule_dev_id
++ *
++ *  @desc   Device ID of driver.
++ *  ============================================================================
++ */
++static dev_t pcimodule_dev_id;
++
++/** ============================================================================
++ *  @name   pcimodule_cdev
++ *
++ *  @desc   Class device object for sys/class/ entry
++ *  ============================================================================
++ */
++static struct cdev pcimodule_cdev;
++
++/** ============================================================================
++ *  @name   pcimodule_class
++ *
++ *  @desc   Class entry for sys file system
++ *  ============================================================================
++ */
++static struct class *pcimodule_class;
++
++/** ============================================================================
++ *  @name   sync_lock
++ *
++ *  @desc   Spin lock structure to provide protection from interrupts,
++ *          tasks and tasklets.
++ *  ============================================================================
++ */
++static spinlock_t sync_lock;
++
++/** ============================================================================
++ *  @func   drv_fasync
++ *
++ *  @desc   Function invoked by OS whenever F_SETFL is called on fcntl.
++ *
++ *  ============================================================================
++ */
++int drv_fasync(int fd, struct file *filp, int mode)
++{
++	/* Hook up the our file descriptor to the signal */
++	return fasync_helper(fd, filp, mode, &async_queue);
++}
++
++/** ============================================================================
++ *  @name   drv_release
++ *
++ *  @desc   Linux specific function to close the driver.
++ *  ============================================================================
++ */
++static int drv_release(struct inode *inode, struct file *filp)
++{
++	/* Clean up the async notification method */
++	return drv_fasync(-1, filp, 0);
++}
++
++/** ============================================================================
++ *  @name   drv_ioctl
++ *
++ *  @desc   Function to invoke the APIs through ioctl.
++ *  ============================================================================
++ */
++static int drv_ioctl(struct inode *inode, struct file *filp,
++		       unsigned int cmd, unsigned long args)
++{
++	unsigned int irqFlags;
++	int ret = 0;
++
++	switch (cmd) {
++	case PCIMODULE_CMD_GENNOTIFY:
++	{
++		enum pcimodule_intr_num intr_num
++			= *(enum pcimodule_intr_num *)args;
++		unsigned int mask = 0;
++
++		switch (intr_num) {
++		case PCIMODULE_SOFT_INT0:
++			mask = PCI_SOFTINT0_MASK;
++			break;
++		case PCIMODULE_SOFT_INT1:
++			mask = PCI_SOFTINT1_MASK;
++			break;
++		case PCIMODULE_SOFT_INT2:
++			mask = PCI_SOFTINT2_MASK;
++			break;
++		case PCIMODULE_SOFT_INT3:
++			mask = PCI_SOFTINT3_MASK;
++			break;
++		default:
++			printk(KERN_DEBUG"Bad interrupt number\n");
++			ret = -1;
++			goto ioctl_out;
++		}	/* switch(intr_num) */
++
++		spin_lock_irqsave(&sync_lock, irqFlags);
++		REG32(PCI_REG_HINTSET)   |= mask;
++		REG32(PCI_REG_INTSTATUS) |= mask;
++		spin_unlock_irqrestore(&sync_lock, irqFlags);
++		break;
++	}
++
++	case PCIMODULE_CMD_GETBARLOCN:
++	{
++		u32 reg_data;
++		struct pcimodule_bar_mapping *bar_mapping
++			= (struct pcimodule_bar_mapping *)args;
++		if (!bar_mapping) {
++			printk(KERN_DEBUG "NULL structure passed\n");
++			ret = -1;
++			goto ioctl_out;
++		}
++
++		if ((PCIMODULE_BAR_0 > bar_mapping->bar_num)
++			|| (PCIMODULE_BAR_5 < bar_mapping->bar_num)) {
++			printk(KERN_DEBUG "Bad BAR number\n");
++			bar_mapping->mapping = 0;
++			ret = -1;
++			goto ioctl_out;
++		} else {
++			reg_data = REG32(PCI_REG_BAR0TRL +
++					(4 * bar_mapping->bar_num));
++			if (copy_to_user(&bar_mapping->mapping, &reg_data,
++					sizeof(reg_data)))
++				ret = -1;
++		}
++		break;
++	}
++
++	default:
++		ret = -1;
++	}	/* switch(cmd) */
++
++ioctl_out:
++	return ret;
++}
++
++/** ============================================================================
++ *  @name   drv_mmap
++ *
++ *  @desc   Mmap function implementation.
++ *  ============================================================================
++ */
++static int drv_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++	int ret = 0;
++	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
++
++	if (remap_pfn_range(vma,
++			vma->vm_start,
++			vma->vm_pgoff,
++			vma->vm_end - vma->vm_start,
++			vma->vm_page_prot)) {
++		ret = -EAGAIN ;
++	}
++	return ret;
++}
++
++/** ============================================================================
++ *  @func   pcimodule_pci_callback
++ *
++ *  @desc   Function invoked by OS whenever an interrupt occurs.
++ *
++ *  @modif  None
++ *  ============================================================================
++ */
++static irqreturn_t pcimodule_pci_callback(int irq, void *arg,
++					  struct pt_regs *flags)
++{
++	/* Clear interrupt from HOST */
++	REG32(PCI_REG_INTSTATUS) |= (PCI_SOFTINT0_MASK
++		| PCI_SOFTINT1_MASK | PCI_SOFTINT2_MASK | PCI_SOFTINT3_MASK);
++
++	/* Notify all the waiting applications using SIGIO */
++	kill_fasync(&async_queue, SIGIO, POLL_IN);
++
++	return IRQ_HANDLED;
++}
++
++/** ============================================================================
++ *  @name   driver_ops
++ *
++ *  @desc   Function to invoke the APIs through ioctl.
++ *  ============================================================================
++ */
++static struct file_operations driver_ops = {
++	.release = drv_release,
++	.ioctl =   drv_ioctl,
++	.mmap =    drv_mmap,
++	.fasync =  drv_fasync,
++};
++
++/* =============================================================================
++ *  @func   init_module
++ *
++ *  @desc   This function initializes the PCI daemon driver.
++ *
++ *  @modif  None.
++ *  ============================================================================
++ */
++static int __init pcimodule_init(void)
++{
++	/* ---------------------------------------------------------------------
++	 *  1.  Register a character driver to send data to this driver
++	 * ---------------------------------------------------------------------
++	 */
++	if (0 != alloc_chrdev_region(&pcimodule_dev_id, 0, 1, PCIMODULE_NAME))
++		goto init_out;
++
++	/* ---------------------------------------------------------------------
++	 *  2.  Create the node for access through the application
++	 * ---------------------------------------------------------------------
++	 */
++	cdev_init(&pcimodule_cdev, &driver_ops);
++	pcimodule_cdev.owner = THIS_MODULE;
++	pcimodule_cdev.ops = &driver_ops;
++	if (0 != cdev_add(&pcimodule_cdev, pcimodule_dev_id, 1))
++		goto init_handle_node_create_fail;
++
++	/* ---------------------------------------------------------------------
++	 *  3.  Creation of a class structure for pseudo file system access
++	 * ---------------------------------------------------------------------
++	 */
++	pcimodule_class = class_create(THIS_MODULE, PCIMODULE_NAME);
++	if (!pcimodule_class)
++		goto init_handle_class_create_fail;
++
++	class_device_create(pcimodule_class, NULL, pcimodule_dev_id,
++			    NULL, PCIMODULE_NAME);
++
++	/* ---------------------------------------------------------------------
++	 *  4.  Attached IRQ handler for PCI interrupt
++	 * ---------------------------------------------------------------------
++	 */
++	if (0 != request_irq(PCIMODULE_PCI_IRQ,
++			pcimodule_pci_callback, SA_SHIRQ,
++			"PCIMODULE", &pcimodule_sh_int))
++		goto init_handle_request_irq_fail;
++
++	/* ---------------------------------------------------------------------
++	 *  5.  Initialize the spinlock
++	 * ---------------------------------------------------------------------
++	 */
++	spin_lock_init(&sync_lock);
++
++	return 0;
++
++init_handle_request_irq_fail:
++	class_destroy(pcimodule_class);
++init_handle_class_create_fail:
++	cdev_del(&pcimodule_cdev);
++init_handle_node_create_fail:
++	unregister_chrdev_region(pcimodule_dev_id, 1);
++init_out:
++	return -1;
++}
++
++/* =============================================================================
++ *  @func   cleanup_module
++ *
++ *  @desc   This function finalizes the PCI daemon driver.
++ *
++ *  @modif  None.
++ *  ============================================================================
++ */
++static void __exit pcimodule_cleanup(void)
++{
++	/* Free the interrupt handler */
++	free_irq(PCIMODULE_PCI_IRQ, &pcimodule_sh_int);
++
++	/* Destroy the class entry */
++	class_destroy(pcimodule_class);
++
++	/* Class Decice clean-up */
++	cdev_del(&pcimodule_cdev);
++
++	/* unregister the driver with kernel */
++	unregister_chrdev_region(pcimodule_dev_id, 1);
++}
++
++module_init(pcimodule_init);
++module_exit(pcimodule_cleanup);
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/include/asm-arm/arch-davinci/pcihal.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/pcihal.h
+@@ -0,0 +1,117 @@
++/*
++ *
++ * TI DaVinciHD PCI Module file
++ *
++ * Copyright (C) 2007 Texas Instruments
++ *
++ * ----------------------------------------------------------------------------
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++ * ----------------------------------------------------------------------------
++ *
++ */
++#ifndef __PCIHAL_H__
++#define __PCIHAL_H__
++
++/** ============================================================================
++ *  @macro  PCIMODULE_PCI_IRQ
++ *
++ *  @desc   IRQ number of PCI interrupt on DAVINCI-HD
++ *  ============================================================================
++ */
++#define PCIMODULE_PCI_IRQ		15
++
++/** ============================================================================
++ *  @const   PCI_REG_INTSTATUS
++ *
++ *  @desc    PCI int status register address used for generating INT to HOST.
++ *  ============================================================================
++ */
++#define PCI_REG_INTSTATUS		0x01C1A010
++
++/** ============================================================================
++ *  @const   PCI_REG_HINTSET
++ *
++ *  @desc    PCI host int set register address used for generating INT to HOST.
++ *  ============================================================================
++ */
++#define PCI_REG_HINTSET			0x01C1A020
++
++/** ============================================================================
++ *  @const   PCI_REG_HINTSET
++ *
++ *  @desc    PCI host int ckaer register address used for generating INT to HOST
++ *  ============================================================================
++ */
++#define PCI_REG_HINTCLR			0x01C1A024
++
++/** ============================================================================
++ *  @const   PCI_REG_INTCLEAR
++ *
++ *  @desc    PCI int clear register address used for clearing INT from HOST.
++ *  ============================================================================
++ */
++#define PCI_REG_INTCLEAR		0x01C1A014
++
++/** ============================================================================
++ *  @const   PCI_SOFTINT0_MASK
++ *
++ *  @desc    Mask for generating soft int0 (DSP->GPP)
++ *  ============================================================================
++ */
++#define PCI_SOFTINT0_MASK		0x01000000
++
++/** ============================================================================
++ *  @const   PCI_SOFTINT1_MASK
++ *
++ *  @desc    Mask for generating soft int1 (GPP->DSP)
++ *  ============================================================================
++ */
++#define PCI_SOFTINT1_MASK		0x02000000
++
++/** ============================================================================
++ *  @const   PCI_SOFTINT2_MASK
++ *
++ *  @desc    Mask for generating soft int2 (GPP->DSP)
++ *  ============================================================================
++ */
++#define PCI_SOFTINT2_MASK		0x04000000
++
++/** ============================================================================
++ *  @const   PCI_SOFTINT3_MASK
++ *
++ *  @desc    Mask for generating soft int3 (GPP->DSP)
++ *  ============================================================================
++ */
++#define PCI_SOFTINT3_MASK		0x08000000
++
++/** ============================================================================
++ *  @const   PCI_REG_BAR0TRL
++ *
++ *  @desc    Address of register containing physical mapping of BAR0
++ *  ============================================================================
++ */
++#define PCI_REG_BAR0TRL			0x01C1A1C0
++
++/** ============================================================================
++ *  @const  REG32
++ *
++ *  @desc   Macro for register access.
++ *  ============================================================================
++ */
++#define REG32(addr)			*((u32 *)(IO_ADDRESS(addr)))
++
++
++#endif /* ifndef    (__PCIHAL_H__) */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/pcimodule.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/pcimodule.h
+@@ -0,0 +1,111 @@
++/*
++ * TI DaVinciHD PCI Module file
++ *
++ * Copyright (C) 2007 Texas Instruments
++ *
++ * ----------------------------------------------------------------------------
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++ * ----------------------------------------------------------------------------
++ */
++#ifndef __PCIMODULE_H__
++#define __PCIMODULE_H__
++
++#include <linux/types.h>
++
++#define PCIMODULE_NAME			("dm6467pci")
++
++/*
++ * IOCTLs
++ */
++
++#define PCI_IOC_BASE			'P'
++#define PCIMODULE_CMD_GENNOTIFY		(_IOW(PCI_IOC_BASE , 1, unsigned int))
++#define PCIMODULE_CMD_GETBARLOCN	(_IOWR(PCI_IOC_BASE , 2		\
++					, struct pcimodule_bar_mapping))
++
++/** ============================================================================
++ *  @name   pcimodule_intr_num
++ *
++ *  @desc   This object contains enumerations for the interrupt to be raised
++ *
++ *  @field  PCIMODULE_SOFT_INT0
++ *              Enumerated value to generate software interrupt 0 to host
++ *  @field  PCIMODULE_SOFT_INT1
++ *              Enumerated value to generate software interrupt 1 to host
++ *  @field  PCIMODULE_SOFT_INT2
++ *              Enumerated value to generate software interrupt 2 to host
++ *  @field  PCIMODULE_SOFT_INT3
++ *              Enumerated value to generate software interrupt 3 to host
++ *
++ *  @see    None
++ *  ============================================================================
++ */
++enum pcimodule_intr_num {
++	PCIMODULE_SOFT_INT0 = 0,
++	PCIMODULE_SOFT_INT1,
++	PCIMODULE_SOFT_INT2,
++	PCIMODULE_SOFT_INT3
++};
++
++/** ============================================================================
++ *  @name   pcimodule_bar_num
++ *
++ *  @desc   This object contains enumerations for the BAR numbers
++ *
++ *  @field  PCIMODULE_BAR_0
++ *              Enumerated value to indicate BAR-0
++ *  @field  PCIMODULE_BAR_1
++ *              Enumerated value to indicate BAR-1
++ *  @field  PCIMODULE_BAR_2
++ *              Enumerated value to indicate BAR-2
++ *  @field  PCIMODULE_BAR_3
++ *              Enumerated value to indicate BAR-3
++ *  @field  PCIMODULE_BAR_4
++ *              Enumerated value to indicate BAR-4
++ *  @field  PCIMODULE_BAR_5
++ *              Enumerated value to indicate BAR-5
++ *
++ *  @see    None
++ *  ============================================================================
++ */
++enum pcimodule_bar_num {
++	PCIMODULE_BAR_0 = 0,
++	PCIMODULE_BAR_1,
++	PCIMODULE_BAR_2,
++	PCIMODULE_BAR_3,
++	PCIMODULE_BAR_4,
++	PCIMODULE_BAR_5
++};
++
++/** ============================================================================
++ *  @name   pcimodule_bar_mapping
++ *
++ *  @desc   This object will be used to query bar mapping information
++ *
++ *  @field  enum pcimodule_bar_num
++ *              Enumerated value to indicate bar number to be queried
++ *  @field  unsigned int mapping
++ *              Address where the BAR is mapped
++ *
++ *  @see    None
++ *  ============================================================================
++ */
++struct pcimodule_bar_mapping {
++	enum pcimodule_bar_num bar_num;
++	unsigned int mapping;
++};
++
++#endif /* ifndef    (__PCIMODULE_H__) */
+Index: linux-2.6.18/drivers/char/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Makefile
++++ linux-2.6.18/drivers/char/Makefile
+@@ -113,6 +113,8 @@ obj-$(CONFIG_DM646x_CIR)	+= cir.o
+ obj-$(CONFIG_DM355_CIR)		+= cir_355.o
+ obj-$(CONFIG_DM6446_CIR)	+= cir_6446.o
+ 
++obj-$(CONFIG_DAVINCI_PCI)	+= pcimodule.o
++
+ # Files generated that shall be removed upon make clean
+ clean-files := consolemap_deftbl.c defkeymap.c qtronixmap.c
+ 
+Index: linux-2.6.18/drivers/char/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Kconfig
++++ linux-2.6.18/drivers/char/Kconfig
+@@ -1182,5 +1182,12 @@ config DM6446_CIR
+ 	help
+ 	  DM6446 Consumer IR Driver
+ 
++config DAVINCI_PCI
++	tristate "DaVinci PCI Module Support"
++	default n
++	depends on MACH_DAVINCI_DM6467_EVM
++	help
++	  DaVinci PCI Module
++
+ endmenu
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1575.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1575.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1575);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

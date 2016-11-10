@@ -1,0 +1,1854 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_da8xx_arch_base_port
+# Date: Thu Feb 19 15:04:06 2009
+# Source: MontaVista Software, Inc.
+# MR: 28546
+# Type: Enhancement
+# Disposition: needs submitting to DaVinci community
+# Signed-off-by: Mark Greer <mgreer@mvista.com>
+# Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description:
+# Add support for Texas Instruments DA8xx family of SoCs.
+# 
+#  arch/arm/Makefile                          |    1 
+#  arch/arm/mach-da8xx/Makefile               |    9 
+#  arch/arm/mach-da8xx/Makefile.boot          |    3 
+#  arch/arm/mach-da8xx/clock.c                |  179 +++++++++++++
+#  arch/arm/mach-da8xx/da8xx.h                |   17 +
+#  arch/arm/mach-da8xx/devices.c              |  389 +++++++++++++++++++++++++++++
+#  arch/arm/mach-da8xx/devices.h              |   42 +++
+#  arch/arm/mach-da8xx/gpio.c                 |   41 +++
+#  arch/arm/mach-da8xx/id.c                   |   62 ++++
+#  arch/arm/mach-da8xx/io.c                   |   70 +++++
+#  arch/arm/mach-da8xx/reset.c                |   25 +
+#  arch/arm/mach-da8xx/time.c                 |   47 +++
+#  arch/arm/plat-davinci/Kconfig              |    4 
+#  include/asm-arm/arch-davinci/cpu.h         |   21 +
+#  include/asm-arm/arch-davinci/debug-macro.S |    7 
+#  include/asm-arm/arch-davinci/entry-macro.S |   11 
+#  include/asm-arm/arch-davinci/gpio.h        |    4 
+#  include/asm-arm/arch-davinci/hardware.h    |  136 +++++++++-
+#  include/asm-arm/arch-davinci/io.h          |   10 
+#  include/asm-arm/arch-davinci/irqs.h        |  106 +++++++
+#  include/asm-arm/arch-davinci/memory.h      |   23 +
+#  include/asm-arm/arch-davinci/psc.h         |   40 ++
+#  include/asm-arm/arch-davinci/serial.h      |    4 
+#  include/asm-arm/arch-davinci/timex.h       |    6 
+#  include/asm-arm/arch-davinci/uncompress.h  |    4 
+#  include/asm-arm/arch-davinci/usb.h         |   37 ++
+#  26 files changed, 1277 insertions(+), 21 deletions(-)
+# 
+
+PATCHNUM=2149
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28546
+Type: Enhancement
+Disposition: needs submitting to DaVinci community
+Signed-off-by: Mark Greer <mgreer@mvista.com>
+Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description:
+Add support for Texas Instruments DA8xx family of SoCs.
+
+ arch/arm/Makefile                          |    1 
+ arch/arm/mach-da8xx/Makefile               |    9 
+ arch/arm/mach-da8xx/Makefile.boot          |    3 
+ arch/arm/mach-da8xx/clock.c                |  179 +++++++++++++
+ arch/arm/mach-da8xx/da8xx.h                |   17 +
+ arch/arm/mach-da8xx/devices.c              |  389 +++++++++++++++++++++++++++++
+ arch/arm/mach-da8xx/devices.h              |   42 +++
+ arch/arm/mach-da8xx/gpio.c                 |   41 +++
+ arch/arm/mach-da8xx/id.c                   |   62 ++++
+ arch/arm/mach-da8xx/io.c                   |   70 +++++
+ arch/arm/mach-da8xx/reset.c                |   25 +
+ arch/arm/mach-da8xx/time.c                 |   47 +++
+ arch/arm/plat-davinci/Kconfig              |    4 
+ include/asm-arm/arch-davinci/cpu.h         |   21 +
+ include/asm-arm/arch-davinci/debug-macro.S |    7 
+ include/asm-arm/arch-davinci/entry-macro.S |   11 
+ include/asm-arm/arch-davinci/gpio.h        |    4 
+ include/asm-arm/arch-davinci/hardware.h    |  136 +++++++++-
+ include/asm-arm/arch-davinci/io.h          |   10 
+ include/asm-arm/arch-davinci/irqs.h        |  106 +++++++
+ include/asm-arm/arch-davinci/memory.h      |   23 +
+ include/asm-arm/arch-davinci/psc.h         |   40 ++
+ include/asm-arm/arch-davinci/serial.h      |    4 
+ include/asm-arm/arch-davinci/timex.h       |    6 
+ include/asm-arm/arch-davinci/uncompress.h  |    4 
+ include/asm-arm/arch-davinci/usb.h         |   37 ++
+ mvl_patches/pro50-2149.c                   |   16 +
+ 27 files changed, 1293 insertions(+), 21 deletions(-)
+
+Index: linux-2.6.18/arch/arm/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/Makefile
++++ linux-2.6.18/arch/arm/Makefile
+@@ -125,6 +125,7 @@ endif
+   incdir-$(CONFIG_ARCH_MXC)        := mxc
+  machine-$(CONFIG_ARCH_MX2)        := mx2
+  machine-$(CONFIG_ARCH_DAVINCI_TRUE)	   := davinci
++ machine-$(CONFIG_ARCH_DA8XX)	   := da8xx
+   incdir-$(CONFIG_ARCH_DAVINCI)	   := davinci
+ 
+ ifeq ($(CONFIG_ARCH_EBSA110),y)
+Index: linux-2.6.18/arch/arm/mach-da8xx/Makefile
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/Makefile
+@@ -0,0 +1,9 @@
++#
++# Makefile for the linux kernel.
++#
++#
++
++# Common objects
++obj-y := time.o clock.o io.o id.o devices.o reset.o
++
++obj-$(CONFIG_GENERIC_GPIO)	+= gpio.o
+Index: linux-2.6.18/arch/arm/mach-da8xx/Makefile.boot
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/Makefile.boot
+@@ -0,0 +1,3 @@
++   zreladdr-y	:= 0xC0008000
++params_phys-y	:= 0xC0000100
++initrd_phys-y	:= 0xC0800000
+Index: linux-2.6.18/arch/arm/mach-da8xx/clock.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/clock.c
+@@ -0,0 +1,179 @@
++/*
++ * TI DA8xx clock config file
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * Based on arch/arm/mach-davinci/clock.c
++ * Copyright (C) 2006 Texas Instruments.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++
++#include <asm/hardware.h>
++
++#include <asm/arch/clock.h>
++
++static unsigned long da8xx_psc_bases[] = { DA8XX_PSC0_BASE, DA8XX_PSC1_BASE };
++
++static unsigned int commonrate;
++static unsigned int div_by_four;
++static unsigned int armrate;
++static unsigned int fixedrate = DA8XX_CLOCK_TICK_RATE; /* AUXCLK */
++
++static struct clk da8xx_clks[] = {
++	{
++		.name = "ARMCLK",
++		.rate = &armrate,
++		.lpsc = DA8XX_LPSC0_ARM,
++		.flags = ALWAYS_ENABLED,
++		.ctlr = 0,
++	},
++	{
++		.name = "UART0",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC0_UART0,
++		.ctlr = 0,
++	},
++	{
++		.name = "SPI0CLK",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC0_SPI0,
++		.ctlr = 0,
++	},
++	{
++		.name = "MMC_SD_CLK",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC0_MMC_SD,
++		.ctlr = 0,
++	},
++	{
++		.name = "UART1",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_UART1,
++		.ctlr = 1,
++	},
++	{
++		.name = "UART2",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_UART2,
++		.ctlr = 1,
++	},
++	{
++		.name = "EMACCLK",
++		.rate = &div_by_four,
++		.lpsc = DA8XX_LPSC1_CPGMAC,
++		.ctlr = 1,
++	},
++	{
++		.name = "I2CCLK",
++		.rate = &fixedrate,
++		.id   = 1,
++		.lpsc = DA8XX_LPSC1_I2C,
++		.ctlr = 1,
++	},
++	{
++		.name = "I2CCLK",
++		.rate = &div_by_four,
++		.id   = 2,
++		.lpsc = DA8XX_LPSC1_I2C,
++		.ctlr = 1,
++	},
++	{
++		.name = "McASPCLK0",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_McASP0,
++		.ctlr = 1,
++	},
++	{
++		.name = "McASPCLK1",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_McASP1,
++		.ctlr = 1,
++	},
++	{
++		.name = "McASPCLK2",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_McASP2,
++		.ctlr = 1,
++	},
++	{
++		.name = "gpio",
++		.rate = &div_by_four,
++		.lpsc = DA8XX_LPSC1_GPIO,
++		.ctlr = 1,
++	},
++	{
++		.name = "ECAPCLK",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_ECAP,
++		.ctlr = 1,
++	},
++	{
++		.name = "EMIF3CLK",
++		.rate = &commonrate,
++		.usecount = 1,
++		.lpsc = DA8XX_LPSC1_EMIF3C,
++		.ctlr = 1,
++	},
++	{
++		.name = "AEMIFCLK",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC0_EMIF25,
++		.ctlr = 0,
++	},
++	{
++		.name = "PWM_CLK",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_PWM,
++		.ctlr = 1,
++	},
++	{
++		.name = "IOPUCLK",
++		.rate = &div_by_four,
++		.lpsc = -1,
++	},
++	{
++		.name = "LCDCTRLCLK",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_LCDC,
++		.ctlr = 1,
++	},
++	{
++		.name = "SPI1CLK",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_SPI1,
++		.ctlr = 1,
++	},
++	{
++		.name = "USB11CLK",
++		.rate = &div_by_four,
++		.lpsc = DA8XX_LPSC1_USB11,
++		.ctlr = 1,
++	},
++	{
++		.name = "USB20CLK",
++		.rate = &commonrate,
++		.lpsc = DA8XX_LPSC1_USB20,
++		.ctlr = 1,
++	},
++};
++
++int __init da8xx_clk_init(void)
++{
++	u32 pll_mult;
++
++	davinci_psc_register(da8xx_psc_bases, 2);
++
++	pll_mult = davinci_readl(DA8XX_PLL_CNTRL0_BASE + PLLM);
++	armrate = ((pll_mult + 1) * DA8XX_CLOCK_TICK_RATE) / 2;
++	commonrate = armrate / 2;
++	div_by_four = armrate / 4;
++
++	return davinci_enable_clks(da8xx_clks, ARRAY_SIZE(da8xx_clks));
++}
+Index: linux-2.6.18/arch/arm/mach-da8xx/da8xx.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/da8xx.h
+@@ -0,0 +1,17 @@
++/*
++ * Author: Mark A. Greer <mgreer@mvista.com>
++ *
++ * Copyright (C) 2008 MontaVista, Software, Inc.
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2.  This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++#ifndef __ARCH_ARM_DA8XX_DA8XX_H
++#define __ARCH_ARM_DA8XX_DA8XX_H
++
++void da8xx_map_common_io(void);
++void da8xx_init_common_hw(void);
++void da8xx_check_revision(void);
++int da8xx_clk_init(void);
++
++#endif /* __ARCH_ARM_DA8XX_DA8XX_H */
+Index: linux-2.6.18/arch/arm/mach-da8xx/devices.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/devices.c
+@@ -0,0 +1,389 @@
++/*
++ * arch/arm/mach-da8xx/devices.c
++ *
++ * DA8xx platform device setup/initialization
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * Based on arch/arm/mach-davinci/devices.c
++ * Copyright (C) 2006 Komal Shah <komal_shah802003@yahoo.com>
++ * Copyright (c) 2007, MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/serial.h>
++#include <linux/serial_8250.h>
++#include <linux/platform_device.h>
++#include <linux/dma-mapping.h>
++#include <linux/usb/musb.h>
++#include <linux/davinci_emac.h>
++#include <linux/io.h>
++#include <linux/kgdb.h>
++
++#include <asm/hardware.h>
++#include <asm/mach-types.h>
++#include <asm/mach/map.h>
++
++#include <asm/arch/i2c.h>
++#include <asm/arch/cpu.h>
++#include <asm/arch/edma.h>
++#include <asm/hardware/cp_intc.h>
++
++#include "devices.h"
++
++static struct plat_serial8250_port da8xx_serial_pdata[] = {
++	[0] = {
++		.membase	= (char *)IO_ADDRESS(DA8XX_UART0_BASE),
++		.mapbase	= (unsigned long)DA8XX_UART0_BASE,
++		.irq		= IRQ_DA8XX_UARTINT0,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM,
++		.regshift	= 2,
++		.uartclk	= 0, /* Filled in later */
++	},
++	[1] = {
++		.membase	= (char *)IO_ADDRESS(DA8XX_UART1_BASE),
++		.mapbase	= (unsigned long)DAVINCI_UART1_BASE,
++		.irq		= IRQ_DA8XX_UARTINT1,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM,
++		.regshift	= 2,
++		.uartclk	= 0, /* Filled in later */
++	},
++	[2] = {
++		.membase	= (char *)IO_ADDRESS(DA8XX_UART2_BASE),
++		.mapbase	= (unsigned long)DA8XX_UART2_BASE,
++		.irq		= IRQ_DA8XX_UARTINT2,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM,
++		.regshift	= 2,
++		.uartclk	= 0, /* Filled in later */
++	},
++	[3] = {
++		.flags	= 0,
++	},
++};
++
++static struct platform_device da8xx_serial_device = {
++	.name	= "serial8250",
++	.id	= 0,
++	.dev	= {
++		.platform_data	= da8xx_serial_pdata,
++	},
++};
++
++static struct resource da8xx_i2c_resources0[] = {
++	[0] = {
++		.start	= DA8XX_I2C0_BASE,
++		.end	= DA8XX_I2C0_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++	},
++	[1] = {
++		.start	= IRQ_DA8XX_I2CINT0,
++		.end	= IRQ_DA8XX_I2CINT0,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
++static struct platform_device da8xx_i2c_device0 = {
++	.name		= "i2c_davinci",
++	.id		= 1,
++	.num_resources	= ARRAY_SIZE(da8xx_i2c_resources0),
++	.resource	= da8xx_i2c_resources0,
++};
++
++static struct resource da8xx_i2c_resources1[] = {
++	[0] = {
++		.start	= DA8XX_I2C1_BASE,
++		.end	= DA8XX_I2C1_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++	},
++	[1] = {
++		.start	= IRQ_DA8XX_I2CINT1,
++		.end	= IRQ_DA8XX_I2CINT1,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
++static struct platform_device da8xx_i2c_device1 = {
++	.name		= "i2c_davinci",
++	.id		= 2,
++	.num_resources	= ARRAY_SIZE(da8xx_i2c_resources1),
++	.resource	= da8xx_i2c_resources1,
++};
++
++static struct resource da8xx_watchdog_resources[] = {
++	[0] = {
++		.start	= DA8XX_WDOG_BASE,
++		.end	= DA8XX_WDOG_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++	},
++};
++
++static struct platform_device da8xx_watchdog_device = {
++	.name		= "watchdog",
++	.id		= -1,
++	.num_resources	= ARRAY_SIZE(da8xx_watchdog_resources),
++	.resource	= da8xx_watchdog_resources,
++};
++
++static struct resource da8xx_usb20_resources[] = {
++	[0] = {
++		.start	= DA8XX_USB0_CFG_BASE,
++		.end	= DA8XX_USB0_CFG_BASE + SZ_64K - 1,
++		.flags	= IORESOURCE_MEM,
++	},
++	[1] = {
++		.start	= IRQ_DA8XX_USB_INT,
++		.end	= IRQ_DA8XX_USB_INT,
++		.flags	= IORESOURCE_IRQ,
++	}
++};
++
++static u64 da8xx_usb20_dma_mask = DMA_32BIT_MASK;
++
++static struct platform_device da8xx_usb20_device = {
++	.name		= "musb_hdrc",
++	.id		= -1,
++	.dev = {
++		.dma_mask		= &da8xx_usb20_dma_mask,
++		.coherent_dma_mask	= DMA_32BIT_MASK,
++	},
++	.num_resources	= ARRAY_SIZE(da8xx_usb20_resources),
++	.resource	= da8xx_usb20_resources,
++};
++
++static struct resource da8xx_usb11_resources[] = {
++	[0] = {
++		.start	= DA8XX_USB1_BASE,
++		.end	= DA8XX_USB1_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++	},
++	[1] = {
++		.start	= IRQ_DA8XX_IRQN,
++		.end	= IRQ_DA8XX_IRQN,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
++static u64 da8xx_usb11_dma_mask = ~(u32)0;
++
++static struct platform_device da8xx_usb11_device = {
++	.name		= "ohci",
++	.id		= 0,
++	.dev = {
++		.dma_mask		= &da8xx_usb11_dma_mask,
++		.coherent_dma_mask	= 0xffffffff,
++	},
++	.num_resources	= ARRAY_SIZE(da8xx_usb11_resources),
++	.resource	= da8xx_usb11_resources,
++};
++
++static struct resource da8xx_emac_resources[] = {
++	[0] = {
++		.start	= DA8XX_EMAC_CPGMAC_BASE,
++		.end	= DA8XX_EMAC_CPGMAC_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++		.name	= "ctrl_regs",
++	},
++	[1] = {
++		.start	= DA8XX_EMAC_CPGMACSS_BASE,
++		.end	= DA8XX_EMAC_CPGMACSS_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++		.name	= "wrapper_ctrl_regs",
++	},
++	[2] = {
++		.start	= DA8XX_EMAC_CPPI_PORT_BASE,
++		.end	= DA8XX_EMAC_CPPI_PORT_BASE + SZ_8K - 1,
++		.flags	= IORESOURCE_MEM,
++		.name	= "wrapper_ram",
++	},
++	[3] = {
++		.start	= DA8XX_EMAC_MDIO_BASE,
++		.end	= DA8XX_EMAC_MDIO_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++		.name	= "mdio_regs",
++	},
++	[4] = { /* Must be entry 4 */
++		.start	= IRQ_DA8XX_C0_RX_THRESH_PULSE,
++		.flags	= IORESOURCE_IRQ,
++		.name	= "mac_rx_threshold",
++	},
++	[5] = {
++		.start	= IRQ_DA8XX_C0_RX_PULSE,
++		.flags	= IORESOURCE_IRQ,
++		.name	= "mac_rx",
++	},
++	[6] = {
++		.start	= IRQ_DA8XX_C0_TX_PULSE,
++		.flags	= IORESOURCE_IRQ,
++		.name	= "mac_tx",
++	},
++	[7] = {
++		.start	= IRQ_DA8XX_C0_MISC_PULSE,
++		.flags	= IORESOURCE_IRQ,
++		.name	= "mac_misc",
++	},
++};
++
++static struct platform_device da8xx_emac_device = {
++	.name		= "emac_davinci",
++	.id		= 1,
++	.num_resources	= ARRAY_SIZE(da8xx_emac_resources),
++	.resource	= da8xx_emac_resources,
++};
++
++static struct resource da8xx_mmc_resources[] = {
++	[0] = {		 /* registers */
++		.start	= DA8XX_MMC_SD0_BASE,
++		.end	= DA8XX_MMC_SD0_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM
++	},
++	[1] = {		 /* interrupt */
++		.start	= IRQ_DA8XX_MMCSDINT0,
++		.end	= IRQ_DA8XX_MMCSDINT0,
++		.flags	= IORESOURCE_IRQ
++	}
++};
++
++static struct platform_device da8xx_mmc_device = {
++	.name		= "davinci-mmc",
++	.id		= 0,
++	.num_resources	= ARRAY_SIZE(da8xx_mmc_resources),
++	.resource	= da8xx_mmc_resources,
++};
++
++static struct resource da8xx_rtc_resources[] = {
++	[0] = {		 /* registers */
++		.start	= DA8XX_RTC_BASE,
++		.end	= DA8XX_RTC_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++	},
++	[1] = {		 /* interrupt */
++		.start	= IRQ_DA8XX_RTC,
++		.end	= IRQ_DA8XX_RTC,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
++static struct platform_device da8xx_rtc_device = {
++	.name		= "rtc-da8xx",
++	.id		= 0,
++	.num_resources	= ARRAY_SIZE(da8xx_rtc_resources),
++	.resource	= da8xx_rtc_resources,
++};
++
++static struct resource da8xx_eqep_resources0[] = {
++	[0] = {		 /* registers */
++		.start	= DA8XX_EQEP0_BASE,
++		.end	= DA8XX_EQEP0_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++	},
++	[1] = {		 /* interrupt */
++		.start	= IRQ_DA8XX_EQEP0,
++		.end	= IRQ_DA8XX_EQEP0,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
++static struct platform_device da8xx_eqep_device0 = {
++	.name		= "eqep",
++	.id		= 0,
++	.num_resources	= ARRAY_SIZE(da8xx_eqep_resources0),
++	.resource	= da8xx_eqep_resources0,
++};
++
++static struct resource da8xx_eqep_resources1[] = {
++	[0] = {		 /* registers */
++		.start	= DA8XX_EQEP1_BASE,
++		.end	= DA8XX_EQEP1_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++	},
++	[1] = {		 /* interrupt */
++		.start	= IRQ_DA8XX_EQEP1,
++		.end	= IRQ_DA8XX_EQEP1,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
++static struct platform_device da8xx_eqep_device1 = {
++	.name		= "eqep",
++	.id		= 1,
++	.num_resources	= ARRAY_SIZE(da8xx_eqep_resources1),
++	.resource	= da8xx_eqep_resources1,
++};
++
++static struct resource da8xx_lcdc_resources[] = {
++	[0] = {		/* registers */
++		.start	= DA8XX_LCD_CNTRL_BASE,
++		.end	= DA8XX_LCD_CNTRL_BASE + SZ_4K - 1,
++		.flags	= IORESOURCE_MEM,
++	},
++	[1]= {		/* interrupt */
++		.start	= IRQ_DA8XX_LCDINT,
++		.end	= IRQ_DA8XX_LCDINT,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
++static struct platform_device da8xx_lcdc_device = {
++	.name		= "da8xx_lcdc",
++	.id		= 0,
++	.num_resources	= ARRAY_SIZE(da8xx_lcdc_resources),
++	.resource	= da8xx_lcdc_resources,
++};
++
++static struct platform_device *da8xx_devices[DA8XX_PDEV_COUNT] __initdata = {
++	[DA8XX_PDEV_SERIAL]	= &da8xx_serial_device,
++	[DA8XX_PDEV_I2C_0]	= &da8xx_i2c_device0,
++	[DA8XX_PDEV_I2C_1]	= &da8xx_i2c_device1,
++	[DA8XX_PDEV_WATCHDOG]	= &da8xx_watchdog_device,
++	[DA8XX_PDEV_USB_20]	= &da8xx_usb20_device,
++	[DA8XX_PDEV_USB_11]	= &da8xx_usb11_device,
++	[DA8XX_PDEV_EMAC]	= &da8xx_emac_device,
++	[DA8XX_PDEV_MMC]	= &da8xx_mmc_device,
++	[DA8XX_PDEV_RTC]	= &da8xx_rtc_device,
++	[DA8XX_PDEV_EQEP_0]	= &da8xx_eqep_device0,
++	[DA8XX_PDEV_EQEP_1]	= &da8xx_eqep_device1,
++	[DA8XX_PDEV_LCDC]	= &da8xx_lcdc_device,
++};
++
++int __init da8xx_add_devices(void *pdata[DA8XX_PDEV_COUNT])
++{
++	int i;
++
++	for (i = 0; i < DA8XX_PDEV_COUNT; i++)
++		if (pdata[i] != NULL)
++			da8xx_devices[i]->dev.platform_data = pdata[i];
++
++	return platform_add_devices(da8xx_devices, ARRAY_SIZE(da8xx_devices));
++}
++
++void __init da8xx_irq_init(u8 *irq_prio)
++{
++	cp_intc_init((void __iomem *)CP_INTC_VIRT, DA8XX_N_CP_INTC_IRQ,
++		     irq_prio);
++}
++
++void __init da8xx_uart_clk_init(u32 uartclk)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(da8xx_serial_pdata) - 1; i++)
++		da8xx_serial_pdata[i].uartclk = uartclk;
++}
++
++#ifdef CONFIG_KGDB_8250
++void __init da8xx_kgdb_init(void)
++{
++	kgdb8250_add_platform_port(CONFIG_KGDB_PORT_NUM,
++		&da8xx_serial_pdata[CONFIG_KGDB_PORT_NUM]);
++}
++#endif
+Index: linux-2.6.18/arch/arm/mach-da8xx/devices.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/devices.h
+@@ -0,0 +1,42 @@
++/*
++ * Common controller/device info
++ *
++ * Author: Mark A. Greer <mgreer@mvista.com>
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc.
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++#ifndef __ARCH_ARM_DA8XX_DEVICES_H
++#define __ARCH_ARM_DA8XX_DEVICES_H
++
++enum {
++	DA8XX_PDEV_SERIAL,
++	DA8XX_PDEV_I2C_0,
++	DA8XX_PDEV_I2C_1,
++	DA8XX_PDEV_WATCHDOG,
++	DA8XX_PDEV_USB_20,
++	DA8XX_PDEV_USB_11,
++	DA8XX_PDEV_EMAC,
++	DA8XX_PDEV_MMC,
++	DA8XX_PDEV_RTC,
++	DA8XX_PDEV_EQEP_0,
++	DA8XX_PDEV_EQEP_1,
++	DA8XX_PDEV_LCDC,
++	DA8XX_PDEV_COUNT
++};
++
++int da8xx_add_devices(void *pdata[DA8XX_PDEV_COUNT]);
++void da8xx_irq_init(u8 *irq_prio);
++void da8xx_uart_clk_init(u32 uartclk);
++
++#ifdef CONFIG_KGDB_8250
++void da8xx_kgdb_init(void);
++#else
++#define da8xx_kgdb_init()
++#endif
++
++
++#endif /* __ARCH_ARM_DA8XX_DEVICES_H */
+Index: linux-2.6.18/arch/arm/mach-da8xx/gpio.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/gpio.c
+@@ -0,0 +1,41 @@
++/*
++ * TI DA8xx GPIO Support
++ *
++ * Copyright (c) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * Based on: arch/arm/mach-davinci/gpio.c
++ * Copyright (c) 2006	David Brownell
++ * Copyright (c) 2007, MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#include <linux/kernel.h>
++
++#include <asm/arch/irqs.h>
++#include <asm/arch/hardware.h>
++#include <asm/arch/cpu.h>
++#include <asm/arch/gpio.h>
++
++/*
++ * If a new chip is added with number of GPIO greater than 128, please
++ * update DA8XX_MAX_N_GPIO in include/asm-arm/arch-davinci/irqs.h
++ */
++#define DA8xx_N_GPIO	128
++
++static DECLARE_BITMAP(da8xx_gpio_in_use, DA8xx_N_GPIO);
++static struct gpio_bank gpio_bank_da8xx = {
++	.base		= DA8XX_GPIO_BASE,
++	.num_gpio	= DA8xx_N_GPIO,
++	.irq_num	= IRQ_DA8XX_GPIO0,
++	.irq_mask	= 0x1ff,
++	.in_use		= da8xx_gpio_in_use,
++};
++
++void davinci_gpio_init(void)
++{
++	davinci_gpio_irq_setup(&gpio_bank_da8xx);
++}
+Index: linux-2.6.18/arch/arm/mach-da8xx/id.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/id.c
+@@ -0,0 +1,62 @@
++/*
++ * DA8xx CPU identification code
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * Based on arch/arm/mach-davinci/id.c
++ * Copyright (C) 2006 Komal Shah <komal_shah802003@yahoo.com>
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 as published
++ * by the Free Software Foundation.
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/io.h>
++
++#define JTAG_ID_REG		0x01c14018
++
++struct	da8xx_id {
++	u8	variant;	/* JTAG ID bits 31:28 */
++	u16	part_no;	/* JTAG ID bits 27:12 */
++	u32	manufacturer;	/* JTAG ID bits 11:1 */
++	u32	type;		/* Cpu id bits [31:8], cpu class bits [7:0] */
++};
++
++/* Register values to detect the DaVinci version */
++static struct da8xx_id da8xx_ids[] __initdata = {
++	{
++		/* DA8xx */
++		.part_no	= 0xb7df,
++		.variant	= 0x0,
++		.manufacturer	= 0x017,
++		.type		= 0x08300000
++	},
++};
++
++void __init da8xx_check_revision(void)
++{
++	u32 jtag_id	= davinci_readl(JTAG_ID_REG);
++	u16 part_no	= (jtag_id >> 12) & 0xffff;
++	u8  variant	= (jtag_id >> 28) & 0xf;
++	int i;
++
++	/* First check only the major version in a safe way */
++	for (i = 0; i < ARRAY_SIZE(da8xx_ids); i++)
++		if (part_no == da8xx_ids[i].part_no) {
++			system_rev = da8xx_ids[i].type;
++			break;
++		}
++
++	/* Check if we can find the dev revision */
++	for (i = 0; i < ARRAY_SIZE(da8xx_ids); i++)
++		if (part_no == da8xx_ids[i].part_no &&
++		    variant == da8xx_ids[i].variant) {
++			system_rev = da8xx_ids[i].type;
++			break;
++		}
++
++	printk(KERN_INFO "DA%x variant %#x\n", system_rev >> 16, variant);
++}
+Index: linux-2.6.18/arch/arm/mach-da8xx/io.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/io.c
+@@ -0,0 +1,70 @@
++/*
++ * DA8xx I/O mapping code
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * Based on arch/arm/mach-davinci/io.c
++ * Copyright (C) 2005-2006 Texas Instruments
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/memory.h>
++
++#include <asm/tlb.h>
++#include <asm/mach/map.h>
++#include <asm/arch/clock.h>
++#include <asm/arch/hardware.h>
++#include <asm/arch/common.h>
++#include <asm/arch/cpu.h>
++
++#include "da8xx.h"
++
++/*
++ * The machine specific code may provide the extra mapping besides the
++ * default mapping provided here.
++ */
++static struct map_desc da8xx_io_desc[] __initdata = {
++	{
++		.virtual	= IO_VIRT,
++		.pfn		= __phys_to_pfn(IO_PHYS),
++		.length		= IO_SIZE,
++		.type		= MT_DEVICE
++	},
++	{
++		.virtual	= CP_INTC_VIRT,
++		.pfn		= __phys_to_pfn(DA8XX_ARM_INTC_BASE),
++		.length		= CP_INTC_SIZE,
++		.type		= MT_DEVICE
++	},
++};
++
++void __init da8xx_map_common_io(void)
++{
++	iotable_init(da8xx_io_desc, ARRAY_SIZE(da8xx_io_desc));
++
++	/*
++	 * Normally devicemaps_init() would flush caches and tlb after
++	 * mdesc->map_io(), but we must also do it here because of the CPU
++	 * revision check below.
++	 */
++	local_flush_tlb_all();
++	flush_cache_all();
++
++	/*
++	 * We want to check CPU revision early for cpu_is_daxxx() macros.
++	 * I/O space mapping must be initialized before we can do that.
++	 */
++	da8xx_check_revision();
++}
++
++void __init da8xx_init_common_hw(void)
++{
++	da8xx_clk_init();
++}
+Index: linux-2.6.18/arch/arm/mach-da8xx/reset.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/reset.c
+@@ -0,0 +1,25 @@
++/*
++ * DA8xx common platform reset code
++ *
++ * Author: David Griego <dgriego@mvista.com>
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++#include <linux/kernel.h>
++
++#include <asm/hardware.h>
++
++#include <asm/arch/time.h>
++
++/*
++ * This should reset the system in most, if not all, DA8xx platforms.
++ * Compile this file if you don't have a better way to reset your board.
++ */
++void arch_reset(char mode)
++{
++	davinci_watchdog_reset(DA8XX_WDOG_BASE);
++}
+Index: linux-2.6.18/arch/arm/mach-da8xx/time.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-da8xx/time.c
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++
++#include <linux/kernel.h>
++#include <linux/init.h>
++
++#include <asm/hardware.h>
++#include <asm/mach/irq.h>
++#include <asm/mach/time.h>
++#include <asm/arch/time.h>
++
++static	int da8xx_timer_irqs[NUM_TIMERS] = {
++	IRQ_DA8XX_TINT12_0,
++	IRQ_DA8XX_TINT34_0,
++	IRQ_DA8XX_TINT12_1,
++	IRQ_DA8XX_TINT34_1
++};
++
++/* Compare registers are only available to the bottom timer 0 */
++static	int da8xx_cmp_irqs[NUM_TIMERS] = {
++	IRQ_DA8XX_T12CMPINT0_0,
++};
++
++static u32 da8xx_bases[] = { DA8XX_TIMER64P0_BASE, DA8XX_TIMER64P1_BASE };
++
++static void __init davinci_timer_init(void)
++{
++	/*
++	 * Configure the 2 64-bit timer as 4 32-bit timers with
++	 * following assignments.
++	 *
++	 * T0_BOT: Timer 0, bottom: free run counter and system clock.
++	 * T0_TOP: Timer 0, top: reserved for DSP.
++	 * T1_BOT: Timer 1: used as watchdog timer.
++	 */
++	davinci_common_timer_init(da8xx_bases, 2, da8xx_timer_irqs,
++				  da8xx_cmp_irqs, T0_BOT, T0_BOT);
++}
++
++struct sys_timer davinci_timer = {
++	.init	= davinci_timer_init,
++};
+Index: linux-2.6.18/arch/arm/plat-davinci/Kconfig
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/Kconfig
++++ linux-2.6.18/arch/arm/plat-davinci/Kconfig
+@@ -9,6 +9,10 @@ choice
+ config ARCH_DAVINCI_TRUE
+ 	bool "True DaVinci Core"
+ 
++config ARCH_DA8XX
++	bool "DA8xx DaVinci-like Core"
++	select TI_CP_INTC
++
+ endchoice
+ 
+ config DAVINCI_MUX
+Index: linux-2.6.18/include/asm-arm/arch-davinci/cpu.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/cpu.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/cpu.h
+@@ -1,14 +1,14 @@
+ /*
+- * linux/include/asm-arm/arch-davinci/cpu.h
++ * include/asm-arm/arch-davinci/cpu.h
+  *
+- * Davinci cpu type detection
++ * DaVinci/DA8xx CPU type detection
+  *
+  * Author: Steve Chen <schen@mvista.com>
++ * Copyright (c) 2007-2008 MontaVista Software, Inc. <source@mvista.com>
+  *
+- * 2007 (c) MontaVista Software, Inc. This file is licensed under
+- * the terms of the GNU General Public License version 2. This program
+- * is licensed "as is" without any warranty of any kind, whether express
+- * or implied.
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
+  */
+ 
+ #ifndef _ASM_ARCH_CPU_H
+@@ -29,10 +29,19 @@ static inline int cpu_is_davinci_dm ##ty
+ 	return (GET_DAVINCI_CPU_TYPE(msk) == (id & msk)) ? 1 : 0;	\
+ }
+ 
++#define IS_DA8XX_CPU(type, id, msk)			\
++static inline int cpu_is_da ##type(void)		\
++{							\
++	return GET_DAVINCI_CPU_TYPE(msk) == (id & msk); \
++}
++
+ /* following generates the cpu_is_davinci_dmxxx */
+ IS_DAVINCI_CPU(644x, 0x64430, 0xffff0)       /* cpu_is_davinci_dm644x() */
+ IS_DAVINCI_CPU(644x_pg1x, 0x64430, 0xfffff)  /* cpu_is_davinci_dm644x_pg1x() */
+ IS_DAVINCI_CPU(6467, 0x64670, 0xffff0)       /* cpu_is_davinci_dm6467() */
+ IS_DAVINCI_CPU(355, 0x3500, 0xffff0)         /* cpu_is_davinci_dm355() */
+ 
++/* The following generates the cpu_is_daxxx */
++IS_DA8XX_CPU(830, 0x08300, 0xffff0)	    /* cpu_is_davinci_da830() */
++
+ #endif
+Index: linux-2.6.18/include/asm-arm/arch-davinci/debug-macro.S
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/debug-macro.S
++++ linux-2.6.18/include/asm-arm/arch-davinci/debug-macro.S
+@@ -14,7 +14,12 @@
+ 		tst	\rx, #1			@ MMU enabled?
+ 		moveq	\rx, #0x01000000	@ physical base address
+ 		movne	\rx, #0xfe000000	@ virtual base
+-		orr	\rx, \rx, #0x00c20000   @ UART 0
++#if defined(CONFIG_ARCH_DA8XX)
++		orr	\rx, \rx, #0x00d00000	@ physical base address
++		orr	\rx, \rx, #0x0000d000	@ physical base address
++#else
++		orr	\rx, \rx, #0x00c20000	@ physical base address
++#endif
+ 		.endm
+ 
+ #define UART_SHIFT	2
+Index: linux-2.6.18/include/asm-arm/arch-davinci/entry-macro.S
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/entry-macro.S
++++ linux-2.6.18/include/asm-arm/arch-davinci/entry-macro.S
+@@ -15,11 +15,22 @@
+ 		.endm
+ 
+ 		.macro	get_irqnr_and_base, irqnr, irqstat, base, tmp
++#ifdef CONFIG_ARCH_DA8XX
++		ldr \base, =CP_INTC_VIRT
++		ldr \irqnr, [\base, #0x80] /* get irq number */
++		and \irqnr, \irqnr, #0xff  /* irq is in bits 0-9 */
++		mov \tmp, \irqnr, lsr #3
++		and \tmp, \tmp, #0xfc
++		add \tmp, \tmp, #0x280 /* get the register offset */
++		ldr \irqstat, [\base, \tmp] /* get the intc status */
++		cmp \irqstat, #0x0
++#else
+ 		ldr \base, =IO_ADDRESS(DAVINCI_ARM_INTC_BASE)
+ 		ldr \tmp, [\base, #0x14]
+ 		mov \tmp, \tmp, lsr #2
+ 		sub \irqnr, \tmp, #1
+ 		cmp \tmp, #0
++#endif
+ 		.endm
+ 
+ 		.macro	irq_prio_table
+Index: linux-2.6.18/include/asm-arm/arch-davinci/gpio.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/gpio.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/gpio.h
+@@ -118,7 +118,11 @@ extern int davinci_gpio_irq_setup(struct
+ extern int gpio_request(unsigned gpio, const char *tag);
+ extern void gpio_free(unsigned gpio);
+ 
++#ifdef	CONFIG_ARCH_DA8XX
++#define GPIO_IRQ_BASE	DA8XX_N_CP_INTC_IRQ
++#else
+ #define GPIO_IRQ_BASE	DAVINCI_N_AINTC_IRQ
++#endif
+ 
+ static inline int gpio_to_irq(unsigned gpio)
+ {
+Index: linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/hardware.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+@@ -1,12 +1,12 @@
+ /*
+  * Common hardware definitions
+  *
+- * Author: Kevin Hilman, MontaVista Software, Inc. <source@mvista.com>
++ * Author: Kevin Hilman, MontaVista Software, Inc.
++ * Copyright (c) 2007-2009 MontaVista Software, Inc. <source@mvista.com>
+  *
+- * 2007 (c) MontaVista Software, Inc. This file is licensed under
+- * the terms of the GNU General Public License version 2. This program
+- * is licensed "as is" without any warranty of any kind, whether express
+- * or implied.
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
+  */
+ #ifndef __ASM_ARCH_HARDWARE_H
+ #define __ASM_ARCH_HARDWARE_H
+@@ -112,8 +112,41 @@
+ #define PINMUX3		(DAVINCI_SYSTEM_MODULE_BASE + 0x0c)
+ #define PINMUX4		(DAVINCI_SYSTEM_MODULE_BASE + 0x10)
+ 
++/*
++ * DA8xx boot configuration registers
++ */
++#define DA8XX_KICK0		(DA8XX_BOOT_CFG_BASE + 0x38)
++#define DA8XX_KICK1		(DA8XX_BOOT_CFG_BASE + 0x3c)
++/* DA8xx has 5 CFGCHIP registers */
++#define DA8XX_CFGCHIP(n)	(DA8XX_BOOT_CFG_BASE + 0x17c + (n) * 4)
++
++#define DA8XX_KICK0_MAGIC	0x83e70b13
++#define DA8XX_KICK1_MAGIC	0x95a4f1e0
++
++/* DA8xx cfg regs have to be unlocked by writing magic values to kick regs */
++#ifdef	CONFIG_ARCH_DA8XX
++#define davinci_cfg_readl(a) ({						\
++	davinci_writel(DA8XX_KICK0_MAGIC, DA8XX_KICK0); /* unlock */	\
++	davinci_writel(DA8XX_KICK1_MAGIC, DA8XX_KICK1);			\
++	davinci_readl(a);						\
++	/* davinci_writel(0, DA8XX_KICK0);*/ /* lock */			\
++})
++#define davinci_cfg_writel(v, a) ({					\
++	davinci_writel(DA8XX_KICK0_MAGIC, DA8XX_KICK0); /* unlock */	\
++	davinci_writel(DA8XX_KICK1_MAGIC, DA8XX_KICK1);			\
++	davinci_writel(v, a);						\
++	/* davinci_writel(0, DA8XX_KICK0); */ /* lock */		\
++})
++#else
+ #define davinci_cfg_readl(a)		davinci_readl(a)
+ #define davinci_cfg_writel(v, a)	davinci_writel(v, a)
++#endif
++
++#define ASYNC_EMIF_REVID	0x00
++#define ASYNC_EMIF_AWCCR	0x04
++#define ASYNC_EMIF_A1CR 	0x10
++#define ASYNC_EMIF_A2CR 	0x14
++#define ASYNC_EMIF_A3CR 	0x18
+ 
+ /*
+  * DM355 base register addresses different from original DaVinci
+@@ -151,4 +184,97 @@
+ #define DM355_MMC0_BASE 		DM355_MMC_SD_BASE
+ #define DAVINCI_MMC_SD0_BASE		DM355_MMC_SD_BASE
+ 
++/*
++ * DA8xx base registers
++ */
++#define DA8XX_TPCC_BASE 		0x01C00000
++#define DA8XX_TPTC0_BASE		0x01C08000
++#define DA8XX_TPTC1_BASE		0x01C08400
++#define DA8XX_PSC0_BASE 		0x01C10000
++#define DA8XX_PLL_CNTRL0_BASE		0x01C11000
++#define DA8XX_KEY_MGR_BASE		0x01C12000
++#define DA8XX_SECU_CNTRL_BASE		0x01C13000
++#define DA8XX_BOOT_CFG_BASE		0x01C14000
++#define DA8XX_IOPU0_BASE		0x01C16000
++#define DA8XX_IOPU2_BASE		0x01C17000
++#define DA8XX_TIMER64P0_BASE		0x01C20000
++#define DA8XX_TIMER64P1_BASE		0x01C21000
++#define DA8XX_WDOG_BASE 		DA8XX_TIMER64P1_BASE
++#define DA8XX_I2C0_BASE 		0x01C22000
++#define DA8XX_RTC_BASE			0x01C23000
++#define DA8XX_IOPU1_BASE		0x01C24000
++#define DA8XX_DMAX_DATA_RAM0_BASE	0x01C30000
++#define DA8XX_DMAX_DATA_RAM1_BASE	0x01C32000
++#define DA8XX_DMAX_INTC_BASE		0x01C34000
++#define DA8XX_DPSP0_CNTRL_BASE		0x01C37000
++#define DA8XX_DPSP0_DEBUG_BASE		0x01C37400
++#define DA8XX_DPSP1_CNTRL_BASE		0x01C37800
++#define DA8XX_DPSP1_DEBUG_BASE		0x01C37C00
++#define DA8XX_DPSP0_INST_RAM_BASE	0x01C38000
++#define DA8XX_DPSP1_INST_RAM_BASE	0x01C3C000
++#define DA8XX_MMC_SD0_BASE		0x01C40000
++#define DA8XX_SPI0_BASE 		0x01C41000
++#define DA8XX_MPU0_BASE 		0x01C43000
++#define DA8XX_MCASP0_CNTRL_BASE 	0x01D00000
++#define DA8XX_MCASP0_FIFO_CNTRL_BASE	0x01D01000
++#define DA8XX_MCASP0_DATAL_BASE 	0x01D02000
++#define DA8XX_MCASP1_CNTRL_BASE 	0x01D04000
++#define DA8XX_MCASP1_FIFO_CNTRL_BASE	0x01D05000
++#define DA8XX_MCASP1_DATAL_BASE 	0x01D06000
++#define DA8XX_MCASP2_CNTRL_BASE 	0x01D08000
++#define DA8XX_MCASP2_FIFO_CNTRL_BASE	0x01D09000
++#define DA8XX_MCASP2_DATAL_BASE 	0x01D0A000
++#define DA8XX_IOPU4_BASE		0x01D0E000
++#define DA8XX_USB0_CFG_BASE		0x01E00000
++#define DA8XX_UHPI_CFG_BASE		0x01E10000
++#define DA8XX_UHPI_IODFT_BASE		0x01E11000
++#define DA8XX_SPI1_BASE 		0x01E12000
++#define DA8XX_LCD_CNTRL_BASE		0x01E13000
++#define DA8XX_MPU1_BASE 		0x01E14000
++#define DA8XX_MPU2_BASE 		0x01E15000
++#define DA8XX_EMAC_CPPI_PORT_BASE	0x01E20000
++#define DA8XX_EMAC_CPGMACSS_BASE	0x01E22000
++#define DA8XX_EMAC_CPGMAC_BASE		0x01E23000
++#define DA8XX_EMAC_MDIO_BASE		0x01E24000
++#define DA8XX_USB1_BASE 		0x01E25000
++#define DA8XX_GPIO_BASE 		0x01E26000
++#define DA8XX_PSC1_BASE 		0x01E27000
++#define DA8XX_I2C1_BASE 		0x01E28000
++#define DA8XX_IOPU3_BASE		0x01E29000
++#define DA8XX_PBIST0_CNTRL_BASE 	0x01E2A000
++#define DA8XX_PBIST1_CNTRL_BASE 	0x01E2B000
++#define DA8XX_EPWM0_BASE		0x01F00000
++#define DA8XX_HRPWM0_BASE		0x01F01000
++#define DA8XX_EPWM1_BASE		0x01F02000
++#define DA8XX_HRPWM1_BASE		0x01F03000
++#define DA8XX_EPWM2_BASE		0x01F04000
++#define DA8XX_HRPWM2_BASE		0x01F05000
++#define DA8XX_ECAP0_BASE		0x01F06000
++#define DA8XX_ECAP1_BASE		0x01F07000
++#define DA8XX_ECAP2_BASE		0x01F08000
++#define DA8XX_EQEP0_BASE		0x01F09000
++#define DA8XX_EQEP1_BASE		0x01F0A000
++#define DA8XX_IOPU5_BASE		0x01F0B000
++
++#define DA8XX_ARM_LOC_ROM_BASE		0x80000000
++#define DA8XX_ARM_LOC_ROM_SIZE		SZ_8K
++
++#define DA8XX_ARM_INTC_BASE		0xFFFEE000
++#define DA8XX_ARM_INTC_SIZE		SZ_4K
++
++#define DA8XX_ARM_LOC_RAM_BASE		0xFFFF0000
++#define DA8XX_ARM_LOC_RAM_SIZE		SZ_8K
++
++/* EMIF area */
++#define DA8XX_EMIF25_ASYNC_DATA_CE0_BASE	0x40000000
++/* CS1/CE1 not used on DA8xx */
++#define DA8XX_EMIF25_ASYNC_DATA_CE2_BASE	0x60000000
++#define DA8XX_EMIF25_ASYNC_DATA_CE3_BASE	0x62000000
++#define DA8XX_EMIF25_ASYNC_DATA_CE4_BASE	0x64000000
++#define DA8XX_EMIF25_ASYNC_DATA_CE5_BASE	0x66000000
++#define DA8XX_EMIF25_CONTROL_BASE		0x68000000
++
++#define DA8XX_EMIF3_CONTROL_BASE		0xB0000000
++#define DA8XX_EMIF3_DATA_BASE			0xC0000000
++
+ #endif /* __ASM_ARCH_HARDWARE_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/io.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/io.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/io.h
+@@ -27,6 +27,16 @@
+ #define IO_ADDRESS(x)	io_p2v(x)
+ 
+ /*
++ * DA8xx have their cp_intc interrupt controller mapped outside the IO_PHYS to
++ * IO_PHYS + IO_SIZE - 1 range, so we're creating a fixed virtual mapping for
++ * its registers.  The address is determined by the size of cp_intc register
++ * region (which is 8 KB or 2 pages) and a 1-page hole to reduce the chance of
++ * an invalid memory access.
++ */
++#define CP_INTC_SIZE		SZ_8K
++#define CP_INTC_VIRT		(IO_VIRT - CP_INTC_SIZE - SZ_4K)
++
++/*
+  * We don't actually have real ISA nor PCI buses, but there is so many
+  * drivers out there that might just work if we fake them...
+  */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/irqs.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/irqs.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/irqs.h
+@@ -231,10 +231,114 @@
+ #define IRQ_DM646X_DDRINT       59
+ #define IRQ_DM646X_AEMIFINT     60
+ 
++/* DA8XX interrupts */
++#define IRQ_DA8XX_COMMTX		0
++#define IRQ_DA8XX_COMMRX		1
++#define IRQ_DA8XX_NINT			2
++#define IRQ_DA8XX_EVTOUT0		3
++#define IRQ_DA8XX_EVTOUT1		4
++#define IRQ_DA8XX_EVTOUT2		5
++#define IRQ_DA8XX_EVTOUT3		6
++#define IRQ_DA8XX_EVTOUT4		7
++#define IRQ_DA8XX_EVTOUT5		8
++#define IRQ_DA8XX_EVTOUT6		9
++#define IRQ_DA8XX_EVTOUT7		10
++#define IRQ_DA8XX_CCINT0		11
++#define IRQ_DA8XX_CCERRINT		12
++#define IRQ_DA8XX_TCERRINT0		13
++#define IRQ_DA8XX_AEMIFINT		14
++#define IRQ_DA8XX_I2CINT0		15
++#define IRQ_DA8XX_MMCSDINT0		16
++#define IRQ_DA8XX_MMCSDINT1		17
++#define IRQ_DA8XX_ALLINT0		18
++#define IRQ_DA8XX_RTC			19
++#define IRQ_DA8XX_SPINT0		20
++#define IRQ_DA8XX_TINT12_0		21
++#define IRQ_DA8XX_TINT34_0		22
++#define IRQ_DA8XX_TINT12_1		23
++#define IRQ_DA8XX_TINT34_1		24
++#define IRQ_DA8XX_UARTINT0		25
++#define IRQ_DA8XX_KEYMGRINT		26
++#define IRQ_DA8XX_SECINT		26
++#define IRQ_DA8XX_SECKEYERR		26
++#define IRQ_DA8XX_MPUERR		27
++#define IRQ_DA8XX_IOPUERR		27
++#define IRQ_DA8XX_BOOTCFGERR		27
++#define IRQ_DA8XX_CHIPINT0		28
++#define IRQ_DA8XX_CHIPINT1		29
++#define IRQ_DA8XX_CHIPINT2		30
++#define IRQ_DA8XX_CHIPINT3		31
++#define IRQ_DA8XX_TCERRINT1		32
++#define IRQ_DA8XX_C0_RX_THRESH_PULSE	33
++#define IRQ_DA8XX_C0_RX_PULSE		34
++#define IRQ_DA8XX_C0_TX_PULSE		35
++#define IRQ_DA8XX_C0_MISC_PULSE 	36
++#define IRQ_DA8XX_C1_RX_THRESH_PULSE	37
++#define IRQ_DA8XX_C1_RX_PULSE		38
++#define IRQ_DA8XX_C1_TX_PULSE		39
++#define IRQ_DA8XX_C1_MISC_PULSE 	40
++#define IRQ_DA8XX_MEMERR		41
++#define IRQ_DA8XX_GPIO0 		42
++#define IRQ_DA8XX_GPIO1 		43
++#define IRQ_DA8XX_GPIO2 		44
++#define IRQ_DA8XX_GPIO3 		45
++#define IRQ_DA8XX_GPIO4 		46
++#define IRQ_DA8XX_GPIO5 		47
++#define IRQ_DA8XX_GPIO6 		48
++#define IRQ_DA8XX_GPIO7 		49
++#define IRQ_DA8XX_GPIO8 		50
++#define IRQ_DA8XX_I2CINT1		51
++#define IRQ_DA8XX_LCDINT		52
++#define IRQ_DA8XX_UARTINT1		53
++#define IRQ_DA8XX_MCASPINT		54
++#define IRQ_DA8XX_ALLINT1		55
++#define IRQ_DA8XX_SPINT1		56
++#define IRQ_DA8XX_UHPI_INT1		57
++#define IRQ_DA8XX_USB_INT		58
++#define IRQ_DA8XX_IRQN			59
++#define IRQ_DA8XX_RWAKEUP		60
++#define IRQ_DA8XX_UARTINT2		61
++#define IRQ_DA8XX_DFTSSINT		62
++#define IRQ_DA8XX_EHRPWM0		63
++#define IRQ_DA8XX_EHRPWM0TZ		64
++#define IRQ_DA8XX_EHRPWM1		65
++#define IRQ_DA8XX_EHRPWM1TZ		66
++#define IRQ_DA8XX_EHRPWM2		67
++#define IRQ_DA8XX_EHRPWM2TZ		68
++#define IRQ_DA8XX_ECAP0 		69
++#define IRQ_DA8XX_ECAP1 		70
++#define IRQ_DA8XX_ECAP2 		71
++#define IRQ_DA8XX_EQEP0 		72
++#define IRQ_DA8XX_EQEP1 		73
++#define IRQ_DA8XX_T12CMPINT0_0		74
++#define IRQ_DA8XX_T12CMPINT1_0		75
++#define IRQ_DA8XX_T12CMPINT2_0		76
++#define IRQ_DA8XX_T12CMPINT3_0		77
++#define IRQ_DA8XX_T12CMPINT4_0		78
++#define IRQ_DA8XX_T12CMPINT5_0		79
++#define IRQ_DA8XX_T12CMPINT6_0		80
++#define IRQ_DA8XX_T12CMPINT7_0		81
++#define IRQ_DA8XX_T12CMPINT0_1		82
++#define IRQ_DA8XX_T12CMPINT1_1		83
++#define IRQ_DA8XX_T12CMPINT2_1		84
++#define IRQ_DA8XX_T12CMPINT3_1		85
++#define IRQ_DA8XX_T12CMPINT4_1		86
++#define IRQ_DA8XX_T12CMPINT5_1		87
++#define IRQ_DA8XX_T12CMPINT6_1		88
++#define IRQ_DA8XX_T12CMPINT7_1		89
++#define IRQ_DA8XX_ARMCLKSTOPREQ 	90
++
++#define DA8XX_N_CP_INTC_IRQ		96
++
+ #define ARCH_TIMER_IRQ IRQ_TINT1_TINT34
+ 
+ #define DAVINCI_MAX_N_GPIO	104
++#define DA8XX_MAX_N_GPIO	128
+ 
+-#define NR_IRQS			(DAVINCI_N_AINTC_IRQ + DAVINCI_MAX_N_GPIO)
++#ifdef	CONFIG_ARCH_DA8XX
++#define NR_IRQS 		(DA8XX_N_CP_INTC_IRQ + DA8XX_MAX_N_GPIO)
++#else
++#define NR_IRQS 		(DAVINCI_N_AINTC_IRQ + DAVINCI_MAX_N_GPIO)
++#endif
+ 
+ #endif /* __ASM_ARCH_IRQS_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/memory.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/memory.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/memory.h
+@@ -1,12 +1,12 @@
+ /*
+  * DaVinci memory space definitions
+  *
+- * Author: Kevin Hilman, MontaVista Software, Inc. <source@mvista.com>
++ * Author: Kevin Hilman, MontaVista Software, Inc.
++ * Copyright (C) 2007-2008 MontaVista Software, Inc. <source@mvista.com>
+  *
+- * 2007 (c) MontaVista Software, Inc. This file is licensed under
+- * the terms of the GNU General Public License version 2. This program
+- * is licensed "as is" without any warranty of any kind, whether express
+- * or implied.
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
+  */
+ #ifndef __ASM_ARCH_MEMORY_H
+ #define __ASM_ARCH_MEMORY_H
+@@ -20,10 +20,17 @@
+ /**************************************************************************
+  * Definitions
+  **************************************************************************/
+-#define DAVINCI_DDR_BASE    0x80000000
+-#define DAVINCI_IRAM_BASE   0x00008000 /* ARM Internal RAM */
++#define DAVINCI_DDR_BASE	0x80000000
++#define DAVINCI_IRAM_BASE	0x00008000 /* ARM Internal RAM */
+ 
+-#define PHYS_OFFSET DAVINCI_DDR_BASE
++#define DA8XX_DDR_BASE		0xc0000000
++#define DA8XX_IRAM_BASE 	0x80000000 /* ARM Internal RAM */
++
++#ifdef	CONFIG_ARCH_DA8XX
++#define PHYS_OFFSET	DA8XX_DDR_BASE
++#else
++#define PHYS_OFFSET	DAVINCI_DDR_BASE
++#endif
+ 
+ /*
+  * Increase size of DMA-consistent memory region
+Index: linux-2.6.18/include/asm-arm/arch-davinci/psc.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/psc.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/psc.h
+@@ -125,4 +125,44 @@
+ #define DAVINCI_DM646X_LPSC_TIMER1	35	/* TIMER1 LPSC */
+ #define DAVINCI_DM646X_LPSC_ARM_INTC	45	/* ARM INTC LPSC */
+ 
++/* DA8xx LPSC0/1 modules */
++#define DA8XX_LPSC0_TPCC		0
++#define DA8XX_LPSC0_TPTC0		1
++#define DA8XX_LPSC0_TPTC1		2
++#define DA8XX_LPSC0_EMIF25		3
++#define DA8XX_LPSC0_SPI0		4
++#define DA8XX_LPSC0_MMC_SD		5
++#define DA8XX_LPSC0_AINTC		6
++#define DA8XX_LPSC0_ARM_RAM_ROM 	7
++#define DA8XX_LPSC0_SECU_MGR		8
++#define DA8XX_LPSC0_UART0		9
++#define DA8XX_LPSC0_SCR0_SS		10
++#define DA8XX_LPSC0_SCR1_SS		11
++#define DA8XX_LPSC0_SCR2_SS		12
++#define DA8XX_LPSC0_DMAX 		13
++#define DA8XX_LPSC0_ARM 		14
++#define DA8XX_LPSC0_GEM 		15
++
++#define DA8XX_LPSC1_USB20		1
++#define DA8XX_LPSC1_USB11		2
++#define DA8XX_LPSC1_GPIO		3
++#define DA8XX_LPSC1_UHPI		4
++#define DA8XX_LPSC1_CPGMAC		5
++#define DA8XX_LPSC1_EMIF3C		6
++#define DA8XX_LPSC1_McASP0		7
++#define DA8XX_LPSC1_McASP1		8
++#define DA8XX_LPSC1_McASP2		9
++#define DA8XX_LPSC1_SPI1 		10
++#define DA8XX_LPSC1_I2C 		11
++#define DA8XX_LPSC1_UART1		12
++#define DA8XX_LPSC1_UART2		13
++#define DA8XX_LPSC1_LCDC		16
++#define DA8XX_LPSC1_PWM 		17
++#define DA8XX_LPSC1_ECAP 		20
++#define DA8XX_LPSC1_EQEP 		21
++#define DA8XX_LPSC1_SCR_P0_SS		24
++#define DA8XX_LPSC1_SCR_P1_SS		25
++#define DA8XX_LPSC1_CR_P3_SS		26
++#define DA8XX_LPSC1_L3_CBA_RAM		31
++
+ #endif /* __ASM_ARCH_PSC_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/serial.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/serial.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/serial.h
+@@ -17,6 +17,10 @@
+ #define DAVINCI_UART1_BASE   (IO_PHYS + 0x20400)
+ #define DAVINCI_UART2_BASE   (IO_PHYS + 0x20800)
+ 
++#define DA8XX_UART0_BASE     (IO_PHYS + 0x42000)
++#define DA8XX_UART1_BASE     (IO_PHYS + 0x10C000)
++#define DA8XX_UART2_BASE     (IO_PHYS + 0x10D000)
++
+ struct device;
+ extern int davinci_serial_init(struct device *dev);
+ 
+Index: linux-2.6.18/include/asm-arm/arch-davinci/timex.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/timex.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/timex.h
+@@ -18,9 +18,15 @@
+ #define DM644X_CLOCK_TICK_RATE		27000000
+ #define DM646X_CLOCK_TICK_RATE		148500000
+ #define DM355_CLOCK_TICK_RATE		24000000
++#define DA8XX_CLOCK_TICK_RATE		24000000
+ 
++/* FIXME: this is actually board specific! */
++#ifdef	CONFIG_ARCH_DA8XX
++#define DAVINCI_CLOCK_TICK_RATE 	DA8XX_CLOCK_TICK_RATE
++#else
+ #define DAVINCI_CLOCK_TICK_RATE ((cpu_is_davinci_dm6467()) ?		\
+ 		DM646X_CLOCK_TICK_RATE : ((cpu_is_davinci_dm644x()) ?	\
+ 		DM644X_CLOCK_TICK_RATE : DM355_CLOCK_TICK_RATE))
++#endif
+ 
+ #endif /* __ASM_ARCH_TIMEX_H__ */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/uncompress.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/uncompress.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/uncompress.h
+@@ -15,7 +15,11 @@
+ #include <asm/arch/serial.h>
+ 
+ /* FIXME: this is actually board specific! */
++#ifdef	CONFIG_ARCH_DA8XX
++#define CONSOLE_UART_BASE	DA8XX_UART2_BASE
++#else
+ #define CONSOLE_UART_BASE	DAVINCI_UART0_BASE
++#endif
+ 
+ /* PORT_16C550A, in polled non-FIFO mode */
+ 
+Index: linux-2.6.18/include/asm-arm/arch-davinci/usb.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/usb.h
+@@ -0,0 +1,37 @@
++/*
++ * USB related definitions
++ *
++ * Copyright (C) 2009 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++
++#ifndef __ASM_ARCH_USB_H
++#define __ASM_ARCH_USB_H
++
++/* DA8xx CFGCHIP2 (USB 2.0 PHY Control) register bits */
++#define CFGCHIP2_PHYCLKGD	(1 << 17)
++#define CFGCHIP2_VBUSSENSE	(1 << 16)
++#define CFGCHIP2_RESET		(1 << 15)
++#define CFGCHIP2_OTGMODE	(3 << 13)
++#define CFGCHIP2_NO_OVERRIDE	(0 << 13)
++#define CFGCHIP2_FORCE_HOST	(1 << 13)
++#define CFGCHIP2_FORCE_DEVICE 	(2 << 13)
++#define CFGCHIP2_FORCE_HOST_VBUS_LOW (3 << 13)
++#define CFGCHIP2_USB1PHYCLKMUX	(1 << 12)
++#define CFGCHIP2_USB2PHYCLKMUX	(1 << 11)
++#define CFGCHIP2_PHYPWRDN	(1 << 10)
++#define CFGCHIP2_OTGPWRDN	(1 << 9)
++#define CFGCHIP2_DATPOL 	(1 << 8)
++#define CFGCHIP2_USB1SUSPENDM	(1 << 7)
++#define CFGCHIP2_PHY_PLLON	(1 << 6)	/* override PLL suspend */
++#define CFGCHIP2_SESENDEN	(1 << 5)	/* Vsess_end comparator */
++#define CFGCHIP2_VBDTCTEN	(1 << 4)	/* Vbus comparator */
++#define CFGCHIP2_REFFREQ	(0xf << 0)
++#define CFGCHIP2_REFFREQ_12MHZ	(1 << 0)
++#define CFGCHIP2_REFFREQ_24MHZ	(2 << 0)
++#define CFGCHIP2_REFFREQ_48MHZ	(3 << 0)
++
++#endif	/* ifndef __ASM_ARCH_USB_H */
+Index: linux-2.6.18/mvl_patches/pro50-2149.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2149.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2149);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

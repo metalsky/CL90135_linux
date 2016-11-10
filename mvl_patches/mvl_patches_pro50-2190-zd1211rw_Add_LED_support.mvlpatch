@@ -1,0 +1,584 @@
+#! /usr/bin/env bash
+# Patch: -zd1211rw_Add_LED_support
+# Date: Thu Feb 19 15:06:55 2009
+# MR: 29923
+# From a035e6fe0b87fc2ea8e1c6d7d57ea57ce5e7ce3f Mon Sep 17 00:00:00 2001
+# From: Ulrich Kunitz <kune@deine-taler.de>
+# Date: Wed, 13 Sep 2006 02:42:38 +0100
+# Subject: [PATCH] [PATCH] zd1211rw: Add LED support
+# 
+# This patch includes a big cleanup of the existing unused LED code,
+# and adds support for controlling the LED.
+# 
+# The link LED will blink if the device is not associated. The LED
+# switches between 2 seconds on and 1 second off. If the device is
+# associated the LED is switched on.
+# 
+# The link LED also indicates packet TX. I do a little bit more led
+# resetting than the vendor driver, but the device works now as
+# expected for single LED and double LED devices.
+# 
+# Signed-off-by: Ulrich Kunitz <kune@deine-taler.de>
+# Signed-off-by: Daniel Drake <dsd@gentoo.org>
+# Signed-off-by: John W. Linville <linville@tuxdriver.com>
+# (cherry picked from commit 583afd1e4f25c87000c85ad7d03f5299fd4155dc)
+# 
+
+PATCHNUM=2190
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From a035e6fe0b87fc2ea8e1c6d7d57ea57ce5e7ce3f Mon Sep 17 00:00:00 2001
+From: Ulrich Kunitz <kune@deine-taler.de>
+Date: Wed, 13 Sep 2006 02:42:38 +0100
+Subject: [PATCH] [PATCH] zd1211rw: Add LED support
+
+This patch includes a big cleanup of the existing unused LED code,
+and adds support for controlling the LED.
+
+The link LED will blink if the device is not associated. The LED
+switches between 2 seconds on and 1 second off. If the device is
+associated the LED is switched on.
+
+The link LED also indicates packet TX. I do a little bit more led
+resetting than the vendor driver, but the device works now as
+expected for single LED and double LED devices.
+
+Signed-off-by: Ulrich Kunitz <kune@deine-taler.de>
+Signed-off-by: Daniel Drake <dsd@gentoo.org>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+(cherry picked from commit 583afd1e4f25c87000c85ad7d03f5299fd4155dc)
+
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_chip.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.c
+@@ -325,13 +325,22 @@ static int read_pod(struct zd_chip *chip
+ 	chip->patch_cr157 = (value >> 13) & 0x1;
+ 	chip->patch_6m_band_edge = (value >> 21) & 0x1;
+ 	chip->new_phy_layout = (value >> 31) & 0x1;
++	chip->link_led = ((value >> 4) & 1) ? LED1 : LED2;
++	chip->supports_tx_led = 1;
++	if (value & (1 << 24)) { /* LED scenario */
++		if (value & (1 << 29))
++			chip->supports_tx_led = 0;
++	}
+ 
+ 	dev_dbg_f(zd_chip_dev(chip),
+ 		"RF %s %#01x PA type %#01x patch CCK %d patch CR157 %d "
+-		"patch 6M %d new PHY %d\n",
++		"patch 6M %d new PHY %d link LED%d tx led %d\n",
+ 		zd_rf_name(*rf_type), *rf_type,
+ 		chip->pa_type, chip->patch_cck_gain,
+-		chip->patch_cr157, chip->patch_6m_band_edge, chip->new_phy_layout);
++		chip->patch_cr157, chip->patch_6m_band_edge,
++		chip->new_phy_layout,
++		chip->link_led == LED1 ? 1 : 2,
++		chip->supports_tx_led);
+ 	return 0;
+ error:
+ 	*rf_type = 0;
+@@ -1289,89 +1298,60 @@ u8 zd_chip_get_channel(struct zd_chip *c
+ 	return channel;
+ }
+ 
+-static u16 led_mask(int led)
+-{
+-	switch (led) {
+-	case 1:
+-		return LED1;
+-	case 2:
+-		return LED2;
+-	default:
+-		return 0;
+-	}
+-}
+-
+-static int read_led_reg(struct zd_chip *chip, u16 *status)
+-{
+-	ZD_ASSERT(mutex_is_locked(&chip->mutex));
+-	return zd_ioread16_locked(chip, status, CR_LED);
+-}
+-
+-static int write_led_reg(struct zd_chip *chip, u16 status)
++int zd_chip_control_leds(struct zd_chip *chip, enum led_status status)
+ {
+-	ZD_ASSERT(mutex_is_locked(&chip->mutex));
+-	return zd_iowrite16_locked(chip, status, CR_LED);
+-}
++	static const zd_addr_t a[] = {
++		FW_LINK_STATUS,
++		CR_LED,
++	};
+ 
+-int zd_chip_led_status(struct zd_chip *chip, int led, enum led_status status)
+-{
+-	int r, ret;
+-	u16 mask = led_mask(led);
+-	u16 reg;
++	int r;
++	u16 v[ARRAY_SIZE(a)];
++	struct zd_ioreq16 ioreqs[ARRAY_SIZE(a)] = {
++		[0] = { FW_LINK_STATUS },
++		[1] = { CR_LED },
++	};
++	u16 other_led;
+ 
+-	if (!mask)
+-		return -EINVAL;
+ 	mutex_lock(&chip->mutex);
+-	r = read_led_reg(chip, &reg);
++	r = zd_ioread16v_locked(chip, v, (const zd_addr_t *)a, ARRAY_SIZE(a));
+ 	if (r)
+-		return r;
++		goto out;
++
++	other_led = chip->link_led == LED1 ? LED2 : LED1;
++
+ 	switch (status) {
+-	case LED_STATUS:
+-		return (reg & mask) ? LED_ON : LED_OFF;
+ 	case LED_OFF:
+-		reg &= ~mask;
+-		ret = LED_OFF;
++		ioreqs[0].value = FW_LINK_OFF;
++		ioreqs[1].value = v[1] & ~(LED1|LED2);
+ 		break;
+-	case LED_FLIP:
+-		reg ^= mask;
+-		ret = (reg&mask) ? LED_ON : LED_OFF;
++	case LED_SCANNING:
++		ioreqs[0].value = FW_LINK_OFF;
++		ioreqs[1].value = v[1] & ~other_led;
++		if (get_seconds() % 3 == 0) {
++			ioreqs[1].value &= ~chip->link_led;
++		} else {
++			ioreqs[1].value |= chip->link_led;
++		}
+ 		break;
+-	case LED_ON:
+-		reg |= mask;
+-		ret = LED_ON;
++	case LED_ASSOCIATED:
++		ioreqs[0].value = FW_LINK_TX;
++		ioreqs[1].value = v[1] & ~other_led;
++		ioreqs[1].value |= chip->link_led;
+ 		break;
+ 	default:
+-		return -EINVAL;
+-	}
+-	r = write_led_reg(chip, reg);
+-	if (r) {
+-		ret = r;
++		r = -EINVAL;
+ 		goto out;
+ 	}
+-out:
+-	mutex_unlock(&chip->mutex);
+-	return r;
+-}
+ 
+-int zd_chip_led_flip(struct zd_chip *chip, int led,
+-	const unsigned int *phases_msecs, unsigned int count)
+-{
+-	int i, r;
+-	enum led_status status;
+-
+-	r = zd_chip_led_status(chip, led, LED_STATUS);
+-	if (r)
+-		return r;
+-	status = r;
+-	for (i = 0; i < count; i++) {
+-		r = zd_chip_led_status(chip, led, LED_FLIP);
+-		if (r < 0)
++	if (v[0] != ioreqs[0].value || v[1] != ioreqs[1].value) {
++		r = zd_iowrite16a_locked(chip, ioreqs, ARRAY_SIZE(ioreqs));
++		if (r)
+ 			goto out;
+-		msleep(phases_msecs[i]);
+ 	}
+-
++	r = 0;
+ out:
+-	zd_chip_led_status(chip, led, status);
++	mutex_unlock(&chip->mutex);
+ 	return r;
+ }
+ 
+@@ -1673,4 +1653,3 @@ int zd_rfwritev_cr_locked(struct zd_chip
+ 
+ 	return 0;
+ }
+-
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_chip.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+@@ -428,6 +428,7 @@
+ /* masks for controlling LEDs */
+ #define LED1				0x0100
+ #define LED2				0x0200
++#define LED_SW				0x0400
+ 
+ /* Seems to indicate that the configuration is over.
+  */
+@@ -629,6 +630,10 @@
+ #define FW_SOFT_RESET           FW_REG(4)
+ #define FW_FLASH_CHK            FW_REG(5)
+ 
++#define FW_LINK_OFF		0x0
++#define FW_LINK_TX		0x1
++/* 0x2 - link led on? */
++
+ enum {
+ 	CR_BASE_OFFSET			= 0x9000,
+ 	FW_START_OFFSET			= 0xee00,
+@@ -663,8 +668,11 @@ struct zd_chip {
+ 	u8 pwr_int_values[E2P_CHANNEL_COUNT];
+ 	/* SetPointOFDM in the vendor driver */
+ 	u8 ofdm_cal_values[3][E2P_CHANNEL_COUNT];
+-	u8 pa_type:4, patch_cck_gain:1, patch_cr157:1, patch_6m_band_edge:1,
+-	   new_phy_layout:1, is_zd1211b:1;
++	u16 link_led;
++	unsigned int pa_type:4,
++		patch_cck_gain:1, patch_cr157:1, patch_6m_band_edge:1,
++		new_phy_layout:1,
++		is_zd1211b:1, supports_tx_led:1;
+ };
+ 
+ static inline struct zd_chip *zd_usb_to_chip(struct zd_usb *usb)
+@@ -812,15 +820,12 @@ int zd_chip_lock_phy_regs(struct zd_chip
+ int zd_chip_unlock_phy_regs(struct zd_chip *chip);
+ 
+ enum led_status {
+-	LED_OFF	   = 0,
+-	LED_ON     = 1,
+-	LED_FLIP   = 2,
+-	LED_STATUS = 3,
++	LED_OFF = 0,
++	LED_SCANNING = 1,
++	LED_ASSOCIATED = 2,
+ };
+ 
+-int zd_chip_led_status(struct zd_chip *chip, int led, enum led_status status);
+-int zd_chip_led_flip(struct zd_chip *chip, int led,
+-	             const unsigned int *phases_msecs, unsigned int count);
++int zd_chip_control_leds(struct zd_chip *chip, enum led_status status);
+ 
+ int zd_set_beacon_interval(struct zd_chip *chip, u32 interval);
+ 
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+@@ -33,6 +33,10 @@
+ static void ieee_init(struct ieee80211_device *ieee);
+ static void softmac_init(struct ieee80211softmac_device *sm);
+ 
++static void housekeeping_init(struct zd_mac *mac);
++static void housekeeping_enable(struct zd_mac *mac);
++static void housekeeping_disable(struct zd_mac *mac);
++
+ int zd_mac_init(struct zd_mac *mac,
+ 	        struct net_device *netdev,
+ 	        struct usb_interface *intf)
+@@ -46,6 +50,7 @@ int zd_mac_init(struct zd_mac *mac,
+ 	ieee_init(ieee);
+ 	softmac_init(ieee80211_priv(netdev));
+ 	zd_chip_init(&mac->chip, netdev, intf);
++	housekeeping_init(mac);
+ 	return 0;
+ }
+ 
+@@ -178,6 +183,7 @@ int zd_mac_open(struct net_device *netde
+ 	if (r < 0)
+ 		goto disable_rx;
+ 
++	housekeeping_enable(mac);
+ 	ieee80211softmac_start(netdev);
+ 	return 0;
+ disable_rx:
+@@ -204,6 +210,7 @@ int zd_mac_stop(struct net_device *netde
+ 	 */
+ 
+ 	zd_chip_disable_rx(chip);
++	housekeeping_disable(mac);
+ 	ieee80211softmac_stop(netdev);
+ 
+ 	zd_chip_disable_hwint(chip);
+@@ -1080,3 +1087,46 @@ void zd_dump_rx_status(const struct rx_s
+ 	}
+ }
+ #endif /* DEBUG */
++
++#define LINK_LED_WORK_DELAY HZ
++
++static void link_led_handler(void *p)
++{
++	struct zd_mac *mac = p;
++	struct zd_chip *chip = &mac->chip;
++	struct ieee80211softmac_device *sm = ieee80211_priv(mac->netdev);
++	int is_associated;
++	int r;
++
++	spin_lock_irq(&mac->lock);
++	is_associated = sm->associated != 0;
++	spin_unlock_irq(&mac->lock);
++
++	r = zd_chip_control_leds(chip,
++		                 is_associated ? LED_ASSOCIATED : LED_SCANNING);
++	if (r)
++		dev_err(zd_mac_dev(mac), "zd_chip_control_leds error %d\n", r);
++
++	queue_delayed_work(zd_workqueue, &mac->housekeeping.link_led_work,
++		           LINK_LED_WORK_DELAY);
++}
++
++static void housekeeping_init(struct zd_mac *mac)
++{
++	INIT_WORK(&mac->housekeeping.link_led_work, link_led_handler, mac);
++}
++
++static void housekeeping_enable(struct zd_mac *mac)
++{
++	dev_dbg_f(zd_mac_dev(mac), "\n");
++	queue_delayed_work(zd_workqueue, &mac->housekeeping.link_led_work,
++			   0);
++}
++
++static void housekeeping_disable(struct zd_mac *mac)
++{
++	dev_dbg_f(zd_mac_dev(mac), "\n");
++	cancel_rearming_delayed_workqueue(zd_workqueue,
++		&mac->housekeeping.link_led_work);
++	zd_chip_control_leds(&mac->chip, LED_OFF);
++}
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.h
+@@ -120,6 +120,10 @@ enum mac_flags {
+ 	MAC_FIXED_CHANNEL = 0x01,
+ };
+ 
++struct housekeeping {
++	struct work_struct link_led_work;
++};
++
+ #define ZD_MAC_STATS_BUFFER_SIZE 16
+ 
+ struct zd_mac {
+@@ -128,6 +132,7 @@ struct zd_mac {
+ 	struct net_device *netdev;
+ 	/* Unlocked reading possible */
+ 	struct iw_statistics iw_stats;
++	struct housekeeping housekeeping;
+ 	unsigned int stats_count;
+ 	u8 qual_buffer[ZD_MAC_STATS_BUFFER_SIZE];
+ 	u8 rssi_buffer[ZD_MAC_STATS_BUFFER_SIZE];
+Index: linux-2.6.18/mvl_patches/pro50-2190.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2190.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2190);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

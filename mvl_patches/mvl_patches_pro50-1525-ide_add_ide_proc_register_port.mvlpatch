@@ -1,0 +1,784 @@
+#! /usr/bin/env bash
+# Patch: -ide_add_ide_proc_register_port
+# Date: Fri Sep 19 13:57:17 2008
+# Source: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+# MR: 27086
+# Type: Enhancement
+# Disposition: merged from 2.6.22-rc1
+# Signed-off-by: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+# ide: add ide_proc_register_port()
+# 
+# * create_proc_ide_interfaces() tries to add /proc entries for every probed
+#   and initialized IDE port, replace it by ide_proc_register_port() which does
+#   it only for the given port (also rename destroy_proc_ide_interface() to
+#   ide_proc_unregister_port() for consistency)
+#   
+# * convert {create,destroy}_proc_ide_interface[s]() users to use new functions
+# 
+# * pmac driver depended on proc_ide_create() to add /proc port entries, fix it
+#   
+# * au1xxx-ide, swarm and cs5520 drivers depended indirectly on ide-generic
+#   driver (CONFIG_IDE_GENERIC=y) to add port /proc entries, fix them
+# 
+# * there is now no need to add /proc entries for IDE ports in proc_ide_create()
+#   so don't do it
+# 
+# * proc_ide_create() needs now to be called before drivers are probed - fix it,
+#   while at it make proc_ide_create() create /proc "ide" directory
+# 
+# The patch is somewhat different from the upstream version since I didn't merge
+# the patches making /proc/ide/ optional, moving the handling of the IDE settings
+# to ide-proc.c, and adding IDE driver layer error checking.
+# 
+# commit 5cbf79cdb37be2aa2a1b4fa94144526b14557060
+# tree 1fcfbc1248b9904e5890cc593f018ee0a8a53238
+# parent 869c56ee9de1b72cd3f8ab9cdfbd3601e55c61f2
+# author Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Thu, 10 May 2007 00:01:11 +0200
+# committer Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Thu, 10 May 2007 00:01:11 +0200
+# 
+#  drivers/ide/arm/icside.c      |    7 +++++--
+#  drivers/ide/arm/rapide.c      |    2 +-
+#  drivers/ide/ide-generic.c     |    2 --
+#  drivers/ide/ide-probe.c       |    3 +++
+#  drivers/ide/ide-proc.c        |   34 +++++++++++++++++-----------------
+#  drivers/ide/ide.c             |   13 +++----------
+#  drivers/ide/legacy/ali14xx.c  |    3 ++-
+#  drivers/ide/legacy/dtc2278.c  |    3 ++-
+#  drivers/ide/legacy/ht6560b.c  |    3 ++-
+#  drivers/ide/legacy/qd65xx.c   |    7 ++++---
+#  drivers/ide/legacy/umc8672.c  |    3 ++-
+#  drivers/ide/mips/au1xxx-ide.c |    3 +++
+#  drivers/ide/mips/swarm.c      |    3 +++
+#  drivers/ide/pci/cs5520.c      |   20 ++++++++++++++++----
+#  drivers/ide/pci/sgiioc4.c     |    2 +-
+#  drivers/ide/ppc/pmac.c        |    2 ++
+#  drivers/ide/setup-pci.c       |   25 +++++++++++++++++++++----
+#  include/linux/ide.h           |   10 ++++------
+#  18 files changed, 91 insertions(+), 54 deletions(-)
+# 
+
+PATCHNUM=1525
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+MR: 27086
+Type: Enhancement
+Disposition: merged from 2.6.22-rc1
+Signed-off-by: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+ide: add ide_proc_register_port()
+
+* create_proc_ide_interfaces() tries to add /proc entries for every probed
+  and initialized IDE port, replace it by ide_proc_register_port() which does
+  it only for the given port (also rename destroy_proc_ide_interface() to
+  ide_proc_unregister_port() for consistency)
+  
+* convert {create,destroy}_proc_ide_interface[s]() users to use new functions
+
+* pmac driver depended on proc_ide_create() to add /proc port entries, fix it
+  
+* au1xxx-ide, swarm and cs5520 drivers depended indirectly on ide-generic
+  driver (CONFIG_IDE_GENERIC=y) to add port /proc entries, fix them
+
+* there is now no need to add /proc entries for IDE ports in proc_ide_create()
+  so don't do it
+
+* proc_ide_create() needs now to be called before drivers are probed - fix it,
+  while at it make proc_ide_create() create /proc "ide" directory
+
+The patch is somewhat different from the upstream version since I didn't merge
+the patches making /proc/ide/ optional, moving the handling of the IDE settings
+to ide-proc.c, and adding IDE driver layer error checking.
+
+commit 5cbf79cdb37be2aa2a1b4fa94144526b14557060
+tree 1fcfbc1248b9904e5890cc593f018ee0a8a53238
+parent 869c56ee9de1b72cd3f8ab9cdfbd3601e55c61f2
+author Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Thu, 10 May 2007 00:01:11 +0200
+committer Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Thu, 10 May 2007 00:01:11 +0200
+
+ drivers/ide/arm/icside.c      |    7 +++++--
+ drivers/ide/arm/rapide.c      |    2 +-
+ drivers/ide/ide-generic.c     |    2 --
+ drivers/ide/ide-probe.c       |    3 +++
+ drivers/ide/ide-proc.c        |   34 +++++++++++++++++-----------------
+ drivers/ide/ide.c             |   13 +++----------
+ drivers/ide/legacy/ali14xx.c  |    3 ++-
+ drivers/ide/legacy/dtc2278.c  |    3 ++-
+ drivers/ide/legacy/ht6560b.c  |    3 ++-
+ drivers/ide/legacy/qd65xx.c   |    7 ++++---
+ drivers/ide/legacy/umc8672.c  |    3 ++-
+ drivers/ide/mips/au1xxx-ide.c |    3 +++
+ drivers/ide/mips/swarm.c      |    3 +++
+ drivers/ide/pci/cs5520.c      |   20 ++++++++++++++++----
+ drivers/ide/pci/sgiioc4.c     |    2 +-
+ drivers/ide/ppc/pmac.c        |    2 ++
+ drivers/ide/setup-pci.c       |   25 +++++++++++++++++++++----
+ include/linux/ide.h           |   10 ++++------
+ mvl_patches/pro50-1525.c      |   16 ++++++++++++++++
+ 19 files changed, 107 insertions(+), 54 deletions(-)
+
+Index: linux-2.6.18/drivers/ide/arm/icside.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/arm/icside.c
++++ linux-2.6.18/drivers/ide/arm/icside.c
+@@ -596,7 +596,8 @@ icside_register_v5(struct icside_state *
+ 	state->hwif[0] = hwif;
+ 
+ 	probe_hwif_init(hwif);
+-	create_proc_ide_interfaces();
++
++	ide_proc_register_port(hwif);
+ 
+ 	return 0;
+ }
+@@ -684,7 +685,9 @@ icside_register_v6(struct icside_state *
+ 
+ 	probe_hwif_init(hwif);
+ 	probe_hwif_init(mate);
+-	create_proc_ide_interfaces();
++
++	ide_proc_register_port(hwif);
++	ide_proc_register_port(mate);
+ 
+ 	return 0;
+ 
+Index: linux-2.6.18/drivers/ide/arm/rapide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/arm/rapide.c
++++ linux-2.6.18/drivers/ide/arm/rapide.c
+@@ -76,7 +76,7 @@ rapide_probe(struct expansion_card *ec, 
+ 		hwif->gendev.parent = &ec->dev;
+ 		hwif->noprobe = 0;
+ 		probe_hwif_init(hwif);
+-		create_proc_ide_interfaces();
++		ide_proc_register_port(hwif);
+ 		ecard_set_drvdata(ec, hwif);
+ 		goto out;
+ 	}
+Index: linux-2.6.18/drivers/ide/ide-generic.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide-generic.c
++++ linux-2.6.18/drivers/ide/ide-generic.c
+@@ -22,8 +22,6 @@ static int __init ide_generic_init(void)
+ 	if (ide_hwifs[0].io_ports[IDE_DATA_OFFSET])
+ 		ide_release_lock();	/* for atari only */
+ 
+-	create_proc_ide_interfaces();
+-
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/drivers/ide/ide-probe.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide-probe.c
++++ linux-2.6.18/drivers/ide/ide-probe.c
+@@ -1413,6 +1413,9 @@ int ideprobe_init (void)
+ 					device_register(&hwif->drives[unit].gendev);
+ 		}
+ 	}
++	for (index = 0; index < MAX_HWIFS; ++index)
++		if (probe[index])
++			ide_proc_register_port(&ide_hwifs[index]);
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/drivers/ide/ide-proc.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide-proc.c
++++ linux-2.6.18/drivers/ide/ide-proc.c
+@@ -38,6 +38,8 @@
+ 
+ #include <asm/io.h>
+ 
++static struct proc_dir_entry *proc_ide_root;
++
+ static int proc_ide_read_imodel
+ 	(char *page, char **start, off_t off, int count, int *eof, void *data)
+ {
+@@ -474,26 +476,24 @@ static ide_proc_entry_t hwif_entries[] =
+ 	{ NULL,	0, NULL, NULL }
+ };
+ 
+-void create_proc_ide_interfaces(void)
++void ide_proc_register_port(ide_hwif_t *hwif)
+ {
+-	int	h;
++	if (!hwif->present)
++		return;
+ 
+-	for (h = 0; h < MAX_HWIFS; h++) {
+-		ide_hwif_t *hwif = &ide_hwifs[h];
++	if (!hwif->proc) {
++		hwif->proc = proc_mkdir(hwif->name, proc_ide_root);
+ 
+-		if (!hwif->present)
+-			continue;
+-		if (!hwif->proc) {
+-			hwif->proc = proc_mkdir(hwif->name, proc_ide_root);
+-			if (!hwif->proc)
+-				return;
+-			ide_add_proc_entries(hwif->proc, hwif_entries, hwif);
+-		}
+-		create_proc_ide_drives(hwif);
++		if (!hwif->proc)
++			return;
++
++		ide_add_proc_entries(hwif->proc, hwif_entries, hwif);
+ 	}
++
++	create_proc_ide_drives(hwif);
+ }
+ 
+-EXPORT_SYMBOL(create_proc_ide_interfaces);
++EXPORT_SYMBOL_GPL(ide_proc_register_port);
+ 
+ #ifdef CONFIG_BLK_DEV_IDEPCI
+ void ide_pci_create_host_proc(const char *name, get_info_t *get_info)
+@@ -504,7 +504,7 @@ void ide_pci_create_host_proc(const char
+ EXPORT_SYMBOL_GPL(ide_pci_create_host_proc);
+ #endif
+ 
+-void destroy_proc_ide_interface(ide_hwif_t *hwif)
++void ide_proc_unregister_port(ide_hwif_t *hwif)
+ {
+ 	if (hwif->proc) {
+ 		destroy_proc_ide_drives(hwif);
+@@ -546,11 +546,11 @@ void proc_ide_create(void)
+ {
+ 	struct proc_dir_entry *entry;
+ 
++	proc_ide_root = proc_mkdir("ide", NULL);
++
+ 	if (!proc_ide_root)
+ 		return;
+ 
+-	create_proc_ide_interfaces();
+-
+ 	entry = create_proc_entry("drivers", 0, proc_ide_root);
+ 	if (entry)
+ 		entry->proc_fops = &ide_drivers_operations;
+Index: linux-2.6.18/drivers/ide/ide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide.c
++++ linux-2.6.18/drivers/ide/ide.c
+@@ -346,10 +346,6 @@ static int ide_system_bus_speed(void)
+ 	return system_bus_speed;
+ }
+ 
+-#ifdef CONFIG_PROC_FS
+-struct proc_dir_entry *proc_ide_root;
+-#endif
+-
+ static struct resource* hwif_request_region(ide_hwif_t *hwif,
+ 					    unsigned long addr, int num)
+ {
+@@ -595,7 +591,7 @@ void ide_unregister(unsigned int index)
+ 
+ 	spin_unlock_irq(&ide_lock);
+ 
+-	destroy_proc_ide_interface(hwif);
++	ide_proc_unregister_port(hwif);
+ 
+ 	hwgroup = hwif->hwgroup;
+ 	/*
+@@ -800,7 +796,7 @@ found:
+ 
+ 	if (!initializing) {
+ 		probe_hwif_init_with_fixup(hwif, fixup);
+-		create_proc_ide_interfaces();
++		ide_proc_register_port(hwif);
+ 	}
+ 
+ 	if (hwifp)
+@@ -1999,7 +1995,7 @@ static int __init ide_init(void)
+ 	init_ide_data();
+ 
+ #ifdef CONFIG_PROC_FS
+-	proc_ide_root = proc_mkdir("ide", NULL);
++	proc_ide_create();
+ #endif
+ 
+ #ifdef CONFIG_BLK_DEV_ALI14XX
+@@ -2026,9 +2022,6 @@ static int __init ide_init(void)
+ 	/* Probe for special PCI and other "known" interface chipsets. */
+ 	probe_for_hwifs();
+ 
+-#ifdef CONFIG_PROC_FS
+-	proc_ide_create();
+-#endif
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/drivers/ide/legacy/ali14xx.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/ali14xx.c
++++ linux-2.6.18/drivers/ide/legacy/ali14xx.c
+@@ -225,7 +225,8 @@ static int __init ali14xx_probe(void)
+ 	probe_hwif_init(hwif);
+ 	probe_hwif_init(mate);
+ 
+-	create_proc_ide_interfaces();
++	ide_proc_register_port(hwif);
++	ide_proc_register_port(mate);
+ 
+ 	return 0;
+ }
+Index: linux-2.6.18/drivers/ide/legacy/dtc2278.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/dtc2278.c
++++ linux-2.6.18/drivers/ide/legacy/dtc2278.c
+@@ -140,7 +140,8 @@ static int __init probe_dtc2278(void)
+ 	probe_hwif_init(hwif);
+ 	probe_hwif_init(mate);
+ 
+-	create_proc_ide_interfaces();
++	ide_proc_register_port(hwif);
++	ide_proc_register_port(mate);
+ 
+ 	return 0;
+ }
+Index: linux-2.6.18/drivers/ide/legacy/ht6560b.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/ht6560b.c
++++ linux-2.6.18/drivers/ide/legacy/ht6560b.c
+@@ -351,7 +351,8 @@ int __init ht6560b_init(void)
+ 	probe_hwif_init(hwif);
+ 	probe_hwif_init(mate);
+ 
+-	create_proc_ide_interfaces();
++	ide_proc_register_port(hwif);
++	ide_proc_register_port(mate);
+ 
+ 	return 0;
+ 
+Index: linux-2.6.18/drivers/ide/legacy/qd65xx.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/qd65xx.c
++++ linux-2.6.18/drivers/ide/legacy/qd65xx.c
+@@ -429,7 +429,7 @@ static int __init qd_probe(int base)
+ 		qd_setup(hwif, base, config, QD6500_DEF_DATA, QD6500_DEF_DATA,
+ 			 &qd6500_tune_drive);
+ 
+-		create_proc_ide_interfaces();
++		ide_proc_register_port(hwif);
+ 
+ 		return 1;
+ 	}
+@@ -461,7 +461,7 @@ static int __init qd_probe(int base)
+ 				 &qd6580_tune_drive);
+ 			qd_write_reg(QD_DEF_CONTR,QD_CONTROL_PORT);
+ 
+-			create_proc_ide_interfaces();
++			ide_proc_register_port(hwif);
+ 
+ 			return 1;
+ 		} else {
+@@ -481,7 +481,8 @@ static int __init qd_probe(int base)
+ 				 &qd6580_tune_drive);
+ 			qd_write_reg(QD_DEF_CONTR,QD_CONTROL_PORT);
+ 
+-			create_proc_ide_interfaces();
++			ide_proc_register_port(hwif);
++			ide_proc_register_port(mate);
+ 
+ 			return 0; /* no other qd65xx possible */
+ 		}
+Index: linux-2.6.18/drivers/ide/legacy/umc8672.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/umc8672.c
++++ linux-2.6.18/drivers/ide/legacy/umc8672.c
+@@ -160,7 +160,8 @@ static int __init umc8672_probe(void)
+ 	probe_hwif_init(hwif);
+ 	probe_hwif_init(mate);
+ 
+-	create_proc_ide_interfaces();
++	ide_proc_register_port(hwif);
++	ide_proc_register_port(mate);
+ 
+ 	return 0;
+ }
+Index: linux-2.6.18/drivers/ide/mips/au1xxx-ide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/mips/au1xxx-ide.c
++++ linux-2.6.18/drivers/ide/mips/au1xxx-ide.c
+@@ -772,6 +772,9 @@ static int au_ide_probe(struct device *d
+ #endif
+ 
+ 	probe_hwif_init(hwif);
++
++	ide_proc_register_port(hwif);
++
+ 	dev_set_drvdata(dev, hwif);
+ 
+ 	printk(KERN_INFO "Au1xxx IDE(builtin) configured for %s\n", mode );
+Index: linux-2.6.18/drivers/ide/mips/swarm.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/mips/swarm.c
++++ linux-2.6.18/drivers/ide/mips/swarm.c
+@@ -128,6 +128,9 @@ static int __devinit swarm_ide_probe(str
+ 	hwif->irq = hwif->hw.irq;
+ 
+ 	probe_hwif_init(hwif);
++
++	ide_proc_register_port(hwif);
++
+ 	dev_set_drvdata(dev, hwif);
+ 
+ 	return 0;
+Index: linux-2.6.18/drivers/ide/pci/cs5520.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/pci/cs5520.c
++++ linux-2.6.18/drivers/ide/pci/cs5520.c
+@@ -214,6 +214,7 @@ static ide_pci_device_t cyrix_chipsets[]
+  
+ static int __devinit cs5520_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+ {
++	ide_hwif_t *hwif = NULL, *mate = NULL;
+ 	ata_index_t index;
+ 	ide_pci_device_t *d = &cyrix_chipsets[id->driver_data];
+ 
+@@ -240,10 +241,21 @@ static int __devinit cs5520_init_one(str
+ 
+ 	ide_pci_setup_ports(dev, d, 14, &index);
+ 
+-	if((index.b.low & 0xf0) != 0xf0)
+-		probe_hwif_init(&ide_hwifs[index.b.low]);
+-	if((index.b.high & 0xf0) != 0xf0)
+-		probe_hwif_init(&ide_hwifs[index.b.high]);
++	if ((index.b.low & 0xf0) != 0xf0)
++		hwif = &ide_hwifs[index.b.low];
++	if ((index.b.high & 0xf0) != 0xf0)
++		mate = &ide_hwifs[index.b.high];
++
++	if (hwif)
++		probe_hwif_init(hwif);
++	if (mate)
++		probe_hwif_init(mate);
++
++	if (hwif)
++		ide_proc_register_port(hwif);
++	if (mate)
++		ide_proc_register_port(mate);
++
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/drivers/ide/pci/sgiioc4.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/pci/sgiioc4.c
++++ linux-2.6.18/drivers/ide/pci/sgiioc4.c
+@@ -702,7 +702,7 @@ sgiioc4_ide_setup_pci_device(struct pci_
+ 		return -EIO;
+ 
+ 	/* Create /proc/ide entries */
+-	create_proc_ide_interfaces();
++	ide_proc_register_port(hwif);
+ 
+ 	return 0;
+ }
+Index: linux-2.6.18/drivers/ide/ppc/pmac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ppc/pmac.c
++++ linux-2.6.18/drivers/ide/ppc/pmac.c
+@@ -1277,6 +1277,8 @@ pmac_ide_setup_device(pmac_ide_hwif_t *p
+ 	/* We probe the hwif now */
+ 	probe_hwif_init(hwif);
+ 
++	ide_proc_register_port(hwif);
++
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/drivers/ide/setup-pci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/setup-pci.c
++++ linux-2.6.18/drivers/ide/setup-pci.c
+@@ -702,6 +702,7 @@ out:
+ 
+ int ide_setup_pci_device(struct pci_dev *dev, ide_pci_device_t *d)
+ {
++	ide_hwif_t *hwif = NULL, *mate = NULL;
+ 	ata_index_t index_list;
+ 	int ret;
+ 
+@@ -710,11 +711,19 @@ int ide_setup_pci_device(struct pci_dev 
+ 		goto out;
+ 
+ 	if ((index_list.b.low & 0xf0) != 0xf0)
+-		probe_hwif_init_with_fixup(&ide_hwifs[index_list.b.low], d->fixup);
++		hwif = &ide_hwifs[index_list.b.low];
+ 	if ((index_list.b.high & 0xf0) != 0xf0)
+-		probe_hwif_init_with_fixup(&ide_hwifs[index_list.b.high], d->fixup);
++		mate = &ide_hwifs[index_list.b.high];
+ 
+-	create_proc_ide_interfaces();
++	if (hwif)
++		probe_hwif_init_with_fixup(hwif, d->fixup);
++	if (mate)
++		probe_hwif_init_with_fixup(mate, d->fixup);
++
++	if (hwif)
++		ide_proc_register_port(hwif);
++	if (mate)
++		ide_proc_register_port(mate);
+ out:
+ 	return ret;
+ }
+@@ -748,7 +757,15 @@ int ide_setup_pci_devices(struct pci_dev
+ 		}
+ 	}
+ 
+-	create_proc_ide_interfaces();
++	for (i = 0; i < 2; i++) {
++		u8 idx[2] = { index_list[i].b.low, index_list[i].b.high };
++		int j;
++
++		for (j = 0; j < 2; j++) {
++			if ((idx[j] & 0xf0) != 0xf0)
++				ide_proc_register_port(ide_hwifs + idx[j]);
++		}
++	}
+ out:
+ 	return ret;
+ }
+Index: linux-2.6.18/include/linux/ide.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/ide.h
++++ linux-2.6.18/include/linux/ide.h
+@@ -902,12 +902,10 @@ typedef struct {
+ } ide_proc_entry_t;
+ 
+ #ifdef CONFIG_PROC_FS
+-extern struct proc_dir_entry *proc_ide_root;
+-
+ extern void proc_ide_create(void);
+ extern void proc_ide_destroy(void);
+-extern void create_proc_ide_interfaces(void);
+-void destroy_proc_ide_interface(ide_hwif_t *);
++void ide_proc_register_port(ide_hwif_t *);
++void ide_proc_unregister_port(ide_hwif_t *);
+ extern void ide_add_proc_entries(struct proc_dir_entry *, ide_proc_entry_t *, void *);
+ extern void ide_remove_proc_entries(struct proc_dir_entry *, ide_proc_entry_t *);
+ read_proc_t proc_ide_read_capacity;
+@@ -933,8 +931,8 @@ void ide_pci_create_host_proc(const char
+ 	return len;			\
+ }
+ #else
+-static inline void create_proc_ide_interfaces(void) { ; }
+-static inline void destroy_proc_ide_interface(ide_hwif_t *hwif) { ; }
++static inline void ide_proc_register_port(ide_hwif_t *hwif) { ; }
++static inline void ide_proc_unregister_port(ide_hwif_t *hwif) { ; }
+ #define PROC_IDE_READ_RETURN(page,start,off,count,eof,len) return 0;
+ #endif
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1525.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1525.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1525);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

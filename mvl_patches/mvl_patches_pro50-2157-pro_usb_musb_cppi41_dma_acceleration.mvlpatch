@@ -1,0 +1,512 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_musb_cppi41_dma_acceleration
+# Date: Thu Feb 19 15:04:42 2009
+# Source: MontaVista Software, Inc.
+# MR: 28786, 30081
+# Type: Enhancement
+# Disposition: needs submitting to linux-usb@vger.kernel.org
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Add the accelerated DMA mode support to the CPPI 4.1 USB DMA driver.
+# The DMA mode to use can be selected at compile time via USB_DEFAULT_[RT]X_MODE
+# macros. The driver will fallback to the transparent mode if the hardware
+# restrictions or known issues prevent it from using an accelerated mode...
+# 
+#  drivers/usb/musb/cppi41_dma.c |  196 ++++++++++++++++++++++++++++++++++++++++--
+#  1 files changed, 189 insertions(+), 7 deletions(-)
+# 
+
+PATCHNUM=2157
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28786, 30081
+Type: Enhancement
+Disposition: needs submitting to linux-usb@vger.kernel.org
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Add the accelerated DMA mode support to the CPPI 4.1 USB DMA driver.
+The DMA mode to use can be selected at compile time via USB_DEFAULT_[RT]X_MODE
+macros. The driver will fallback to the transparent mode if the hardware
+restrictions or known issues prevent it from using an accelerated mode...
+
+ drivers/usb/musb/cppi41_dma.c |  196 ++++++++++++++++++++++++++++++++++++++++--
+ mvl_patches/pro50-2157.c      |   16 +++
+ 2 files changed, 205 insertions(+), 7 deletions(-)
+
+Index: linux-2.6.18/drivers/usb/musb/cppi41_dma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/cppi41_dma.c
++++ linux-2.6.18/drivers/usb/musb/cppi41_dma.c
+@@ -34,6 +34,9 @@
+ #define USB_CPPI41_CH_NUM_PD	64	/* 4K bulk data at full speed */
+ #define USB_CPPI41_MAX_PD	(USB_CPPI41_CH_NUM_PD * USB_CPPI41_NUM_CH)
+ 
++#define USB_DEFAULT_TX_MODE 	USB_GENERIC_RNDIS_MODE
++#define USB_DEFAULT_RX_MODE 	USB_GENERIC_RNDIS_MODE
++
+ #undef DEBUG_CPPI_TD
+ #undef USBDRV_DEBUG
+ 
+@@ -83,6 +86,10 @@ struct cppi41_channel {
+ 	u8 transmit;
+ 	u8 ch_num;			/* Channel number of Tx/Rx 0..3 */
+ 
++	/* DMA mode: "transparent", RNDIS, CDC, or Generic RNDIS */
++	u8 dma_mode;
++	u8 autoreq;
++
+ 	/* Book keeping for the current transfer request */
+ 	dma_addr_t start_addr;
+ 	u32 length;
+@@ -302,6 +309,7 @@ static int __init cppi41_controller_star
+ static int cppi41_controller_stop(struct dma_controller *controller)
+ {
+ 	struct cppi41 *cppi;
++	void __iomem *reg_base;
+ 
+ 	cppi = container_of(controller, struct cppi41, controller);
+ 
+@@ -320,6 +328,14 @@ static int cppi41_controller_stop(struct
+ 			  USB_CPPI41_MAX_PD * USB_CPPI41_DESC_ALIGN,
+ 			  cppi->pd_mem, cppi->pd_mem_phys);
+ 
++	reg_base = cppi->musb->ctrl_base;
++
++	/* Disable auto request mode */
++	musb_writel(reg_base, USB_AUTOREQ_REG, 0);
++
++	/* Disable the CDC/RNDIS modes */
++	musb_writel(reg_base, USB_MODE_REG, 0);
++
+ 	return 1;
+ }
+ 
+@@ -459,6 +475,46 @@ static void cppi41_channel_release(struc
+ 		DBG(1, "ERROR: failed to free Rx descriptor/buffer queue\n");
+ }
+ 
++#if USB_DEFAULT_TX_MODE != USB_TRANSPARENT_MODE || \
++    USB_DEFAULT_RX_MODE != USB_TRANSPARENT_MODE
++static void cppi41_mode_update(struct cppi41_channel *cppi_ch, u8 mode)
++{
++	if (mode != cppi_ch->dma_mode) {
++		struct cppi41 *cppi = cppi_ch->channel.private_data;
++		void *__iomem reg_base = cppi->musb->ctrl_base;
++		u32 reg_val = musb_readl(reg_base, USB_MODE_REG);
++		u8 ep_num = cppi_ch->ch_num + 1;
++
++		if (cppi_ch->transmit) {
++			reg_val &= ~USB_TX_MODE_MASK(ep_num);
++			reg_val |= mode << USB_TX_MODE_SHIFT(ep_num);
++		} else {
++			reg_val &= ~USB_RX_MODE_MASK(ep_num);
++			reg_val |= mode << USB_RX_MODE_SHIFT(ep_num);
++		}
++		musb_writel(reg_base, USB_MODE_REG, reg_val);
++		cppi_ch->dma_mode = mode;
++	}
++}
++#else
++static inline void cppi41_mode_update(struct cppi41_channel *cppi_ch,
++				      u8 mode) {}
++#endif
++
++/*
++ * CPPI 4.1 Tx:
++ * ============
++ * Tx is a lot more reasonable than Rx: RNDIS mode seems to behave well except
++ * how it handles the exactly-N-packets case. It appears that there's a hiccup
++ * in that case (maybe the DMA completes before a ZLP gets written?) boiling
++ * down to not being able to rely on the XFER DMA writing any terminating zero
++ * length packet before the next transfer is started...
++ *
++ * We always send terminating ZLPs *explictly* using DMA instead of doing it
++ * by PIO after an IRQ.
++ *
++ */
++
+ /**
+  * cppi41_next_tx_segment - DMA write for the next chunk of a buffer
+  * @tx_ch:	Tx channel
+@@ -473,7 +529,23 @@ static unsigned cppi41_next_tx_segment(s
+ 	u32 pkt_size = tx_ch->pkt_size;
+ 	unsigned num_pds, n;
+ 
+-	num_pds = (length + pkt_size - 1) / pkt_size;
++	/*
++	 * Tx can use the accelerated modes where we can probably fit this
++	 * transfer in one PD and one IRQ.  The only time we would NOT want
++	 * to use it is when the hardware constraints prevent it, or if we'd
++	 * trigger the "send a ZLP?" confusion.
++	 */
++	if (USB_DEFAULT_TX_MODE != USB_TRANSPARENT_MODE &&
++	    (pkt_size & 0x3f) == 0 && length > pkt_size &&
++	    (USB_DEFAULT_TX_MODE == USB_GENERIC_RNDIS_MODE ||
++	     length % pkt_size != 0)) {
++		num_pds  = 1;
++		pkt_size = length;
++		cppi41_mode_update(tx_ch, USB_DEFAULT_TX_MODE);
++	} else {
++		num_pds  = (length + pkt_size - 1) / pkt_size;
++		cppi41_mode_update(tx_ch, USB_TRANSPARENT_MODE);
++	}
+ 
+ 	/*
+ 	 * If length of transmit buffer is 0 or a multiple of the endpoint size,
+@@ -482,9 +554,9 @@ static unsigned cppi41_next_tx_segment(s
+ 	if (!length || (tx_ch->transfer_mode && length % pkt_size == 0))
+ 		num_pds++;
+ 
+-	DBG(4, "TX DMA%u, transparent, maxpkt %u, %u PDs, addr %#x, len %u\n",
+-	    tx_ch->ch_num, pkt_size, num_pds,
+-	    tx_ch->start_addr + tx_ch->curr_offset, length);
++	DBG(4, "TX DMA%u, %s, maxpkt %u, %u PDs, addr %#x, len %u\n",
++	    tx_ch->ch_num, tx_ch->dma_mode ? "accelerated" : "transparent",
++	    pkt_size, num_pds, tx_ch->start_addr + tx_ch->curr_offset, length);
+ 
+ 	for (n = 0; n < num_pds; n++) {
+ 		struct cppi41_host_pkt_desc *hw_desc;
+@@ -528,6 +600,94 @@ static unsigned cppi41_next_tx_segment(s
+ 	return n;
+ }
+ 
++#if USB_DEFAULT_RX_MODE == USB_GENERIC_RNDIS_MODE
++static void cppi41_autoreq_update(struct cppi41_channel *rx_ch, u8 autoreq)
++{
++	struct cppi41 *cppi = rx_ch->channel.private_data;
++
++	if (is_host_active(cppi->musb) &&
++	    autoreq != rx_ch->autoreq) {
++		void *__iomem reg_base = cppi->musb->ctrl_base;
++		u32 reg_val = musb_readl(reg_base, USB_AUTOREQ_REG);
++		u8 ep_num = rx_ch->ch_num + 1;
++
++		reg_val &= ~USB_RX_AUTOREQ_MASK(ep_num);
++		reg_val |= autoreq << USB_RX_AUTOREQ_SHIFT(ep_num);
++
++		musb_writel(reg_base, USB_AUTOREQ_REG, reg_val);
++		rx_ch->autoreq = autoreq;
++	}
++}
++
++static void cppi41_set_ep_size(struct cppi41_channel *rx_ch, u32 pkt_size)
++{
++	struct cppi41 *cppi = rx_ch->channel.private_data;
++	void *__iomem reg_base = cppi->musb->ctrl_base;
++	u8 ep_num = rx_ch->ch_num + 1;
++
++	musb_writel(reg_base, USB_GENERIC_RNDIS_EP_SIZE_REG(ep_num), pkt_size);
++}
++
++#else
++static inline void cppi41_autoreq_update(struct cppi41_channel *rx_ch,
++					 u8 autoreq) {}
++static inline void cppi41_set_ep_size(struct cppi41_channel *rx_ch,
++				      u32 pkt_size) {}
++#endif
++
++/*
++ * CPPI 4.1 Rx:
++ * ============
++ * Consider a 1KB bulk Rx buffer in two scenarios: (a) it's fed two 300 byte
++ * packets back-to-back, and (b) it's fed two 512 byte packets back-to-back.
++ * (Full speed transfers have similar scenarios.)
++ *
++ * The correct behavior for Linux is that (a) fills the buffer with 300 bytes,
++ * and the next packet goes into a buffer that's queued later; while (b) fills
++ * the buffer with 1024 bytes.  How to do that with accelerated DMA modes?
++ *
++ * Rx queues in RNDIS mode (one single BD) handle (a) correctly but (b) loses
++ * BADLY because nothing (!) happens when that second packet fills the buffer,
++ * much less when a third one arrives -- which makes it not a "true" RNDIS mode.
++ * In the RNDIS protocol short-packet termination is optional, and it's fine if
++ * the peripherals (not hosts!) pad the messages out to end of buffer. Standard
++ * PCI host controller DMA descriptors implement that mode by default... which
++ * is no accident.
++ *
++ * Generic RNDIS mode is the only way to reliably make both cases work.  This
++ * mode is identical to the "normal" RNDIS mode except for the case where the
++ * last packet of the segment matches the max USB packet size -- in this case,
++ * the packet will be closed when a value (0x10000 max) in the Generic RNDIS
++ * EP Size register is reached.  This mode will work for the network drivers
++ * (CDC/RNDIS) as well as for the mass storage drivers where there is no short
++ * packet.
++ *
++ * BUT we can only use non-transparent modes when USB packet size is a multiple
++ * of 64 bytes. Let's see what happens in this case...
++ *
++ * Rx queues (2 BDs with 512 bytes each) have converse problems to RNDIS mode:
++ * (b) is handled right but (a) loses badly.  DMA doesn't stop after receiving
++ * a short packet and processes both of those PDs; so both packets are loaded
++ * into the buffer (with 212 byte gap between them), and the next buffer queued
++ * will NOT get its 300 bytes of data.  Even in the case when there should be
++ * no short packets (URB_SHORT_NOT_OK is set), queueing several packets in the
++ * host mode doesn't win us anything since we have to manually "prod" the Rx
++ * process after each packet is received by setting ReqPkt bit in endpoint's
++ * RXCSR; in the peripheral mode without short packets, queueing could be used
++ * BUT we'll have to *teardown* the channel if a short packet still arrives in
++ * the peripheral mode, and to "collect" the left-over packet descriptors from
++ * the free descriptor/buffer queue in both cases...
++ *
++ * One BD at a time is the only way to make make both cases work reliably, with
++ * software handling both cases correctly, at the significant penalty of needing
++ * an IRQ per packet.  (The lack of I/O overlap can be slightly ameliorated by
++ * enabling double buffering.)
++ *
++ * There seems to be no way to identify for sure the cases where the CDC mode
++ * is appropriate...
++ *
++ */
++
+ /**
+  * cppi41_next_rx_segment - DMA read for the next chunk of a buffer
+  * @rx_ch:	Rx channel
+@@ -548,9 +708,28 @@ static unsigned cppi41_next_rx_segment(s
+ 	u32 length = rx_ch->length - rx_ch->curr_offset;
+ 	u32 pkt_size = rx_ch->pkt_size;
+ 
+-	DBG(4, "RX DMA%u, transparent, maxpkt %u, addr %#x, rec'd %u/%u\n",
+-	    rx_ch->ch_num, pkt_size,
+-	    rx_ch->start_addr + rx_ch->curr_offset,
++	/*
++	 * Rx can use the generic RNDIS mode where we can probably fit this
++	 * transfer in one PD and one IRQ (or two with a short packet).
++	 */
++	if (USB_DEFAULT_RX_MODE == USB_GENERIC_RNDIS_MODE &&
++	    (pkt_size & 0x3f) == 0 && length >= 2 * pkt_size) {
++		cppi41_mode_update(rx_ch, USB_DEFAULT_RX_MODE);
++		cppi41_autoreq_update(rx_ch, USB_AUTOREQ_ALL_BUT_EOP);
++
++		if (likely(length < 0x10000))
++			pkt_size = length - length % pkt_size;
++		else
++			pkt_size = 0x10000;
++		cppi41_set_ep_size(rx_ch, pkt_size);
++	} else {
++		cppi41_mode_update(rx_ch, USB_TRANSPARENT_MODE);
++		cppi41_autoreq_update(rx_ch, USB_NO_AUTOREQ);
++	}
++
++	DBG(4, "RX DMA%u, %s, maxpkt %u, addr %#x, rec'd %u/%u\n",
++	    rx_ch->ch_num, rx_ch->dma_mode ? "accelerated" : "transparent",
++	    pkt_size, rx_ch->start_addr + rx_ch->curr_offset,
+ 	    rx_ch->curr_offset, rx_ch->length);
+ 
+ 	/* Get Rx packet descriptor from the free pool */
+@@ -857,6 +1036,9 @@ static int cppi41_channel_abort(struct d
+ 		 * DMA state iff any pending FIFO transfer is done.
+ 		 */
+ 
++		/* For host, ensure ReqPkt is never set again */
++		cppi41_autoreq_update(cppi_ch, USB_NO_AUTOREQ);
++
+ 		/* For host, clear (just) ReqPkt at end of current packet(s) */
+ 		if (is_host_active(cppi->musb))
+ 			csr &= ~MUSB_RXCSR_H_REQPKT;
+Index: linux-2.6.18/mvl_patches/pro50-2157.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2157.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2157);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

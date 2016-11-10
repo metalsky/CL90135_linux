@@ -1,0 +1,594 @@
+#! /usr/bin/env bash
+# Patch: -pro_emac_use_list_head
+# Date: Thu Feb 19 15:02:03 2009
+# Source: MontaVista Software, Inc.
+# MR: 28780
+# Type: Enhancement
+# Disposition: needs submitting to
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+# Signed-off-by: Mikhail Cherkashin <mcherkashin@uvista.com>
+# Description:
+# davinci_emac: use list_head for the devices list.
+# 
+#  drivers/net/davinci_emac.c |  213 ++++++++++-----------------------------------
+#  1 file changed, 52 insertions(+), 161 deletions(-)
+# 
+
+PATCHNUM=2124
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28780
+Type: Enhancement
+Disposition: needs submitting to
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+Signed-off-by: Mikhail Cherkashin <mcherkashin@uvista.com>
+Description:
+davinci_emac: use list_head for the devices list.
+
+ drivers/net/davinci_emac.c |  191 +++++++++++----------------------------------
+ mvl_patches/pro50-2124.c   |   16 +++
+ 2 files changed, 65 insertions(+), 142 deletions(-)
+
+Index: linux-2.6.18/drivers/net/davinci_emac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac.c
++++ linux-2.6.18/drivers/net/davinci_emac.c
+@@ -1406,8 +1406,8 @@ typedef struct _emac_rx_cppi_ch_t {
+  * structure's "priv" member points back to this data structure.
+  */
+ struct emac_dev {
+-	void *owner;		/* pointer to the net_device struct */
+-	struct net_device *next_device;
++	struct net_device *owner;
++	struct list_head emac_devices;
+ 	unsigned int link_speed;
+ 	unsigned int link_mode;
+ 	unsigned long set_to_close;
+@@ -1504,10 +1504,7 @@ static int g_link_mode = 0;	/* 0=Auto Ne
+ 				 * Half Duplex = 2 Unknown = 1 */
+ static int g_init_enable_flag = 0;
+ 
+-static struct net_device *last_emac_device = NULL;
+-static int emac_devices_installed = 0;	/* number of EMAC instances */
+-
+-static struct proc_dir_entry *gp_stats_file = NULL;	/* proc entries */
++static LIST_HEAD(emac_devices);
+ 
+ /* clock frequency for EMAC */
+ static struct clk *emac_clk;
+@@ -1855,7 +1852,7 @@ static int emac_control_cb(struct emac_d
+ 			}
+ 
+ 				pr_debug("%s, PhyNum %d,  %s, %s, %s\n",
+-				    ((struct net_device *)dev->owner)->name,
++				    dev->owner->name,
+ 				    status->phy_num,
+ 				    ((status->phy_duplex == PHY_DUPLEX_FULL) ?
+ 				     "Full Duplex" : "Half Duplex"),
+@@ -2085,33 +2082,18 @@ static int __init emac_p_detect_manual_c
+ 	return (0);
+ }
+ 
+-/* link read support */
+ static int emac_p_read_link(char *buf, char **start, off_t offset, int count,
+ 			    int *eof, void *data)
+ {
++	struct list_head *pos, *tmp;
++
+ 	int len = 0;
+-	struct net_device *netdev;
+-	struct emac_dev *dev;
+-	struct net_device *emac_dev_list[emac_devices_installed];
+-	int i;
+ 
+-	len +=
+-	    sprintf(buf + len, "EMAC devices = %d\n", emac_devices_installed);
+-	netdev = last_emac_device;
+-
+-	/* reverse the the device link list to list eth0,eth1...in correct order */
+-	for (i = 0; i < emac_devices_installed; i++) {
+-		emac_dev_list[emac_devices_installed - (i + 1)] = netdev;
+-		dev = NETDEV_PRIV(netdev);
+-		netdev = dev->next_device;
+-	}
+-
+-	for (i = 0; i < emac_devices_installed; i++) {
+-		netdev = emac_dev_list[i];
+-		dev = NETDEV_PRIV(netdev);
++	list_for_each_safe(pos, tmp, &emac_devices) {
++		struct emac_dev *dev =
++			list_entry(pos, struct emac_dev, emac_devices);
++		struct net_device *netdev = dev->owner;
+ 
+-		/*  this prints them out from high to low because of
+-		    how the devices are linked */
+ 		if (netif_carrier_ok(netdev)) {
+ 			len +=
+ 			    sprintf(buf + len,
+@@ -2130,38 +2112,22 @@ static int emac_p_read_link(char *buf, c
+ 			    sprintf(buf + len, "%s: Link State: DOWN\n",
+ 				    netdev->name);
+ 		}
+-		netdev = dev->next_device;
+ 	}
+ 
+ 	return len;
+ }
+ 
+-/* dump configuration information for debug purposes */
+ static int emac_dump_config(char *buf, char **start, off_t offset, int count,
+ 			    int *eof, void *data)
+ {
+ 	int len = 0;
+-	struct net_device *netdev;
+-	struct net_device *emac_dev_list[emac_devices_installed];
+-	int i;
+-	struct emac_dev *dev;
+-
+-	len +=
+-	    sprintf(buf + len, "EMAC devices = %d\n", emac_devices_installed);
+ 
+-	netdev = last_emac_device;
++	struct list_head *pos, *tmp;
+ 
+-	/* reverse the the device link list to list eth0,eth1...in
+-	   correct order */
+-	for (i = 0; i < emac_devices_installed; i++) {
+-		emac_dev_list[emac_devices_installed - (i + 1)] = netdev;
+-		dev = NETDEV_PRIV(netdev);
+-		netdev = dev->next_device;
+-	}
+-
+-	for (i = 0; i < emac_devices_installed; i++) {
+-		netdev = emac_dev_list[i];
+-		dev = NETDEV_PRIV(netdev);
++	list_for_each_safe(pos, tmp, &emac_devices) {
++		struct emac_dev *dev =
++			list_entry(pos, struct emac_dev, emac_devices);
++		struct net_device *netdev = dev->owner;
+ 
+ 		len +=
+ 		    sprintf(buf + len,
+@@ -2287,7 +2253,6 @@ static int emac_dump_config(char *buf, c
+ 		len +=
+ 		    sprintf(buf + len, "fullDuplexEnable   = %d\n",
+ 			    dev->init_cfg.mac_cfg.full_duplex_enable);
+-		netdev = dev->next_device;
+ 	}
+ 
+ 	return len;
+@@ -2297,37 +2262,23 @@ static int emac_dump_config(char *buf, c
+ static int emac_p_read_stats(char *buf, char **start, off_t offset, int count,
+ 			     int *eof, void *data)
+ {
+-	struct net_device *netdev = last_emac_device;
+ 	int len = 0;
+ 	int limit = count - 80;
+-	int i;
+-	struct net_device *emac_dev_list[emac_devices_installed];
+-	struct emac_dev *dev;
+-	emac_hw_statistics *p_device_mib;
+ 
+-	/* reverse the the device link list to list eth0,eth1...in
+-	   correct order */
+-	for (i = 0; i < emac_devices_installed; i++) {
+-		emac_dev_list[emac_devices_installed - (i + 1)] = netdev;
+-		dev = NETDEV_PRIV(netdev);
+-		netdev = dev->next_device;
+-	}
+-
+-	for (i = 0; i < emac_devices_installed; i++) {
+-		netdev = emac_dev_list[i];
+-		if (!netdev)
+-			goto proc_error;
+-
+-		/* get stats */
+-		emac_p_update_statistics(netdev, NULL, 0, NULL);
+-		dev = NETDEV_PRIV(netdev);
+-		p_device_mib = &dev->device_mib;
++	struct list_head *pos, *tmp;
+ 
++	list_for_each_safe(pos, tmp, &emac_devices) {
++		struct emac_dev *dev =
++			list_entry(pos, struct emac_dev, emac_devices);
++		struct net_device *netdev = dev->owner;
++		emac_hw_statistics *p_device_mib = &dev->device_mib;
++
++		emac_p_update_statistics(dev->owner, NULL, 0, NULL);
+ 		/* transmit stats */
+ 		if (len <= limit)
+ 			len +=
+-			    sprintf(buf + len, "\nCpmac %d, Address %lx\n",
+-				    i + 1, netdev->base_addr);
++			    sprintf(buf + len, "\nCpmac %s, Address %lx\n",
++				    netdev->name, netdev->base_addr);
+ 		if (len <= limit)
+ 			len += sprintf(buf + len, " Transmit Stats\n");
+ 		if (len <= limit)
+@@ -2381,8 +2332,8 @@ static int emac_p_read_stats(char *buf, 
+ 		/* receive stats */
+ 		if (len <= limit)
+ 			len +=
+-			    sprintf(buf + len, "\nCpmac %d, Address %lx\n",
+-				    i + 1, netdev->base_addr);
++			    sprintf(buf + len, "\nCpmac %s, Address %lx\n",
++				    netdev->name, netdev->base_addr);
+ 		if (len <= limit)
+ 			len += sprintf(buf + len, " Receive Stats\n");
+ 		if (len <= limit)
+@@ -2453,19 +2404,15 @@ static int emac_p_read_stats(char *buf, 
+ 	}
+ 
+ 	return len;
+-
+-      proc_error:
+-	*eof = 1;
+-
+-	return len;
+ }
+ 
+ /* write stats */
+ static int emac_p_write_stats(struct file *fp, const char *buf,
+ 			      unsigned long count, void *data)
+ {
++	struct list_head *pos, *tmp;
++
+ 	char local_buf[31];
+-	int ret_val = 0;
+ 
+ 	if (count > 30) {
+ 		printk("Error : Buffer Overflow\n");
+@@ -2475,43 +2422,21 @@ static int emac_p_write_stats(struct fil
+ 
+ 	copy_from_user(local_buf, buf, count);
+ 	local_buf[count - 1] = '\0';	/* ignoring last \n char */
+-	ret_val = count;
+-	if (strcmp("0", local_buf) == 0) {
+-		struct net_device *netdev = last_emac_device;
+-		int i;
+-		struct net_device *emac_dev_list[emac_devices_installed];
+-		struct emac_dev *dev;
+-
+-		/* valid command */
+-		printk("Resetting statistics for EMAC interface.\n");
+-
+-		/* reverse the the device link list to list
+-		   eth0,eth1...in correct order */
+-		for (i = 0; i < emac_devices_installed; i++) {
+-			emac_dev_list[emac_devices_installed - (i + 1)] =
+-			    netdev;
+-
+-			dev = NETDEV_PRIV(netdev);
+-			netdev = dev->next_device;
+-		}
+-
+-		for (i = 0; i < emac_devices_installed; i++) {
+-			netdev = emac_dev_list[i];
+-
+-			if (!netdev) {
+-				ret_val = -EFAULT;
+-				break;
+-			}
+-
+-			emac_p_reset_statistics(netdev);
+-		}
+-	} else {
++	if (strcmp("0", local_buf)) {
+ 		printk("Error: Unknown operation on emac statistics\n");
+ 		printk("Use \"echo 0 > emac_stats\" to reset the statistics\n");
+ 		return -EFAULT;
+ 	}
+ 
+-	return ret_val;
++	pr_info("Resetting statistics for EMAC interface.\n");
++
++	list_for_each_safe(pos, tmp, &emac_devices) {
++		struct emac_dev *dev =
++			list_entry(pos, struct emac_dev, emac_devices);
++		emac_p_reset_statistics(dev->owner);
++	}
++
++	return count;
+ }
+ 
+ /* update RFC2665 statistics */
+@@ -3204,6 +3129,7 @@ static int emac_dev_init(struct net_devi
+ 		pr_err("Assuming default MAC address\n");
+ 		emac_str_to_ethaddr(dev->mac_addr, "08.00.28.32.06.08");
+ 	} else {
++		mac_eeprom[17] = 0;
+ 		pr_info("MAC address is %s\n", mac_eeprom);
+ 		emac_str_to_ethaddr(dev->mac_addr, mac_eeprom);
+ 	}
+@@ -6807,30 +6733,17 @@ static int __init davinci_emac_probe(str
+ 
+ 	/* register the network device with linux */
+ 	err = register_netdev(netdev);
+-
+ 	if (err) {
+ 		ERR("Could not register device: %d\n", err);
+ 
+ 		clk_disable(emac_clk);
+ 
+ 		FREE_NETDEV(netdev);
+-	} else {
+-		dev->next_device = last_emac_device;
+-		last_emac_device = netdev;
+-		pr_debug("%s irq=%2d io=%04x\n",
+-		    netdev->name, (int)netdev->irq,
+-		    (int)netdev->base_addr);
+-		create_proc_entries_for_dev (dev);
+-	}
+-	if (err == 0) {
+-		/* to maintain backward compatibility with NSP. */
+-		gp_stats_file = create_proc_entry("net/emac_stats", 0644, NULL);
+-		if (gp_stats_file) {
+-			gp_stats_file->read_proc = emac_p_read_stats;
+-			gp_stats_file->write_proc = emac_p_write_stats;
+-		}
+ 	}
+-	emac_devices_installed++;
++
++	create_proc_entries_for_dev(dev);
++
++	list_add(&dev->emac_devices, &emac_devices);
+ 
+ 	printk("%s\n", emac_version_string);
+ #if defined CONFIG_EMAC_INIT_BUF_MALLOC
+@@ -6849,6 +6762,8 @@ static int __devexit davinci_emac_remove
+ 	struct emac_dev *dev = NETDEV_PRIV(netdev);
+ 	int ret_code;
+ 
++ 	list_del(&dev->emac_devices);
++ 
+ 	/* free EMAC clock */
+ 	clk_disable(emac_clk);
+ 
+@@ -6858,13 +6773,6 @@ static int __devexit davinci_emac_remove
+ 	/* deinit DDC */
+ 	ret_code = emac_de_init(dev, NULL);
+ 
+-	if (ret_code != EMAC_SUCCESS) {
+-		ERR("Error %08X from Deinit()\n", ret_code);
+-
+-		/* we dont want to quit from here, lets delete
+-		 * the instance also */
+-	}
+-
+ 	/* delete the proc entry */
+ 	delete_proc_entries_for_dev(dev);
+ 
+@@ -6880,15 +6788,15 @@ static int __devexit davinci_emac_remove
+ 	release_mem_region(netdev->base_addr, EMAC_DEFAULT_EMAC_SIZE);
+ 	unregister_netdev(netdev);
+ 
+-	last_emac_device = dev->next_device;
+ 	if (netdev)
+ 		FREE_NETDEV(netdev);
+ 
+-	emac_devices_installed--;
+-
+ 	return 0;
+ }
+ 
++/*
++ * init/exit stuff
++ */
+ static struct platform_driver davinci_emac_driver = {
+ 	.driver	= {
+ 		.name = "emac_davinci",
+@@ -6907,7 +6815,6 @@ static int __init davinci_emac_init(void
+ 	driver_create_file(&davinci_emac_driver.driver, &driver_attr_version);
+ 
+ 	init_proc();
+-
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/mvl_patches/pro50-2124.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2124.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2124);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

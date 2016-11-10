@@ -1,0 +1,667 @@
+#! /usr/bin/env bash
+# Patch: -pro_davinci_i2c_client
+# Date: Fri Sep 19 13:56:12 2008
+# Source: MontaVista Software, Inc.
+# MR: 23591
+# Type: Integration
+# Disposition: merged from linux-davinci-2.6.git
+# Signed-off-by: Vladimir Barinov <vbarinov@ru.mvista.com>
+# Description:
+#     I2C client support
+#     
+#     
+
+PATCHNUM=1510
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 23591
+Type: Integration
+Disposition: merged from linux-davinci-2.6.git
+Signed-off-by: Vladimir Barinov <vbarinov@ru.mvista.com>
+Description:
+    I2C client support
+    
+    
+Index: linux-2.6.18/arch/arm/mach-davinci/Kconfig
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Kconfig
++++ linux-2.6.18/arch/arm/mach-davinci/Kconfig
+@@ -44,6 +44,14 @@ config DAVINCI_MUX_WARNINGS
+ 	  to change the pin multiplexing setup.  When there are no warnings
+ 	  printed, it's safe to deselect DAVINCI_MUX for your product.
+ 
++config DAVINCI_I2C_EXPANDER
++	bool "TI DaVinci I2C Expander"
++	default y
++	depends on I2C && ARCH_DAVINCI644x
++	help
++	  Configure this option to specify whether the board used
++	  has I2C exapnder with ATA, USB, CF.
++
+ endmenu
+ 
+ endif
+Index: linux-2.6.18/arch/arm/mach-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Makefile
++++ linux-2.6.18/arch/arm/mach-davinci/Makefile
+@@ -8,4 +8,5 @@ obj-y 			:= time.o irq.o clock.o serial.
+ 			   gpio.o mux.o mux_cfg.o dma.o devices.o
+ 
+ # Board specific
+-obj-$(CONFIG_MACH_DAVINCI_EVM)  += board-evm.o
++obj-$(CONFIG_MACH_DAVINCI_EVM)  += board-evm.o i2c-emac.o
++obj-$(CONFIG_DAVINCI_I2C_EXPANDER)      += i2c-client.o
+Index: linux-2.6.18/arch/arm/mach-davinci/i2c-client.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-davinci/i2c-client.c
+@@ -0,0 +1,249 @@
++/*
++ *  linux/drivers/davinci/i2c-davinci-client.c
++ *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#include <linux/init.h>
++#include <linux/fs.h>
++#include <linux/vmalloc.h>
++#include <linux/slab.h>
++#include <linux/proc_fs.h>
++#include <linux/ctype.h>
++#include <linux/delay.h>
++#include <linux/i2c.h>
++#include <linux/clk.h>
++
++#include <asm/semaphore.h>
++#include <asm/arch/i2c-client.h>
++
++static DEFINE_MUTEX(expander_lock);
++static struct i2c_client *client_handle;
++
++/* This function is used for internal initialization */
++int davinci_i2c_read(u8 size, u8 * val, u16 client_addr)
++{
++	int err;
++	struct i2c_client *client = client_handle;
++
++	struct i2c_msg msg[1];
++
++	if (!client->adapter)
++		return -ENODEV;
++
++	msg->addr = client_addr;
++	msg->flags = I2C_M_RD;
++	msg->len = size;
++	msg->buf = val;
++
++	err = i2c_transfer(client->adapter, msg, 1);
++
++	if (err >= 0) {
++		return 0;
++	}
++
++	return err;
++}
++
++EXPORT_SYMBOL(davinci_i2c_read);
++
++/* This function is used for internal initialization */
++int davinci_i2c_write(u8 size, u8 * val, u16 client_addr)
++{
++	int err;
++	struct i2c_client *client = client_handle;
++
++	struct i2c_msg msg[1];
++
++	if (!client->adapter)
++		return -ENODEV;
++
++	msg->addr = client_addr;
++	msg->flags = 0;
++	msg->len = size;
++	msg->buf = val;
++
++	err = i2c_transfer(client->adapter, msg, 1);
++	if (err >= 0)
++		return 0;
++
++	return err;
++}
++
++EXPORT_SYMBOL(davinci_i2c_write);
++
++int davinci_i2c_expander_op(u16 client_addr, u35_expander_ops pin, u8 val)
++{
++	int err = 0;
++	char cmd[4] = { 4, 6, 0x00, 0x09 };
++	u8 data_to_u35 = 0;
++
++	if (val > 1)
++		return -1;
++
++	mutex_lock(&expander_lock);
++
++	err = davinci_i2c_read(1, &data_to_u35, 0x3A);
++
++	if (client_addr == 0x3A) {
++		switch (pin) {
++		case USB_DRVVBUS:
++			if (val)
++				data_to_u35 |= val;
++			else {
++				data_to_u35 &= (val | 0xFE);
++			}
++			break;
++		case VDDIMX_EN:
++			if (val)
++				data_to_u35 |= (val << 1);
++			else {
++				data_to_u35 &= (val | 0xFD);
++			}
++			break;
++		case VLYNQ_ON:
++			if (val)
++				data_to_u35 |= (val << 2);
++			else {
++				data_to_u35 &= (val | 0xFB);
++			}
++			break;
++		case CF_RESET:
++			if (val)
++				data_to_u35 |= (val << 3);
++			else {
++				data_to_u35 &= (val | 0xF7);
++			}
++			break;
++		case WLAN_RESET:
++			if (val)
++				data_to_u35 |= (val << 5);
++			else {
++				data_to_u35 &= (val | 0xDF);
++			}
++			break;
++		case ATA_SEL:
++			if (val)
++				data_to_u35 |= (val << 6);
++			else {
++				data_to_u35 &= (val | 0xBF);
++			}
++			break;
++		case CF_SEL:
++			davinci_i2c_write(4, cmd, 0x23);
++			if (val)
++				data_to_u35 |= (val << 7);
++			else {
++				data_to_u35 &= (val | 0x7F);
++			}
++			break;
++		default:
++			break;
++		}
++	} else {
++		printk("Only IO Expander at address 0x3A is suuported\n");
++		mutex_unlock(&expander_lock);
++		return -EINVAL;
++	}
++
++	err = davinci_i2c_write(1, &data_to_u35, 0x3A);
++
++	mutex_unlock(&expander_lock);
++
++	return err;
++}
++
++EXPORT_SYMBOL(davinci_i2c_expander_op);
++
++static struct i2c_driver davinci_i2c_client_driver;
++
++static int davinci_i2c_attach_client(struct i2c_adapter *adap, int addr)
++{
++	struct i2c_client *client;
++	int err;
++	u8 data_to_u35 = 0xf6;
++
++	if (!(client = kzalloc(sizeof(struct i2c_client), GFP_KERNEL))) {
++		err = -ENOMEM;
++		goto exit;
++	}
++	client_handle = client;
++
++	if (client->adapter)
++		return -EBUSY;	/* our client is already attached */
++
++	client->addr = addr;
++	client->flags = 0;
++	client->driver = &davinci_i2c_client_driver;
++	client->adapter = adap;
++	strlcpy(client->name, client->driver->driver.name, I2C_NAME_SIZE);
++
++	err = i2c_attach_client(client);
++	if (err) {
++		client->adapter = NULL;
++		goto exit_kfree;
++	}
++
++	err = davinci_i2c_write(1, &data_to_u35, 0x3A);
++
++	return 0;
++
++ exit_kfree:
++	kfree(client);
++ exit:
++	return err;
++}
++
++static int davinci_i2c_detach_client(struct i2c_client *client)
++{
++	int err;
++
++	if (!client->adapter)
++		return -ENODEV;	/* our client isn't attached */
++
++	err = i2c_detach_client(client);
++	client->adapter = NULL;
++	return err;
++}
++
++static int davinci_i2c_probe_adapter(struct i2c_adapter *adap)
++{
++	return davinci_i2c_attach_client(adap, 0x3A);
++}
++
++/* This is the driver that will be inserted */
++static struct i2c_driver davinci_i2c_client_driver = {
++	.driver = {
++		/* there are 3 expanders, one is leds-only ... */
++		.name	= "davinci_evm_expander1",
++	},
++	.attach_adapter	= davinci_i2c_probe_adapter,
++	.detach_client	= davinci_i2c_detach_client,
++};
++
++static int __init davinci_i2c_client_init(void)
++{
++	return i2c_add_driver(&davinci_i2c_client_driver);
++}
++
++static void __exit davinci_i2c_client_exit(void)
++{
++	i2c_del_driver(&davinci_i2c_client_driver);
++}
++
++module_init(davinci_i2c_client_init);
++module_exit(davinci_i2c_client_exit);
+Index: linux-2.6.18/arch/arm/mach-davinci/i2c-emac.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-davinci/i2c-emac.c
+@@ -0,0 +1,104 @@
++/*
++ * <arch/arm/mach-davinci/i2c-emac.c
++ *
++ * Read MAC address from i2c-attached EEPROM
++ * FIXME: Move into network driver once stabilized
++ *
++ * Author: Texas Instruments
++ *
++ * 2006 (c) Texas Instruments, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/string.h>
++#include <linux/errno.h>
++
++#include <asm/arch/i2c-client.h>
++
++/* Get Ethernet address from kernel boot params */
++static unsigned char cpmac_eth_string[20] = "deadbeaf";
++
++/* This function gets the Ethernet MAC address from EEPROM
++ * Input buffer to be of atlease 20 bytes in length
++ */
++int davinci_get_macaddr (char *ptr)
++{
++#ifndef CONFIG_I2C_DAVINCI
++	printk(KERN_INFO "DaVinci EMAC: Unable to read MAC from EEPROM, "
++	       "no i2c support in kernel.\n");
++#else
++	char data[2] = { 0x7f, 0 };
++        char temp[20];
++        int  i = 0;
++
++	if (ptr == NULL) {
++		return -EFAULT;
++	}
++
++	davinci_i2c_write (2, data, 0x50);
++	davinci_i2c_read (8, temp, 0x50);
++
++	/* check whether MAC address is available in ERPROM else try to
++	 * to get it from bootparams for now.  From Delta EVM MAC address
++	 * should be available from I2C EEPROM.
++	 */
++	if ((temp [0] != 0xFF) |
++	    (temp [1] != 0xFF) |
++	    (temp [2] != 0xFF) |
++	    (temp [3] != 0xFF) |
++	    (temp [4] != 0xFF) |
++	    (temp [5] != 0xFF) |
++	    (temp [6] != 0xFF) )
++	{
++		ptr[0] = (*(temp+0) & 0xF0) >> 4;
++		ptr[1] = (*(temp+0) & 0x0F);
++		ptr[2] = ':';
++		ptr[3] = (*(temp+1) & 0xF0) >> 4;
++		ptr[4] = (*(temp+1) & 0x0F);
++		ptr[5] = ':';
++		ptr[6] = (*(temp+2) & 0xF0) >> 4;
++		ptr[7] = (*(temp+2) & 0x0F);
++		ptr[8] = ':';
++		ptr[9] = (*(temp+3) & 0xF0) >> 4;
++		ptr[10]= (*(temp+3) & 0x0F);
++		ptr[11]= ':';
++		ptr[12]= (*(temp+4) & 0xF0) >> 4;
++		ptr[13]= (*(temp+4) & 0x0F);
++		ptr[14]= ':';
++		ptr[15]= (*(temp+5) & 0xF0) >> 4;
++		ptr[16]= (*(temp+5) & 0x0F);
++
++		for (i = 0; i < 17; i++)
++		{
++			if (ptr[i] == ':')
++				continue;
++			else if (ptr[i] <= 9)
++				ptr[i] = ptr[i] + 48;
++			else
++				ptr[i] = ptr[i] + 87;
++		}
++	} else
++#endif
++	{
++		strcpy (ptr, cpmac_eth_string);
++	}
++	return 0;
++}
++EXPORT_SYMBOL(davinci_get_macaddr);
++
++static int davinci_cpmac_eth_setup(char *str)
++{
++	/* The first char passed from the bootloader is '=', so ignore it */
++        strcpy(&cpmac_eth_string[0], &str[1]);
++
++        printk("TI DaVinci EMAC: Kernel Boot params Eth address: %s\n",
++               cpmac_eth_string);
++
++        return (1);
++}
++__setup("eth", davinci_cpmac_eth_setup);
++
+Index: linux-2.6.18/include/asm-arm/arch-davinci/i2c-client.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/i2c-client.h
+@@ -0,0 +1,38 @@
++/*
++ *  include/asm-arm/arch-davinci/i2c-client.h
++ *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* i2c-client.h */
++#ifndef _DAVINCI_I2C_CLIENT_H_
++#define _DAVINCI_I2C_CLIENT_H_
++
++typedef enum {
++        USB_DRVVBUS = 0,
++        VDDIMX_EN = 1,
++        VLYNQ_ON = 2,
++        CF_RESET = 3,
++        WLAN_RESET = 4,
++        ATA_SEL = 5,
++        CF_SEL = 6
++} u35_expander_ops;
++
++int davinci_i2c_expander_op (u16 client_addr, u35_expander_ops pin, u8 val);
++int davinci_i2c_write(u8 size, u8 * val, u16 client_addr);
++int davinci_i2c_read(u8 size, u8 * val, u16 client_addr);
++
++#endif
+Index: linux-2.6.18/mvl_patches/pro50-1510.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1510.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1510);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

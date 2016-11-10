@@ -1,0 +1,406 @@
+#! /usr/bin/env bash
+# Patch: -dma_convert_from_class_device_to_device_for_dma_engine
+# Date: Wed Dec 10 13:48:02 2008
+# Source: kernel.org
+# MR: 30590
+# Type: Enhancement
+# Disposition: backport from 2.6.25-rc1 (891f78ea833edd4a1e524e15bfe297a7a84d81a0)
+# Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+# Description:
+# 
+# commit 891f78ea833edd4a1e524e15bfe297a7a84d81a0
+# Author: Tony Jones <tonyj@suse.de>
+# Date:   Tue Sep 25 02:03:03 2007 +0200
+# 
+#     DMA: Convert from class_device to device for DMA engine
+#     
+#     Signed-off-by: Tony Jones <tonyj@suse.de>
+#     Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+#     Cc: Shannon Nelson <shannon.nelson@intel.com>
+#     Cc: Kay Sievers <kay.sievers@vrfy.org>
+#     Signed-off-by: Greg Kroah-Hartman <gregkh@suse.de>
+# 
+#  drivers/dma/dmaengine.c   |   43 ++++++++++++++++++++++---------------------
+#  include/linux/dmaengine.h |    3 ++-
+#  2 files changed, 24 insertions(+), 22 deletions(-)
+# 
+# 
+
+PATCHNUM=2026
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 30590
+Type: Enhancement
+Disposition: backport from 2.6.25-rc1 (891f78ea833edd4a1e524e15bfe297a7a84d81a0)
+Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+Description:
+
+commit 891f78ea833edd4a1e524e15bfe297a7a84d81a0
+Author: Tony Jones <tonyj@suse.de>
+Date:   Tue Sep 25 02:03:03 2007 +0200
+
+    DMA: Convert from class_device to device for DMA engine
+    
+    Signed-off-by: Tony Jones <tonyj@suse.de>
+    Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+    Cc: Shannon Nelson <shannon.nelson@intel.com>
+    Cc: Kay Sievers <kay.sievers@vrfy.org>
+    Signed-off-by: Greg Kroah-Hartman <gregkh@suse.de>
+
+ drivers/dma/dmaengine.c   |   43 ++++++++++++++++++++++---------------------
+ include/linux/dmaengine.h |    3 ++-
+ mvl_patches/pro50-2026.c  |   16 ++++++++++++++++
+ 3 files changed, 40 insertions(+), 22 deletions(-)
+
+
+Index: linux-2.6.18/drivers/dma/dmaengine.c
+===================================================================
+--- linux-2.6.18.orig/drivers/dma/dmaengine.c
++++ linux-2.6.18/drivers/dma/dmaengine.c
+@@ -41,12 +41,12 @@
+  * the definition of dma_event_callback in dmaengine.h.
+  *
+  * Each device has a kref, which is initialized to 1 when the device is
+- * registered. A kref_get is done for each class_device registered.  When the
+- * class_device is released, the coresponding kref_put is done in the release
++ * registered. A kref_get is done for each device registered.  When the
++ * device is released, the coresponding kref_put is done in the release
+  * method. Every time one of the device's channels is allocated to a client,
+  * a kref_get occurs.  When the channel is freed, the coresponding kref_put
+  * happens. The device's release function does a completion, so
+- * unregister_device does a remove event, class_device_unregister, a kref_put
++ * unregister_device does a remove event, device_unregister, a kref_put
+  * for the first reference, then waits on the completion for all other
+  * references to finish.
+  *
+@@ -77,9 +77,9 @@ static LIST_HEAD(dma_client_list);
+ 
+ /* --- sysfs implementation --- */
+ 
+-static ssize_t show_memcpy_count(struct class_device *cd, char *buf)
++static ssize_t show_memcpy_count(struct device *dev, struct device_attribute *attr, char *buf)
+ {
+-	struct dma_chan *chan = container_of(cd, struct dma_chan, class_dev);
++	struct dma_chan *chan = to_dma_chan(dev);
+ 	unsigned long count = 0;
+ 	int i;
+ 
+@@ -89,9 +89,10 @@ static ssize_t show_memcpy_count(struct 
+ 	return sprintf(buf, "%lu\n", count);
+ }
+ 
+-static ssize_t show_bytes_transferred(struct class_device *cd, char *buf)
++static ssize_t show_bytes_transferred(struct device *dev, struct device_attribute *attr,
++				      char *buf)
+ {
+-	struct dma_chan *chan = container_of(cd, struct dma_chan, class_dev);
++	struct dma_chan *chan = to_dma_chan(dev);
+ 	unsigned long count = 0;
+ 	int i;
+ 
+@@ -101,9 +102,9 @@ static ssize_t show_bytes_transferred(st
+ 	return sprintf(buf, "%lu\n", count);
+ }
+ 
+-static ssize_t show_in_use(struct class_device *cd, char *buf)
++static ssize_t show_in_use(struct device *dev, struct device_attribute *attr, char *buf)
+ {
+-	struct dma_chan *chan = container_of(cd, struct dma_chan, class_dev);
++	struct dma_chan *chan = to_dma_chan(dev);
+ 	int in_use = 0;
+ 
+ 	if (unlikely(chan->slow_ref) &&
+@@ -119,7 +120,7 @@ static ssize_t show_in_use(struct class_
+ 	return sprintf(buf, "%d\n", in_use);
+ }
+ 
+-static struct class_device_attribute dma_class_attrs[] = {
++static struct device_attribute dma_attrs[] = {
+ 	__ATTR(memcpy_count, S_IRUGO, show_memcpy_count, NULL),
+ 	__ATTR(bytes_transferred, S_IRUGO, show_bytes_transferred, NULL),
+ 	__ATTR(in_use, S_IRUGO, show_in_use, NULL),
+@@ -128,16 +129,16 @@ static struct class_device_attribute dma
+ 
+ static void dma_async_device_cleanup(struct kref *kref);
+ 
+-static void dma_class_dev_release(struct class_device *cd)
++static void dma_dev_release(struct device *dev)
+ {
+-	struct dma_chan *chan = container_of(cd, struct dma_chan, class_dev);
++	struct dma_chan *chan = to_dma_chan(dev);
+ 	kref_put(&chan->device->refcount, dma_async_device_cleanup);
+ }
+ 
+ static struct class dma_devclass = {
+-	.name            = "dma",
+-	.class_dev_attrs = dma_class_attrs,
+-	.release = dma_class_dev_release,
++	.name		= "dma",
++	.dev_attrs	= dma_attrs,
++	.dev_release	= dma_dev_release,
+ };
+ 
+ /* --- client and device registration --- */
+@@ -377,12 +378,12 @@ int dma_async_device_register(struct dma
+ 			continue;
+ 
+ 		chan->chan_id = chancnt++;
+-		chan->class_dev.class = &dma_devclass;
+-		chan->class_dev.dev = NULL;
+-		snprintf(chan->class_dev.class_id, BUS_ID_SIZE, "dma%dchan%d",
++		chan->dev.class = &dma_devclass;
++		chan->dev.parent = NULL;
++		snprintf(chan->dev.bus_id, BUS_ID_SIZE, "dma%dchan%d",
+ 		         device->dev_id, chan->chan_id);
+ 
+-		rc = class_device_register(&chan->class_dev);
++		rc = device_register(&chan->dev);
+ 		if (rc) {
+ 			chancnt--;
+ 			free_percpu(chan->local);
+@@ -411,7 +412,7 @@ err_out:
+ 		if (chan->local == NULL)
+ 			continue;
+ 		kref_put(&device->refcount, dma_async_device_cleanup);
+-		class_device_unregister(&chan->class_dev);
++		device_unregister(&chan->dev);
+ 		chancnt--;
+ 		free_percpu(chan->local);
+ 	}
+@@ -445,7 +446,7 @@ void dma_async_device_unregister(struct 
+ 
+ 	list_for_each_entry(chan, &device->channels, device_node) {
+ 		dma_clients_notify_removed(chan);
+-		class_device_unregister(&chan->class_dev);
++		device_unregister(&chan->dev);
+ 		dma_chan_release(chan);
+ 	}
+ 
+Index: linux-2.6.18/include/linux/dmaengine.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/dmaengine.h
++++ linux-2.6.18/include/linux/dmaengine.h
+@@ -141,7 +141,7 @@ struct dma_chan {
+ 
+ 	/* sysfs */
+ 	int chan_id;
+-	struct class_device class_dev;
++	struct device dev;
+ 
+ 	struct kref refcount;
+ 	int slow_ref;
+@@ -151,6 +151,7 @@ struct dma_chan {
+ 	struct dma_chan_percpu *local;
+ };
+ 
++#define to_dma_chan(p) container_of(p, struct dma_chan, dev)
+ 
+ void dma_chan_cleanup(struct kref *kref);
+ 
+Index: linux-2.6.18/mvl_patches/pro50-2026.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2026.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2026);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

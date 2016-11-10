@@ -1,0 +1,541 @@
+#! /usr/bin/env bash
+# Patch: -zd1211rw_cleanups
+# Date: Thu Feb 19 15:07:59 2009
+# MR: 29923
+# From 7cb342ff9069d5390c3d76310a542417af471aaa Mon Sep 17 00:00:00 2001
+# From: Ulrich Kunitz <kune@deine-taler.de>
+# Date: Wed, 22 Nov 2006 00:05:53 +0000
+# Subject: [PATCH] [PATCH] zd1211rw: cleanups
+# 
+# Bit-field constants in zd_chip.h are now defined using a shift expression.
+# The value 0x08 is now (1 << 3). The fix is intended to improve readability.
+# 
+# Remove misleading comment in zd_mac.c: The function already returns -EPERM
+# in managed mode (IW_MODE_INFRA).
+# 
+# Remove unused code in zd_mac.c: The unused code intended for debugging
+# rx_status values is no longer useful.
+# 
+# Added dump_stack() to ZD_ASSERT macro: Output of the stack helps to debug
+# assertions. Keep in mind that the ZD_ASSERT() macro only results in code,
+# if DEBUG is defined.
+# 
+# Improved comments for filter_rx()
+# 
+# zd_usb.c: Added driver name to module init and exit functions
+# 
+# Signed-off-by: Ulrich Kunitz <kune@deine-taler.de>
+# Signed-off-by: Daniel Drake <dsd@gentoo.org>
+# Signed-off-by: John W. Linville <linville@tuxdriver.com>
+# (cherry picked from commit 741fec53f268b691b869ffc70023319406e0cc97)
+# 
+
+PATCHNUM=2206
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From 7cb342ff9069d5390c3d76310a542417af471aaa Mon Sep 17 00:00:00 2001
+From: Ulrich Kunitz <kune@deine-taler.de>
+Date: Wed, 22 Nov 2006 00:05:53 +0000
+Subject: [PATCH] [PATCH] zd1211rw: cleanups
+
+Bit-field constants in zd_chip.h are now defined using a shift expression.
+The value 0x08 is now (1 << 3). The fix is intended to improve readability.
+
+Remove misleading comment in zd_mac.c: The function already returns -EPERM
+in managed mode (IW_MODE_INFRA).
+
+Remove unused code in zd_mac.c: The unused code intended for debugging
+rx_status values is no longer useful.
+
+Added dump_stack() to ZD_ASSERT macro: Output of the stack helps to debug
+assertions. Keep in mind that the ZD_ASSERT() macro only results in code,
+if DEBUG is defined.
+
+Improved comments for filter_rx()
+
+zd_usb.c: Added driver name to module init and exit functions
+
+Signed-off-by: Ulrich Kunitz <kune@deine-taler.de>
+Signed-off-by: Daniel Drake <dsd@gentoo.org>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+(cherry picked from commit 741fec53f268b691b869ffc70023319406e0cc97)
+
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_chip.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+@@ -337,24 +337,24 @@
+ #define CR_MAC_PS_STATE			CTL_REG(0x050C)
+ 
+ #define CR_INTERRUPT			CTL_REG(0x0510)
+-#define INT_TX_COMPLETE			0x00000001
+-#define INT_RX_COMPLETE			0x00000002
+-#define INT_RETRY_FAIL			0x00000004
+-#define INT_WAKEUP			0x00000008
+-#define INT_DTIM_NOTIFY			0x00000020
+-#define INT_CFG_NEXT_BCN		0x00000040
+-#define INT_BUS_ABORT			0x00000080
+-#define INT_TX_FIFO_READY		0x00000100
+-#define INT_UART			0x00000200
+-#define INT_TX_COMPLETE_EN		0x00010000
+-#define INT_RX_COMPLETE_EN		0x00020000
+-#define INT_RETRY_FAIL_EN		0x00040000
+-#define INT_WAKEUP_EN			0x00080000
+-#define INT_DTIM_NOTIFY_EN		0x00200000
+-#define INT_CFG_NEXT_BCN_EN		0x00400000
+-#define INT_BUS_ABORT_EN		0x00800000
+-#define INT_TX_FIFO_READY_EN		0x01000000
+-#define INT_UART_EN			0x02000000
++#define INT_TX_COMPLETE			(1 <<  0)
++#define INT_RX_COMPLETE			(1 <<  1)
++#define INT_RETRY_FAIL			(1 <<  2)
++#define INT_WAKEUP			(1 <<  3)
++#define INT_DTIM_NOTIFY			(1 <<  5)
++#define INT_CFG_NEXT_BCN		(1 <<  6)
++#define INT_BUS_ABORT			(1 <<  7)
++#define INT_TX_FIFO_READY		(1 <<  8)
++#define INT_UART			(1 <<  9)
++#define INT_TX_COMPLETE_EN		(1 << 16)
++#define INT_RX_COMPLETE_EN		(1 << 17)
++#define INT_RETRY_FAIL_EN		(1 << 18)
++#define INT_WAKEUP_EN			(1 << 19)
++#define INT_DTIM_NOTIFY_EN		(1 << 21)
++#define INT_CFG_NEXT_BCN_EN		(1 << 22)
++#define INT_BUS_ABORT_EN		(1 << 23)
++#define INT_TX_FIFO_READY_EN		(1 << 24)
++#define INT_UART_EN			(1 << 25)
+ 
+ #define CR_TSF_LOW_PART			CTL_REG(0x0514)
+ #define CR_TSF_HIGH_PART		CTL_REG(0x0518)
+@@ -398,18 +398,18 @@
+  * device will use a rate in this table that is less than or equal to the rate
+  * of the incoming frame which prompted the response */
+ #define CR_BASIC_RATE_TBL		CTL_REG(0x0630)
+-#define CR_RATE_1M	0x0001	/* 802.11b */
+-#define CR_RATE_2M	0x0002	/* 802.11b */
+-#define CR_RATE_5_5M	0x0004	/* 802.11b */
+-#define CR_RATE_11M	0x0008	/* 802.11b */
+-#define CR_RATE_6M      0x0100	/* 802.11g */
+-#define CR_RATE_9M      0x0200	/* 802.11g */
+-#define CR_RATE_12M	0x0400	/* 802.11g */
+-#define CR_RATE_18M	0x0800	/* 802.11g */
+-#define CR_RATE_24M     0x1000	/* 802.11g */
+-#define CR_RATE_36M     0x2000	/* 802.11g */
+-#define CR_RATE_48M     0x4000	/* 802.11g */
+-#define CR_RATE_54M     0x8000	/* 802.11g */
++#define CR_RATE_1M	(1 <<  0)	/* 802.11b */
++#define CR_RATE_2M	(1 <<  1)	/* 802.11b */
++#define CR_RATE_5_5M	(1 <<  2)	/* 802.11b */
++#define CR_RATE_11M	(1 <<  3)	/* 802.11b */
++#define CR_RATE_6M      (1 <<  8)	/* 802.11g */
++#define CR_RATE_9M      (1 <<  9)	/* 802.11g */
++#define CR_RATE_12M	(1 << 10)	/* 802.11g */
++#define CR_RATE_18M	(1 << 11)	/* 802.11g */
++#define CR_RATE_24M     (1 << 12)	/* 802.11g */
++#define CR_RATE_36M     (1 << 13)	/* 802.11g */
++#define CR_RATE_48M     (1 << 14)	/* 802.11g */
++#define CR_RATE_54M     (1 << 15)	/* 802.11g */
+ #define CR_RATES_80211G	0xff00
+ #define CR_RATES_80211B	0x000f
+ 
+@@ -426,9 +426,9 @@
+ /* register for controlling the LEDS */
+ #define CR_LED				CTL_REG(0x0644)
+ /* masks for controlling LEDs */
+-#define LED1				0x0100
+-#define LED2				0x0200
+-#define LED_SW				0x0400
++#define LED1				(1 <<  8)
++#define LED2				(1 <<  9)
++#define LED_SW				(1 << 10)
+ 
+ /* Seems to indicate that the configuration is over.
+  */
+@@ -455,18 +455,18 @@
+  * registers, so one could argue it is a LOCK bit. But calling it
+  * LOCK_PHY_REGS makes it confusing.
+  */
+-#define UNLOCK_PHY_REGS			0x0080
++#define UNLOCK_PHY_REGS			(1 << 7)
+ 
+ #define CR_DEVICE_STATE			CTL_REG(0x0684)
+ #define CR_UNDERRUN_CNT			CTL_REG(0x0688)
+ 
+ #define CR_RX_FILTER			CTL_REG(0x068c)
+-#define RX_FILTER_ASSOC_RESPONSE	0x0002
+-#define RX_FILTER_REASSOC_RESPONSE	0x0008
+-#define RX_FILTER_PROBE_RESPONSE	0x0020
+-#define RX_FILTER_BEACON		0x0100
+-#define RX_FILTER_DISASSOC		0x0400
+-#define RX_FILTER_AUTH			0x0800
++#define RX_FILTER_ASSOC_RESPONSE	(1 <<  1)
++#define RX_FILTER_REASSOC_RESPONSE	(1 <<  3)
++#define RX_FILTER_PROBE_RESPONSE	(1 <<  5)
++#define RX_FILTER_BEACON		(1 <<  8)
++#define RX_FILTER_DISASSOC		(1 << 10)
++#define RX_FILTER_AUTH			(1 << 11)
+ #define AP_RX_FILTER			0x0400feff
+ #define STA_RX_FILTER			0x0000ffff
+ 
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_def.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_def.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_def.h
+@@ -39,6 +39,7 @@ do { \
+ 	if (!(x)) { \
+ 		pr_debug("%s:%d ASSERT %s VIOLATED!\n", \
+ 			__FILE__, __LINE__, __stringify(x)); \
++		dump_stack(); \
+ 	} \
+ } while (0)
+ #else
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+@@ -295,7 +295,6 @@ static void set_channel(struct net_devic
+ 	zd_chip_set_channel(&mac->chip, channel);
+ }
+ 
+-/* TODO: Should not work in Managed mode. */
+ int zd_mac_request_channel(struct zd_mac *mac, u8 channel)
+ {
+ 	unsigned long lock_flags;
+@@ -773,9 +772,11 @@ static int is_data_packet_for_us(struct 
+ 	       (netdev->flags & IFF_PROMISC);
+ }
+ 
+-/* Filters receiving packets. If it returns 1 send it to ieee80211_rx, if 0
+- * return. If an error is detected -EINVAL is returned. ieee80211_rx_mgt() is
+- * called here.
++/* Filters received packets. The function returns 1 if the packet should be
++ * forwarded to ieee80211_rx(). If the packet should be ignored the function
++ * returns 0. If an invalid packet is found the function returns -EINVAL.
++ *
++ * The function calls ieee80211_rx_mgt() directly.
+  *
+  * It has been based on ieee80211_rx_any.
+  */
+@@ -801,9 +802,9 @@ static int filter_rx(struct ieee80211_de
+ 		ieee80211_rx_mgt(ieee, hdr, stats);
+ 		return 0;
+ 	case IEEE80211_FTYPE_CTL:
+-		/* Ignore invalid short buffers */
+ 		return 0;
+ 	case IEEE80211_FTYPE_DATA:
++		/* Ignore invalid short buffers */
+ 		if (length < sizeof(struct ieee80211_hdr_3addr))
+ 			return -EINVAL;
+ 		return is_data_packet_for_us(ieee, hdr);
+@@ -1019,66 +1020,6 @@ struct iw_statistics *zd_mac_get_wireles
+ 	return iw_stats;
+ }
+ 
+-#ifdef DEBUG
+-static const char* decryption_types[] = {
+-	[ZD_RX_NO_WEP] = "none",
+-	[ZD_RX_WEP64] = "WEP64",
+-	[ZD_RX_TKIP] = "TKIP",
+-	[ZD_RX_AES] = "AES",
+-	[ZD_RX_WEP128] = "WEP128",
+-	[ZD_RX_WEP256] = "WEP256",
+-};
+-
+-static const char *decryption_type_string(u8 type)
+-{
+-	const char *s;
+-
+-	if (type < ARRAY_SIZE(decryption_types)) {
+-		s = decryption_types[type];
+-	} else {
+-		s = NULL;
+-	}
+-	return s ? s : "unknown";
+-}
+-
+-static int is_ofdm(u8 frame_status)
+-{
+-	return (frame_status & ZD_RX_OFDM);
+-}
+-
+-void zd_dump_rx_status(const struct rx_status *status)
+-{
+-	const char* modulation;
+-	u8 quality;
+-
+-	if (is_ofdm(status->frame_status)) {
+-		modulation = "ofdm";
+-		quality = status->signal_quality_ofdm;
+-	} else {
+-		modulation = "cck";
+-		quality = status->signal_quality_cck;
+-	}
+-	pr_debug("rx status %s strength %#04x qual %#04x decryption %s\n",
+-		modulation, status->signal_strength, quality,
+-		decryption_type_string(status->decryption_type));
+-	if (status->frame_status & ZD_RX_ERROR) {
+-		pr_debug("rx error %s%s%s%s%s%s\n",
+-			(status->frame_status & ZD_RX_TIMEOUT_ERROR) ?
+-				"timeout " : "",
+-			(status->frame_status & ZD_RX_FIFO_OVERRUN_ERROR) ?
+-				"fifo " : "",
+-			(status->frame_status & ZD_RX_DECRYPTION_ERROR) ?
+-				"decryption " : "",
+-			(status->frame_status & ZD_RX_CRC32_ERROR) ?
+-				"crc32 " : "",
+-			(status->frame_status & ZD_RX_NO_ADDR1_MATCH_ERROR) ?
+-				"addr1 " : "",
+-			(status->frame_status & ZD_RX_CRC16_ERROR) ?
+-				"crc16" : "");
+-	}
+-}
+-#endif /* DEBUG */
+-
+ #define LINK_LED_WORK_DELAY HZ
+ 
+ static void link_led_handler(void *p)
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_usb.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_usb.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_usb.c
+@@ -1116,27 +1116,28 @@ static int __init usb_init(void)
+ {
+ 	int r;
+ 
+-	pr_debug("usb_init()\n");
++	pr_debug("%s usb_init()\n", driver.name);
+ 
+ 	zd_workqueue = create_singlethread_workqueue(driver.name);
+ 	if (zd_workqueue == NULL) {
+-		printk(KERN_ERR "%s: couldn't create workqueue\n", driver.name);
++		printk(KERN_ERR "%s couldn't create workqueue\n", driver.name);
+ 		return -ENOMEM;
+ 	}
+ 
+ 	r = usb_register(&driver);
+ 	if (r) {
+-		printk(KERN_ERR "usb_register() failed. Error number %d\n", r);
++		printk(KERN_ERR "%s usb_register() failed. Error number %d\n",
++		       driver.name, r);
+ 		return r;
+ 	}
+ 
+-	pr_debug("zd1211rw initialized\n");
++	pr_debug("%s initialized\n", driver.name);
+ 	return 0;
+ }
+ 
+ static void __exit usb_exit(void)
+ {
+-	pr_debug("usb_exit()\n");
++	pr_debug("%s usb_exit()\n", driver.name);
+ 	usb_deregister(&driver);
+ 	destroy_workqueue(zd_workqueue);
+ }
+Index: linux-2.6.18/mvl_patches/pro50-2206.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2206.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2206);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

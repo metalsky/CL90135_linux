@@ -1,0 +1,575 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_musb_host_make_bulk_ep_reservation_optional
+# Date: Thu Feb 19 14:58:04 2009
+# Source: MontaVista
+# MR: 29374
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Yadviga Grigorieva <yadviga@ru.mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Make the bulk endpoint reservation selectable via the .config option for the
+# MUSBMHDRC host driver.
+# 
+#  drivers/usb/musb/Kconfig       |   11 +++++++++
+#  drivers/usb/musb/musb_core.c   |   46 +++++++++++++++++++----------------------
+#  drivers/usb/musb/musb_core.h   |    2 +
+#  drivers/usb/musb/musb_host.c   |   41 +++++++++++++++++++++++-------------
+#  drivers/usb/musb/musb_host.h   |    6 ++++-
+#  drivers/usb/musb/musb_procfs.c |    9 +++++++-
+#  6 files changed, 74 insertions(+), 41 deletions(-)
+# 
+
+PATCHNUM=2065
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista
+MR: 29374
+Type: Enhancement
+Disposition: local
+Signed-off-by: Yadviga Grigorieva <yadviga@ru.mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Make the bulk endpoint reservation selectable via the .config option for the
+MUSBMHDRC host driver.
+
+ drivers/usb/musb/Kconfig       |   11 +++++++++
+ drivers/usb/musb/musb_core.c   |   46 +++++++++++++++++++----------------------
+ drivers/usb/musb/musb_core.h   |    2 +
+ drivers/usb/musb/musb_host.c   |   41 +++++++++++++++++++++++-------------
+ drivers/usb/musb/musb_host.h   |    6 ++++-
+ drivers/usb/musb/musb_procfs.c |    9 +++++++-
+ mvl_patches/pro50-2065.c       |   16 ++++++++++++++
+ 7 files changed, 90 insertions(+), 41 deletions(-)
+
+Index: linux-2.6.18/drivers/usb/musb/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/Kconfig
++++ linux-2.6.18/drivers/usb/musb/Kconfig
+@@ -141,6 +141,17 @@ config MUSB_PIO_ONLY
+ 	  you can still disable it at run time using the "use_dma=n" module
+ 	  parameter.
+ 
++config	MUSB_RESERVE_BULK_EP
++	bool "Reserve Bulk Endpoint"
++	depends on USB_MUSB_HDRC_HCD
++	default y
++	help
++	  Say Y if your system needs to handle at the least 1 device needing
++	  the bulk transfers, such as USB hard disk, flash, dongle, etc.  If
++	  you select Y then an endpoint is reserved for handling bulk devices
++	  and will not be available for handling other types of traffic such
++	  as ISO/interrupt.
++
+ config	MUSB_RESERVE_ISO_EP
+ 	bool "Reserve ISO Endpoint"
+ 	depends on USB_MUSB_HDRC_HCD
+Index: linux-2.6.18/drivers/usb/musb/musb_core.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.c
++++ linux-2.6.18/drivers/usb/musb/musb_core.c
+@@ -1124,19 +1124,19 @@ fifo_setup(struct musb *musb, struct mus
+ 	/* configure the FIFO */
+ 	musb_writeb(mbase, MUSB_INDEX, hw_ep->epnum);
+ 
+-#ifdef CONFIG_USB_MUSB_HDRC_HCD
+-	/* EP0 reserved endpoint for control, bidirectional;
+-	 * EP1 reserved for bulk, two unidirection halves.
+-	 */
+-	if (hw_ep->epnum == 1)
+-		musb->bulk_ep = hw_ep;
++	/* EP0 reserved endpoint for control, bidirectional. */
++	/* REVISIT: error check -- be sure EP0 can both RX and TX... */
+ 
+-#ifdef CONFIG_MUSB_RESERVE_ISO_EP
++#ifdef	CONFIG_MUSB_RESERVE_BULK_EP
++	/* EP1 reserved for bulk, two unidirection halves. */
++	if (hw_ep->epnum == BULK_EP)
++		musb->bulk_ep = hw_ep;
++#endif
++#ifdef	CONFIG_MUSB_RESERVE_ISO_EP
+ 	if (hw_ep->epnum == ISO_EP)
+ 		musb->iso_ep = hw_ep;
+ #endif
+-	/* REVISIT error check:  be sure ep0 can both rx and tx ... */
+-#endif
++
+ 	switch (cfg->style) {
+ 	case FIFO_TX:
+ 		musb_writeb(mbase, MUSB_TXFIFOSZ, c_size);
+@@ -1244,13 +1244,6 @@ static int __init ep_config_from_table(s
+ 			n + 1, MUSB_C_NUM_EPS * 2 - 1,
+ 			offset, DYN_FIFO_SIZE);
+ 
+-#ifdef CONFIG_USB_MUSB_HDRC_HCD
+-	if (!musb->bulk_ep) {
+-		pr_debug("%s: missing bulk\n", musb_driver_name);
+-		return -EINVAL;
+-	}
+-#endif
+-
+ 	return 0;
+ }
+ 
+@@ -1302,13 +1295,16 @@ static int __init ep_config_from_hw(stru
+ 				|| hw_ep->max_packet_sz_rx < 512)
+ 			continue;
+ 
+-		/* REVISIT:  this algorithm is lazy, we should at least
++		/*
++		 * REVISIT: this algorithm is lazy -- we should at least
+ 		 * try to pick a double buffered endpoint.
+ 		 */
++#ifdef CONFIG_MUSB_RESERVE_BULK_EP
+ 		if (musb->bulk_ep == NULL) {
+ 			musb->bulk_ep = hw_ep;
+ 			continue;
+ 		}
++#endif
+ #ifdef CONFIG_MUSB_RESERVE_ISO_EP
+ 		if (musb->iso_ep == NULL)
+ 			musb->iso_ep = hw_ep;
+@@ -1316,13 +1312,6 @@ static int __init ep_config_from_hw(stru
+ #endif
+ 	}
+ 
+-#ifdef CONFIG_USB_MUSB_HDRC_HCD
+-	if (!musb->bulk_ep) {
+-		pr_debug("%s: missing bulk\n", musb_driver_name);
+-		return -EINVAL;
+-	}
+-#endif
+-
+ 	return 0;
+ }
+ 
+@@ -1492,6 +1481,13 @@ static int __init musb_core_init(u16 mus
+ 			DBG(1, "hw_ep %d not configured\n", i);
+ 	}
+ 
++#ifdef	CONFIG_MUSB_RESERVE_BULK_EP
++	if (musb->bulk_ep == NULL) {
++		pr_err("%s: couldn't reserve bulk EP\n", musb_driver_name);
++		return -ENOSPC;
++	}
++#endif
++
+ 	return 0;
+ }
+ 
+@@ -1808,8 +1804,10 @@ allocate_instance(struct device *dev, vo
+ 
+ 	musb = hcd_to_musb(hcd);
+ 	INIT_LIST_HEAD(&musb->control);
++#ifdef	CONFIG_MUSB_RESERVE_BULK_EP
+ 	INIT_LIST_HEAD(&musb->in_bulk);
+ 	INIT_LIST_HEAD(&musb->out_bulk);
++#endif
+ 
+ 	hcd->uses_new_polling = 1;
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_core.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.h
++++ linux-2.6.18/drivers/usb/musb/musb_core.h
+@@ -342,9 +342,11 @@ struct musb {
+ 	struct musb_hw_ep	*iso_ep;
+ 
+ 	struct list_head	control;	/* of musb_qh */
++#ifdef	CONFIG_MUSB_RESERVE_BULK_EP
+ 	struct list_head	in_bulk;	/* of musb_qh */
+ 	struct list_head	out_bulk;	/* of musb_qh */
+ #endif
++#endif
+ 
+ 	/* called with IRQs blocked; ON/nonzero implies starting a session,
+ 	 * and waiting at least a_wait_vrise_tmout.
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -412,13 +412,17 @@ static void musb_advance_schedule(struct
+ 			 * de-allocated if it's tracked and allocated;
+ 			 * and where we'd update the schedule tree...
+ 			 */
++no_sched:
+ 			kfree(qh);
+ 			qh = NULL;
+ 			break;
+-
+-		case USB_ENDPOINT_XFER_CONTROL:
+ 		case USB_ENDPOINT_XFER_BULK:
+-			/* fifo policy for these lists, except that NAKing
++			if (musb->bulk_ep == NULL)
++				goto no_sched;
++			/* FALLTHROUGH */
++		case USB_ENDPOINT_XFER_CONTROL:
++			/*
++			 * FIFO policy for these lists, except that NAKing
+ 			 * should rotate a qh to the end (for fairness).
+ 			 */
+ 			head = qh->ring.prev;
+@@ -436,6 +440,7 @@ static void musb_advance_schedule(struct
+ 	}
+ }
+ 
++#ifdef CONFIG_MUSB_RESERVE_BULK_EP
+ static int use_bulk_timeout = 1;
+ 
+ module_param(use_bulk_timeout, bool, 0);
+@@ -468,6 +473,7 @@ static void musb_bulk_in_timeout(struct 
+ 	hw_ep->rx_reinit = 1;
+ 	musb_start_urb(musb, 1, hqh);
+ }
++#endif	/* CONFIG_MUSB_RESERVE_BULK_EP */
+ 
+ static inline u16 musb_h_flush_rxfifo(struct musb_hw_ep *hw_ep, u16 csr)
+ {
+@@ -1484,12 +1490,16 @@ void musb_host_rx(struct musb *musb, u8 
+ 			 * a candidate... NAKing is *NOT* an error.
+ 			 */
+ 			DBG(6, "RX end %d NAK timeout\n", epnum);
+-			if (use_bulk_timeout && qh->ring.next != &musb->in_bulk)
++#ifdef CONFIG_MUSB_RESERVE_BULK_EP
++			if (use_bulk_timeout &&
++			    qh->ring.next != &musb->in_bulk) {
+ 				musb_bulk_in_timeout(musb, hw_ep);
+-			else
+-				/* Allow the endpoint to continue */
+-				musb_writew(epio, MUSB_RXCSR,
+-					    rx_csr & ~MUSB_RXCSR_DATAERROR);
++				return;
++			}
++#endif
++			/* Allow the endpoint to continue */
++			musb_writew(epio, MUSB_RXCSR,
++				    rx_csr & ~MUSB_RXCSR_DATAERROR);
+ 			return;
+ 		case USB_ENDPOINT_XFER_ISOC:
+ 			DBG(4, "RX end %d ISO data error\n", epnum);
+@@ -1721,19 +1731,18 @@ static int musb_schedule(
+ 	struct musb_hw_ep	*hw_ep = NULL;
+ 	struct list_head	*head = NULL;
+ 
+-	/* use fixed hardware for control and bulk */
++	/* Use fixed hardware for control and (optionally) bulk transfers. */
+ 	switch (qh->type) {
+ 	case USB_ENDPOINT_XFER_CONTROL:
+ 		head = &musb->control;
+ 		hw_ep = musb->control_ep;
+ 		break;
++#ifdef CONFIG_MUSB_RESERVE_BULK_EP
+ 	case USB_ENDPOINT_XFER_BULK:
+ 		hw_ep = musb->bulk_ep;
+-		if (is_in)
+-			head = &musb->in_bulk;
+-		else
+-			head = &musb->out_bulk;
++		head = is_in ? &musb->in_bulk : &musb->out_bulk;
+ 		break;
++#endif
+ 	case USB_ENDPOINT_XFER_ISOC:
+ 		hw_ep = musb->iso_ep;
+ 		if (hw_ep) {
+@@ -1761,7 +1770,7 @@ static int musb_schedule(
+ 		goto success;
+ 	}
+ 
+-	/* else, periodic transfers get muxed to other endpoints */
++	/* Else, periodic and bulk transfers get muxed to other endpoints. */
+ 
+ 	/*
+ 	 * We know this qh hasn't been scheduled, so all we need to do
+@@ -1798,7 +1807,7 @@ static int musb_schedule(
+ 	hw_ep = musb->endpoints + best_end;
+ periodic:
+ 	idle = 1;
+-	DBG(4, "qh %p periodic slot %d\n", qh, hw_ep->epnum);
++	DBG(4, "qh %p using ep%d\n", qh, hw_ep->epnum);
+ success:
+ 	qh->hw_ep = hw_ep;
+ 	qh->hep->hcpriv = qh;
+@@ -1896,6 +1905,7 @@ static int musb_urb_enqueue(
+ 		/* iso always uses log encoding */
+ 		break;
+ 	case USB_ENDPOINT_XFER_BULK:
++#ifdef CONFIG_MUSB_RESERVE_BULK_EP
+ 		if (use_bulk_timeout && usb_pipein(urb->pipe)) {
+ 			/*
+ 			 * We actually want to use NAK limits, hinting to the
+@@ -1911,6 +1921,7 @@ static int musb_urb_enqueue(
+ 			 */
+ 			break;
+ 		}
++#endif
+ 		/*
+ 		 * The downside of disabling it is that transfer scheduling
+ 		 * gets VERY unfair for nonperiodic transfers; a misbehaving
+Index: linux-2.6.18/drivers/usb/musb/musb_host.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.h
++++ linux-2.6.18/drivers/usb/musb/musb_host.h
+@@ -35,7 +35,11 @@
+ #ifndef _MUSB_HOST_H
+ #define _MUSB_HOST_H
+ 
+-#ifdef CONFIG_MUSB_RESERVE_ISO_EP
++#ifdef	CONFIG_MUSB_RESERVE_BULK_EP
++#define BULK_EP 		1
++#endif
++
++#ifdef	CONFIG_MUSB_RESERVE_ISO_EP
+ #define ISO_EP			2
+ #endif
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_procfs.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_procfs.c
++++ linux-2.6.18/drivers/usb/musb/musb_procfs.c
+@@ -229,9 +229,11 @@ dump_end_info(struct musb *musb, u8 epnu
+ 				 */
+ 				dump_tx = !list_empty(&musb->control);
+ 				dump_rx = 0;
++#ifdef CONFIG_MUSB_RESERVE_BULK_EP
+ 			} else if (hw_ep == musb->bulk_ep) {
+ 				dump_tx = !list_empty(&musb->out_bulk);
+ 				dump_rx = !list_empty(&musb->in_bulk);
++#endif
+ 			} else if (hw_ep->in_qh != NULL) {
+ 				struct usb_host_endpoint	*hep;
+ 
+@@ -313,11 +315,14 @@ dump_end_info(struct musb *musb, u8 epnu
+ 					max -= code;
+ 				}
+ 
++#ifdef CONFIG_MUSB_RESERVE_BULK_EP
+ 				if (hw_ep == musb->bulk_ep &&
+ 				    !list_empty(&musb->in_bulk)) {
+ 					code = dump_queue(&musb->in_bulk, buf,
+ 							  max);
+-				} else if (hw_ep->in_qh != NULL) {
++				} else
++#endif
++				if (hw_ep->in_qh != NULL) {
+ 					code = dump_qh(hw_ep->in_qh,  buf, max);
+ 				} else
+ 					goto dumped_rx;
+@@ -392,10 +397,12 @@ dumped_rx:
+ 				    !list_empty(&musb->control)) {
+ 					code = dump_queue(&musb->control,  buf,
+ 							  max);
++#ifdef CONFIG_MUSB_RESERVE_BULK_EP
+ 				} else if (hw_ep == musb->bulk_ep &&
+ 					   !list_empty(&musb->out_bulk)) {
+ 					code = dump_queue(&musb->out_bulk, buf,
+ 							  max);
++#endif
+ 				} else if (hw_ep->out_qh != NULL) {
+ 					code = dump_qh(hw_ep->out_qh, buf, max);
+ 				} else if (hw_ep->in_qh  != NULL) {
+Index: linux-2.6.18/mvl_patches/pro50-2065.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2065.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2065);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

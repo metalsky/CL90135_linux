@@ -1,0 +1,1905 @@
+#! /usr/bin/env bash
+# Patch: -pro_emac_use_mii_core
+# Date: Thu Feb 19 15:02:55 2009
+# Source: MontaVista Software, Inc.
+# MR: 28780
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+# Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Use Linux PHY core.
+# 
+#  arch/arm/mach-davinci/devices.c |    2 
+#  drivers/net/Kconfig             |    1 
+#  drivers/net/Makefile            |    3 
+#  drivers/net/davinci_emac.c      |  444 ++++++++++++--------
+#  drivers/net/davinci_emac_phy.c  |  881 ----------------------------------------
+#  include/linux/davinci_emac.h    |    8 
+#  6 files changed, 275 insertions(+), 1064 deletions(-)
+# 
+
+PATCHNUM=2133
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28780
+Type: Enhancement
+Disposition: local
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Use Linux PHY core.
+
+ arch/arm/mach-davinci/devices.c |    2 
+ drivers/net/Kconfig             |    1 
+ drivers/net/Makefile            |    3 
+ drivers/net/davinci_emac.c      |  444 ++++++++++++--------
+ drivers/net/davinci_emac_phy.c  |  881 ----------------------------------------
+ include/linux/davinci_emac.h    |    8 
+ mvl_patches/pro50-2133.c        |   16 
+ 7 files changed, 291 insertions(+), 1064 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/devices.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/devices.c
++++ linux-2.6.18/arch/arm/mach-davinci/devices.c
+@@ -215,7 +215,6 @@ static struct emac_init_config dm646x_em
+ 	.mdio_reset_line = 0,
+ 	.mdio_bus_frequency = 148500000,
+ 	.mdio_clock_frequency = 2200000,
+-	.phy_mask = 3,
+ };
+ 
+ static struct emac_init_config dm644x_emac_data = {
+@@ -224,7 +223,6 @@ static struct emac_init_config dm644x_em
+ 	.mdio_reset_line = 0,
+ 	.mdio_bus_frequency = 76500000,
+ 	.mdio_clock_frequency = 2200000,
+-	.phy_mask = 2,
+ };
+ 
+ static struct platform_device emac_device = {
+Index: linux-2.6.18/drivers/net/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/net/Kconfig
++++ linux-2.6.18/drivers/net/Kconfig
+@@ -823,6 +823,7 @@ config ULTRA32
+ config TI_DAVINCI_EMAC
+ 	tristate "TI DaVinci EMAC Support"
+ 	depends on NETDEVICES && (ARCH_DAVINCI && !ARCH_DAVINCI_DM355)
++	select PHYLIB
+ 	help
+ 	  This driver supports TI's DaVinci Ethernet .
+ 
+Index: linux-2.6.18/drivers/net/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/net/Makefile
++++ linux-2.6.18/drivers/net/Makefile
+@@ -224,5 +224,4 @@ obj-$(CONFIG_KGDBOE) += kgdboe.o
+ 
+ obj-$(CONFIG_FS_ENET) += fs_enet/
+ 
+-obj-$(CONFIG_TI_DAVINCI_EMAC) += davinci_emac_driver.o
+-davinci_emac_driver-objs := davinci_emac.o davinci_emac_phy.o
++obj-$(CONFIG_TI_DAVINCI_EMAC) += davinci_emac.o
+Index: linux-2.6.18/drivers/net/davinci_emac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac.c
++++ linux-2.6.18/drivers/net/davinci_emac.c
+@@ -73,6 +73,7 @@
+ #include <linux/clk.h>
+ #include <linux/platform_device.h>
+ #include <linux/davinci_emac.h>
++#include <linux/phy.h>
+ 
+ #include <asm/irq.h>
+ #include <asm/bitops.h>
+@@ -84,8 +85,6 @@
+ #include <asm/arch/hardware.h>
+ #include <asm/arch/cpu.h>
+ 
+-#include "davinci_emac_phy.h"
+-
+ /* ---------------------------------------------------------------
+  * linux module options
+  * --------------------------------------------------------------- */
+@@ -275,6 +274,7 @@ typedef void *emac_net_data_token;
+ 
+ /* mac control register bit fields */
+ #define EMAC_MACCONTROL_GIG_FORCE_SHIFT        17
++#define EMAC_MACCONTROL_RMIISPEED_SHIFT        15
+ #define EMAC_MACCONTROL_TXSHORTGAPEN_SHIFT     10
+ #define EMAC_MACCONTROL_TXSHORTGAPEN_MASK      (0x1 << 10)
+ #define EMAC_MACCONTROL_TXPTYPE_SHIFT          9
+@@ -425,6 +425,24 @@ typedef void *emac_net_data_token;
+ #define SNWAY_AUTOALL ((cpu_is_davinci_dm6467()) ? DM646X_SNWAY_AUTOALL : \
+ 			DM644X_SNWAY_AUTOALL)
+ 
++/* phy mode values  */
++#define NWAY_AUTOMDIX       (1<<16)
++#define NWAY_FD1000         (1<<13)
++#define NWAY_HD1000         (1<<12)
++#define NWAY_NOPHY          (1<<10)
++#define NWAY_LPBK           (1<<9)
++#define NWAY_FD100          (1<<8)
++#define NWAY_HD100          (1<<7)
++#define NWAY_FD10           (1<<6)
++#define NWAY_HD10           (1<<5)
++#define NWAY_AUTO           (1<<0)
++
++/* phy duplex values */
++#define	PHY_DUPLEX_AUTO		0	/* Auto Negotiate */
++#define	PHY_DUPLEX_UNKNOWN	1	/* Unknown */
++#define	PHY_DUPLEX_HALF		2	/* Half Duplex */
++#define	PHY_DUPLEX_FULL		3	/* Full Duplex */
++
+ /**
+  *  Status Ioctl - Error status
+  *
+@@ -589,6 +607,36 @@ char emac_4byte_align[] = { 0x0, 0x03, 0
+ 
+ #define CFG_START_LINK_SPEED                   (SNWAY_AUTOALL)	/* auto nego */
+ 
++/*
++ * MDIO registers
++ */
++
++#define MDIO_VERSION          0x00 /* MDIO Version Register */
++#define MDIO_CONTROL          0x04 /* MDIO Control Register */
++#define MDIO_ALIVE            0x08 /* PHY Alive Status register */
++#define MDIO_LINK             0x0c /* PHY Link Status Register */
++#define MDIO_LINKINTRAW       0x10 /* Status Change Interrupt (Unmasked) */
++#define MDIO_LINKINTMASKED    0x14 /* Status Change Interrupt (Masked) */
++#define MDIO_USERINTRAW       0x20 /* Command Complete Interrupt (Unmasked) */
++#define MDIO_USERINTMASKED    0x24 /* Command Complete Interrupt (Masked) */
++#define MDIO_USERINTMASKSET   0x28 /* Command Complete Interrupt Mask Set */
++#define MDIO_USERINTMASKCLEAR 0x2c /* Command Complete Interrupt Mask Clear */
++#define MDIO_USERACCESS0      0x80 /* Access Register 0 */
++#define MDIO_USERPHYSEL0      0x84 /* PHY Select Register 0 */
++#define MDIO_USERACCESS1      0x88 /* Access Register 1 */
++#define MDIO_USERPHYSEL1      0x8c /* PHY Select Register 1 */
++
++#define MDIO_CONTROL_CLKDIV    (0xffff)
++#define MDIO_CONTROL_ENABLE    (1 << 30)
++
++#define MDIO_USERACCESS_GO     (1 << 31)
++#define MDIO_USERACCESS_WRITE  (1 << 30)
++#define MDIO_USERACCESS_READ   (0 << 30)
++#define MDIO_USERACCESS_WRITE  (1 << 30)
++#define MDIO_USERACCESS_REGADR (0x1F << 21)
++#define MDIO_USERACCESS_PHYADR (0x1F << 16)
++#define MDIO_USERACCESS_DATA   (0xffff)
++
+ /* ---------------------------------------------------------------
+  * structs, enums
+  * --------------------------------------------------------------- */
+@@ -1234,7 +1282,6 @@ struct emac_dev {
+ 	unsigned int link_speed;
+ 	unsigned int link_mode;
+ 	unsigned long set_to_close;
+-	void *led_handle;
+ 
+ 	/* DDC related parameters */
+ 	emac_status ddc_status;
+@@ -1300,11 +1347,16 @@ struct emac_dev {
+ 	/* EMAC/CPGMAC addressing mechanism */
+ 	u32 rx_addr_type;	/* 0 (EMAC), 1 or 2 (CPGMAC) */
+ 
++	/* resources */
+ 	volatile struct emac_regs *regs;
+ 	volatile union ewrap_regs *ewrap_regs;
+ 	char *ewrap_ram;
+ 	unsigned long ewrap_ram_size;
++
++	/* mii bus */
++	struct mii_bus mdio_bus;
+ 	unsigned long mdio_base_address;
++	struct phy_device *phydev;
+ 
+ 	struct mib2_if_hccounters mib2if_hccounter;
+ 
+@@ -1429,7 +1481,7 @@ static void emac_add_bdto_rx_queue(struc
+ 		emac_net_data_token buf_token);
+ #endif
+ 
+-static int emac_update_phy_status(struct emac_dev *dev);
++static void emac_update_phy_status(struct net_device *netdev);
+ 
+ static int emac_open(struct emac_dev *dev, void *param);
+ 
+@@ -2610,92 +2662,45 @@ static void emac_tx_timeout(struct net_d
+ }
+ 
+ static int
+-emac_netdev_set_ecmd(struct net_device *dev, struct ethtool_cmd *ecmd)
++emac_ethtool_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+ {
+-	int speed_duplex = 0;
+-	unsigned int phy_mode = 0;
++	struct emac_dev *dev = netdev_priv(netdev);
+ 
+-	if (ecmd->autoneg)
+-		phy_mode |= SNWAY_AUTO;
++	if (dev->phydev)
++		return phy_ethtool_gset(dev->phydev, cmd);
+ 
+-	/*             { 10, 100 }   { 0, 1 } */
+-	speed_duplex = ecmd->speed + ecmd->duplex;
+-	switch (speed_duplex) {
+-	case 10:		/* HD10 */
+-		phy_mode |= SNWAY_HD10;
+-		break;
+-	case 11:		/* FD10 */
+-		phy_mode |= SNWAY_FD10;
+-		break;
+-	case 100:		/* HD100 */
+-		phy_mode |= SNWAY_HD100;
+-		break;
+-	case 101:		/* FD100 */
+-		phy_mode |= SNWAY_FD100;
+-		break;
+-	case 1001:		/* FD1000 */
+-		phy_mode |= SNWAY_FD1000;
+-		break;
+-	default:
+-		return -1;
+-	}
+-	emac_mdio_set_phy_mode(phy_mode);
+-	return 0;
++	return -EINVAL;
+ }
+ 
+ static int
+-emac_netdev_get_ecmd(struct net_device *dev, struct ethtool_cmd *ecmd)
+-{
+-	int dplx = emac_mdio_get_duplex();
+-
+-	/* Hard-coded, but should perhaps be retrieved from davinci_emac_phy */
+-	ecmd->supported = emac_mdio_supported_rate();
+-	ecmd->advertising = emac_mdio_autoneg_rate();
+-	ecmd->autoneg = emac_mdio_get_autoneg();
+-	ecmd->speed = emac_mdio_get_speed();
+-	ecmd->transceiver = XCVR_EXTERNAL;
+-	ecmd->port = PORT_MII;
+-	ecmd->phy_address = emac_mdio_get_phy_num();
+-	ecmd->duplex = (dplx == 3) ? DUPLEX_FULL : DUPLEX_HALF;
+-	return 0;
+-}
+-
+-static void emac_get_drvinfo(struct net_device *dev,
+-			     struct ethtool_drvinfo *info)
++emac_ethtool_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+ {
+-	strcpy(info->driver, "davinci_emac");
+-	strcpy(info->version, EMAC_MODULE_VERSION);
+-}
++	struct emac_dev *dev = netdev_priv(netdev);
+ 
+-static int emac_get_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
+-{
+-	int ret;
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
+ 
+-	ret = emac_netdev_get_ecmd(dev, ecmd);
+-	return ret;
+-}
++	if (dev->phydev)
++		return phy_ethtool_sset(dev->phydev, cmd);
+ 
+-static int emac_set_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
+-{
+-	int ret;
+-
+-	ret = emac_netdev_set_ecmd(dev, ecmd);
+-	return ret;
++	return -EINVAL;
+ }
+ 
+-static u32 emac_get_link(struct net_device *dev)
++static void emac_ethtool_get_drvinfo(struct net_device *netdev,
++		struct ethtool_drvinfo *info)
+ {
+-	u32 ret;
+-
+-	ret = emac_mdio_is_linked();
+-	return ret;
++	strcpy(info->driver, emac_version_string);
++	strcpy(info->version, EMAC_MODULE_VERSION);
++	info->fw_version[0] = '\0';
++	strcpy(info->bus_info, emac_version_string);
++	info->regdump_len = 0;
+ }
+ 
+-struct ethtool_ops ethtool_ops = {
+-	.get_drvinfo = emac_get_drvinfo,
+-	.get_settings = emac_get_settings,
+-	.set_settings = emac_set_settings,
+-	.get_link = emac_get_link,
++static struct ethtool_ops emac_ethtool_ops = {
++	.get_settings = emac_ethtool_get_settings,
++	.set_settings = emac_ethtool_set_settings,
++	.get_drvinfo = emac_ethtool_get_drvinfo,
++	.get_link = ethtool_op_get_link,
+ };
+ 
+ /***************************************************************
+@@ -2777,13 +2782,6 @@ static int emac_dev_init(struct net_devi
+ 	dev->ewrap_ram = (char *)IO_ADDRESS(res->start);
+ 	dev->ewrap_ram_size = res->end - res->start + 1;
+ 
+-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "mdio_regs");
+-	if (!res) {
+-		err = -ENODEV;
+-		goto emac_dev_init_exit;
+-	}
+-	dev->mdio_base_address = IO_ADDRESS(res->start);
+-
+ 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+ 	if (!res) {
+ 		err = -ENODEV;
+@@ -2809,7 +2807,7 @@ static int emac_dev_init(struct net_devi
+ 	netdev->tx_timeout = emac_tx_timeout;
+ 	netdev->set_mac_address = emac_dev_set_mac_addr;
+ 	netdev->poll = emac_poll;
+-	SET_ETHTOOL_OPS(netdev, &ethtool_ops);
++	SET_ETHTOOL_OPS(netdev, &emac_ethtool_ops);
+ #ifdef CONFIG_NET_POLL_CONTROLLER
+ 	netdev->poll_controller = emac_poll_controller;
+ #endif
+@@ -2836,6 +2834,32 @@ static int emac_dev_init(struct net_devi
+  *  Device Open/Close functions
+  *****************************************************************************/
+ 
++int davinci_mdio_read(struct mii_bus *bus, int mii_id, int regnum);
++
++static int phy_init(struct emac_dev *dev)
++{
++	char phy_id[BUS_ID_SIZE];
++
++	snprintf(phy_id, BUS_ID_SIZE, PHY_ID_FMT, 1, 1);
++
++	dev->phydev = phy_connect(dev->owner, phy_id,
++		&emac_update_phy_status, 0, PHY_INTERFACE_MODE_MII);
++	if (IS_ERR(dev->phydev))
++		return PTR_ERR(dev->phydev);
++
++	dev->phydev->supported =  PHY_BASIC_FEATURES;
++
++	if (dev->giga_bit_enable)
++		dev->phydev->supported |= SUPPORTED_1000baseT_Full;
++
++	dev->phydev->advertising = dev->phydev->supported;
++
++
++	phy_start(dev->phydev);
++
++	return 0;
++}
++
+ /* open the adapter */
+ static int emac_dev_open(struct net_device *netdev)
+ {
+@@ -2896,7 +2920,11 @@ static int emac_dev_open(struct net_devi
+ 					res->start, res->name);
+ 			goto error;
+                   }
+-          }
++        }
++
++	err = phy_init(dev);
++	if(err)
++		goto error;
+ 
+ 	if (netif_carrier_ok(netdev))
+ 		netif_start_queue(netdev);
+@@ -2933,6 +2961,8 @@ static int emac_dev_close(struct net_dev
+ 	/* inform the upper layers. */
+ 	netif_stop_queue(dev->owner);
+ 
++	phy_disconnect(dev->phydev);
++
+ 	/* prepare to close */
+ 	set_bit(0, &dev->set_to_close);
+ 
+@@ -3223,9 +3253,6 @@ static int emac_ioctl(struct net_device 
+ 	return (0);
+ }
+ 
+-/* PHY related interface below */
+-#include "davinci_emac_phy.h"
+-
+ /************************ HASH SUPPORT FUNCTIONS ************************/
+ 
+ /* get hash value using mechainsm in specs */
+@@ -3376,41 +3403,50 @@ static void emac_all_multi(struct emac_d
+ /************************ PHY related functions ************************/
+ 
+ /* Cpmac Update Phy Status - updates phy status variables in hDDC->status "CpmacDDCStatus" structure */
+-static int emac_update_phy_status(struct emac_dev *dev)
++static void emac_update_phy_status(struct net_device *netdev)
+ {
+-	u32 set_phy_mode;
+-
+-	LOGMSG(EMAC_DEBUG_BUSY_FUNCTION_ENTRY, "");
++	struct emac_dev *dev = NETDEV_PRIV(netdev);
+ 
+ 	/* verify proper device state */
+-	if (dev->drv_state != DRV_OPENED) {
+-		LOGERR("Device NOT Open");
+-		return (EMAC_ERR_DEV_NOT_OPEN);
+-	}
++	if (dev->drv_state != DRV_OPENED)
++		return;
+ 
+-	set_phy_mode = dev->init_cfg.phy_mode;
++
++	if (!dev->phydev)
++		return;
+ 
+ 	/* no phy condition */
+-	if (set_phy_mode & SNWAY_NOPHY) {
++	if (dev->init_cfg.phy_mode & SNWAY_NOPHY) {
+ 		/*  no phy condition, always linked */
+ 		dev->status.phy_linked = 1;
+-		goto emac_update_phy_status_exit;
++		dev->status.phy_speed = 100;
++		dev->status.phy_duplex = PHY_DUPLEX_FULL;
++		dev->status.phy_num = 0xFFFFFFFF;	/* no phy */
++
++		dev->mac_control |= (1 << EMAC_MACCONTROL_FULLDUPLEXEN_SHIFT)
++				| (1 << EMAC_MACCONTROL_RMIISPEED_SHIFT);
++
++		/* write mac control register from stored value */
++		dev->regs->mac_control = dev->mac_control;
++
++		emac_status_update(dev, &dev->status);
++		return;
+ 	}
+-	if (set_phy_mode & SNWAY_LPBK) {
+-		dev->status.phy_linked = emac_mdio_is_loopback();
+-	} else {
+-		dev->status.phy_linked = emac_mdio_is_linked();
++	/* if loopback set in hardware, set link to ON */
++	if (dev->mac_control & EMAC_MACCONTROL_LOOPBKEN_MASK) {
++		dev->status.phy_linked = 1;
++		return;
+ 	}
+ 
++	dev->status.phy_linked = dev->phydev->link;
++
+ 	if (dev->status.phy_linked) {
++
+ 		/*  retreive duplex and speed and the phy number  */
+-		if (set_phy_mode & SNWAY_LPBK) {
+-			dev->status.phy_duplex = PHY_DUPLEX_FULL;
+-		} else {
+-			dev->status.phy_duplex = emac_mdio_get_duplex();
+-		}
+-		dev->status.phy_speed = emac_mdio_get_speed();
+-		dev->status.phy_num = emac_mdio_get_phy_num();
++		dev->status.phy_duplex = dev->phydev->duplex ?
++			PHY_DUPLEX_FULL : PHY_DUPLEX_HALF;
++		dev->status.phy_speed = dev->phydev->speed;
++		dev->status.phy_num = dev->phydev->addr;
+ 
+ 		/* set the duplex bit in maccontrol */
+ 		if (dev->status.phy_duplex == PHY_DUPLEX_FULL) {
+@@ -3436,15 +3472,8 @@ static int emac_update_phy_status(struct
+ 	/* write mac control register from stored value */
+ 	dev->regs->mac_control = dev->mac_control;
+ 
+-      emac_update_phy_status_exit:
+-	LOGMSG(EMAC_DEBUG_PORT_UPDATE,
+-	       "MacControl=%08X, Status: Phy=%d, Speed=%s, Duplex=%s",
+-	       dev->mac_control, dev->status.phy_num,
+-	       (dev->status.phy_speed == 100) ? "100" : "10",
+-	       (dev->status.phy_duplex == PHY_DUPLEX_FULL) ? "Full" : "Half");
+-	LOGMSG(EMAC_DEBUG_BUSY_FUNCTION_EXIT, "");
++	emac_status_update(dev, &dev->status);
+ 
+-	return (EMAC_SUCCESS);
+ }
+ 
+ /* set phy mode */
+@@ -3519,8 +3548,7 @@ static int emac_set_phy_mode(struct emac
+ 	       (phy_mode & NWAY_HD10),
+ 	       (phy_mode & NWAY_FD100), (phy_mode & NWAY_HD100),
+ 	       (phy_mode & NWAY_FD1000), (phy_mode & NWAY_HD1000));
+-	emac_mdio_set_phy_mode(phy_mode);
+-	emac_update_phy_status(dev);
++	emac_update_phy_status(dev->owner);
+ 	LOGMSG(EMAC_DEBUG_BUSY_FUNCTION_EXIT, "");
+ 
+ 	return (EMAC_SUCCESS);
+@@ -3695,10 +3723,10 @@ void emac_set_rx_hw_cfg(struct emac_dev 
+ static int emac_open(struct emac_dev *dev, void *param)
+ {
+ 	u32 channel;
+-	u32 mii_mod_id, mii_rev_maj, mii_rev_min;
+ 	int ret_val;
+ 	struct emac_init_config *init_cfg;
+         volatile struct ewrap_dm646x_regs *dm646x_wrap = NULL;
++	u32 clk_div;
+ 
+ 	LOGMSG(EMAC_DEBUG_FUNCTION_ENTRY, "");
+ 
+@@ -3722,11 +3750,20 @@ static int emac_open(struct emac_dev *de
+         }
+ 
+ 	dev->regs->soft_reset = 1;
+-
+ 	while (dev->regs->soft_reset) {
+ 		/* wait for reset to complete - do nothing */
+ 	}
+ 
++	/*
++	 * reinitialize mdio after reset--rather bad idea;
++	 * review init code instead
++	 */
++	clk_div = ((dev->init_cfg.mdio_bus_frequency /
++			dev->init_cfg.mdio_clock_frequency) - 1) & 0xff;
++
++	__raw_writel(clk_div | MDIO_CONTROL_ENABLE,
++			dev->mdio_base_address + MDIO_CONTROL);
++
+ 	/* program TX/RX HDP's to 0 */
+ 	for (channel = 0; channel < EMAC_MAX_TX_CHANNELS; channel++) {
+ 		dev->regs->tx_HDP[channel] = 0;
+@@ -3758,25 +3795,6 @@ static int emac_open(struct emac_dev *de
+ 	/* set device state - opened - useful when opening channels */
+ 	dev->drv_state = DRV_OPENED;
+ 
+-	/* start MDIO autonegotiation and set phy mode */
+-	emac_mdio_get_ver(dev->mdio_base_address,
+-			  &mii_mod_id, &mii_rev_maj, &mii_rev_min);
+-
+-	LOGMSG(EMAC_DEBUG_PORT_UPDATE,
+-	       "MII Module Id=%d, MII Base Address=%08lX, Major Rev=%d, "
+-	       "Minor Rev=%d",
+-	       mii_mod_id, dev->mdio_base_address,
+-	       mii_rev_maj, mii_rev_min);
+-
+-	/* no failure code returned from this function */
+-	emac_mdio_init(dev->mdio_base_address,
+-		       init_cfg->phy_mask,
+-		       init_cfg->m_link_mask,
+-		       init_cfg->mdio_bus_frequency,
+-		       init_cfg->mdio_clock_frequency,
+-		       (emac_debug & EMAC_DEBUG_MII)
+-	    );
+-
+ 	/* set the mac_control register */
+ 	dev->mac_control = (1 << EMAC_MACCONTROL_TXPTYPE_SHIFT) |
+ 	((dev->giga_bit_enable ? 1 : 0) << EMAC_MACCONTROL_GIGABITEN_SHIFT);
+@@ -3987,7 +4005,6 @@ emac_control(struct emac_dev *dev, int c
+ 			*status = dev->status;	/* structure copy */
+ 		}
+ 		break;
+-
+ 	case EMAC_IOCTL_READ_PHY_REG:
+ 		/* cmd = pointer to CpmacPhyParams struct. data read
+ 		 * back into "data" parameter in the structure */
+@@ -3998,8 +4015,8 @@ emac_control(struct emac_dev *dev, int c
+ 			emac_phy_params *phy_params =
+ 			    (emac_phy_params *) cmd_arg;
+ 
+-			phy_params->data = emac_mdio_read(phy_params->phy_num,
+-							  phy_params->reg_addr);
++			phy_params->data = phy_read(dev->phydev,
++					phy_params->reg_addr);
+ 		}
+ 		break;
+ 
+@@ -4013,11 +4030,10 @@ emac_control(struct emac_dev *dev, int c
+ 			/* \warning: Write to the phy registers - Note
+ 			   that this code loops on a completion bit in
+ 			   the phy so there are chances of hanging" */
+-			emac_mdio_write(phy_params->reg_addr,
+-					phy_params->phy_num, phy_params->data);
++			phy_write(dev->phydev, phy_params->reg_addr,
++					phy_params->data);
+ 		}
+ 		break;
+-
+ 	case EMAC_IOCTL_GET_STATISTICS:
+ 		/* cmd_arg points to the user provided structure for
+ 		 * statistics which match with hardware 36 regs, param
+@@ -4602,33 +4618,6 @@ static int emac_enable_channel(struct em
+ 
+ 		/* init head descriptor pointer */
+ 		dev->regs->tx_HDP[channel] = 0;
+-		{
+-			if (dev->tx_interrupt_disable == TRUE) {
+-				/* disable channel interrupt */
+-				dev->regs->tx_int_mask_clear = (1 << channel);
+-				if (device_is_dm646x) {
+-					/* update wrapper book-keeping fields */
+-					dev->tx_en &= (~(1 << channel));
+-					((volatile struct ewrap_dm646x_regs)dev->
+-						ewrap_regs->wrapper_646x_regs).
+-						C0_TXINTEN = dev->tx_en;
+-				}
+-				dev->tx_interrupt_disable = TRUE;
+-				dev->tx_int_threshold[channel] =
+-				    dev->tx_cppi[channel]->ch_info.service_max;
+-			} else {
+-				/* enable channel interrupt */
+-				dev->regs->tx_int_mask_set = (1 << channel);
+-				if (device_is_dm646x) {
+-					/* update wrapper book-keeping fields */
+-					dev->tx_en = (1 << channel);
+-					((volatile struct ewrap_dm646x_regs)dev->
+-					ewrap_regs->wrapper_646x_regs).
+-						C0_TXINTEN = (1 << channel);
+-				}
+-				dev->tx_interrupt_disable = FALSE;
+-			}
+-		}
+ 
+ 		/* mark channel open */
+ 		dev->tx_is_open[channel] = TRUE;
+@@ -4652,6 +4641,18 @@ static int emac_enable_channel(struct em
+ 
+ 		/* enable channel interrupt */
+ 		dev->regs->rx_int_mask_set = (1 << channel);
++		/* disable channel interrupt */
++		dev->regs->tx_int_mask_clear = (1 << channel);
++		if (device_is_dm646x) {
++			/* update wrapper book-keeping fields */
++			dev->tx_en &= (~(1 << channel));
++			((volatile struct ewrap_dm646x_regs)
++			 dev->ewrap_regs->wrapper_646x_regs).
++				C0_TXINTEN = dev->tx_en;
++		}
++		dev->tx_interrupt_disable = TRUE;
++		dev->tx_int_threshold[channel] =
++			dev->tx_cppi[channel]->ch_info.service_max;
+ 
+ 		if (device_is_dm646x) {
+ 		/* update wrapper book-keeping fields */
+@@ -6201,9 +6202,102 @@ static ssize_t emac_show_version(struct 
+ static DRIVER_ATTR(version, S_IRUGO, emac_show_version, NULL);
+ 
+ /*
++ * mdio bus stuff
++ */
++
++static inline void wait_for_user_access(struct emac_dev *dev)
++{
++	unsigned int value;
++
++	do {
++		value = __raw_readl(dev->mdio_base_address + MDIO_USERACCESS0);
++	} while (value & MDIO_USERACCESS_GO);
++}
++
++int davinci_mdio_write(struct mii_bus *bus, int mii_id, int regnum, u16 value)
++{
++	struct emac_dev *dev = container_of(bus, struct emac_dev, mdio_bus);
++
++	__raw_writel(MDIO_USERACCESS_GO | MDIO_USERACCESS_WRITE |
++		       ((regnum << 21) & MDIO_USERACCESS_REGADR) |
++		       ((mii_id << 16) & MDIO_USERACCESS_PHYADR) |
++			value,
++		    dev->mdio_base_address + MDIO_USERACCESS0);
++
++	wait_for_user_access(dev);
++
++	return 0;
++}
++
++int davinci_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
++{
++	struct emac_dev *dev = container_of(bus, struct emac_dev, mdio_bus);
++
++	wait_for_user_access(dev);
++
++	__raw_writel((MDIO_USERACCESS_GO | MDIO_USERACCESS_READ |
++		       ((regnum << 21) & MDIO_USERACCESS_REGADR) |
++		       ((mii_id << 16) & MDIO_USERACCESS_PHYADR)),
++		    dev->mdio_base_address + MDIO_USERACCESS0);
++
++	wait_for_user_access(dev);
++
++	return __raw_readl(dev->mdio_base_address + MDIO_USERACCESS0) &
++		MDIO_USERACCESS_DATA;
++}
++
++/*
+  * probe/remove stuff
+  */
+ 
++static int probe_mii_bus(struct emac_dev *dev)
++{
++	struct net_device *netdev = dev->owner;
++	struct platform_device *pdev =
++		to_platform_device(netdev->class_dev.dev);
++	struct emac_init_config *pdata = pdev->dev.platform_data;
++	struct resource *res;
++	u32 clk_div;
++	int err = 0;
++
++	memzero(&dev->mdio_bus, sizeof(dev->mdio_bus));
++
++	dev->mdio_bus.name = "Davinci EMAC MII Bus",
++	dev->mdio_bus.id = pdev->id;
++
++	dev->mdio_bus.read = &davinci_mdio_read,
++	dev->mdio_bus.write = &davinci_mdio_write,
++
++	dev->mdio_bus.dev = &pdev->dev;
++	dev->mdio_bus.irq = pdata->mdio_irqs;
++
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "mdio_regs");
++	if (!res)
++		return -ENODEV;
++
++	dev->mdio_base_address = IO_ADDRESS(res->start);
++
++	clk_div = ((dev->init_cfg.mdio_bus_frequency /
++			dev->init_cfg.mdio_clock_frequency) - 1) & 0xff;
++
++	__raw_writel(clk_div | MDIO_CONTROL_ENABLE,
++			dev->mdio_base_address + MDIO_CONTROL);
++
++	err = mdiobus_register(&dev->mdio_bus);
++	if (0 != err) {
++		printk(KERN_ERR "%s: Cannot register as MDIO bus\n",
++				dev->mdio_bus.name);
++		return err;
++	}
++
++	return 0;
++}
++
++static inline void remove_mii_bus(struct emac_dev *dev)
++{
++	mdiobus_unregister(&dev->mdio_bus);
++}
++
+ static int __init davinci_emac_probe(struct platform_device *pdev)
+ {
+ 	struct emac_init_config *pdata = pdev->dev.platform_data;
+@@ -6250,6 +6344,8 @@ static int __init davinci_emac_probe(str
+ 
+ 	platform_set_drvdata(pdev, netdev);
+ 
++	probe_mii_bus(dev);
++
+ 	/* register the network device with linux */
+ 	err = register_netdev(netdev);
+ 	if (err) {
+@@ -6287,6 +6383,8 @@ static int __devexit davinci_emac_remove
+ 	/* release memory region and unregister the device */
+ 	unregister_netdev(netdev);
+ 
++	remove_mii_bus(dev);
++
+ 	if (netdev)
+ 		FREE_NETDEV(netdev);
+ 
+Index: linux-2.6.18/drivers/net/davinci_emac_phy.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac_phy.c
++++ /dev/null
+@@ -1,881 +0,0 @@
+-/*
+- * linux/drivers/net/davinci_emac_phy.c
+- *
+- * EMAC MII-MDIO Module - Polling State Machine.
+- *
+- * Copyright (C) 2006 Texas Instruments.
+- *
+- * ----------------------------------------------------------------------------
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- *  You should have received a copy of the GNU General Public License
+- *  along with this program; if not, write to the Free Software
+- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+- * ----------------------------------------------------------------------------
+- Modifications:
+- *  HISTORY:
+- *  Date      	Modifier         		Notes
+- *  2001/02 	Denis, Bill, Michael		Original
+- *  14Feb2006	Anant Gole 			Re-written for linux
+- *  07Dec2006	Paul Bartholomew		Fix half-duplex,
+- *           					use PHY_DUPLEX_* constants
+- */
+-#include <linux/kernel.h>
+-#include <linux/ethtool.h>
+-#include <asm/arch/cpu.h>
+-#include "davinci_emac_phy.h"
+-
+-#define EMAC_PHY_DEBUG
+-
+-#ifdef EMAC_PHY_DEBUG
+-/* note: prints function name for you */
+-#define DPRINTK(fmt, args...) if (emac_phy->debug_mode) printk(KERN_ERR "\n%s: " fmt, __FUNCTION__ , ## args)
+-#else
+-#define DPRINTK(fmt, args...)
+-#endif
+-
+-/* Phy Registers */
+-#define PHY_CONTROL_REG       	0
+-#define MII_PHY_RESET           (1<<15)
+-#define MII_PHY_LOOP            (1<<14)
+-#define MII_PHY_100             (1<<13)
+-#define MII_AUTO_NEGOTIATE_EN   (1<<12)
+-#define MII_PHY_PDOWN           (1<<11)
+-#define MII_PHY_ISOLATE         (1<<10)
+-#define MII_RENEGOTIATE         (1<<9)
+-#define MII_PHY_FD              (1<<8)
+-#define MII_PHY_1000            (1<<6)
+-
+-#define PHY_STATUS_REG        	1
+-#define MII_NWAY_COMPLETE       (1<<5)
+-#define MII_NWAY_CAPABLE        (1<<3)
+-#define MII_PHY_LINKED          (1<<2)
+-
+-#define NWAY_ADVERTIZE_REG    	4
+-#define NWAY_REMADVERTISE_REG 	5
+-#define MII_NWAY_FD100          (1<<8)
+-#define MII_NWAY_HD100          (1<<7)
+-#define MII_NWAY_FD10           (1<<6)
+-#define MII_NWAY_HD10           (1<<5)
+-#define MII_NWAY_SEL            (1<<0)
+-
+-#define GBE_CONTROL_REG         9
+-#define MII_LOC_FD1000          (1<<9)
+-#define MII_LOC_HD1000          (1<<8)
+-#define GBE_STATUS_REG          10
+-#define MII_LOC_RX_STAT         (1<<13)
+-#define MII_REM_RX_STAT         (1<<12)
+-#define MII_REM_FD1000          (1<<11)
+-#define MII_REM_HD1000          (1<<10)
+-
+-#define PHY_CONFIG_REG          22
+-#define PHY_FIFO_DEPTH_32       (3<<12)
+-#define PHY_FIFO_DEPTH_8        (1<<12)
+-#define PHY_EN_TX_CLK           (1<<5)
+-#define PHY_EN_SYS_CLK          (1<<4)
+-#define PHY_GTX_CLK             (1<<1)
+-
+-/* Timeout values - since timer tikc is expected to be 10 mSecs fixed these
+- * values are in (value * 10 mSecs) */
+-#define PHY_FIND_TIMEOUT (2)
+-#define PHY_RECK_TIMEOUT (200)
+-#define PHY_LINK_TIMEOUT (500)
+-#define PHY_NWST_TIMEOUT (500)
+-#define PHY_NWDN_TIMEOUT (800)
+-#define PHY_MDIX_TIMEOUT (274)	/* 2.74 Seconds <--Spec and empirical */
+-
+-/* Mask & Control defines */
+-#define MDIO_CONTROL_CLKDIV           	(0xFF)
+-#define MDIO_CONTROL_ENABLE           	(1 << 30)
+-#define MDIO_USERACCESS_GO     			(1 << 31)
+-#define MDIO_USERACCESS_WRITE  			(1 << 30)
+-#define MDIO_USERACCESS_READ   			(0 << 30)
+-#define MDIO_USERACCESS_WRITE  			(1 << 30)
+-#define MDIO_USERACCESS_REGADR 			(0x1F << 21)
+-#define MDIO_USERACCESS_PHYADR 			(0x1F << 16)
+-#define MDIO_USERACCESS_DATA   			(0xFFFF)
+-#define MDIO_USERPHYSEL_LINKSEL         (1 << 7)
+-#define MDIO_VER_MODID         			(0xFFFF << 16)
+-#define MDIO_VER_REVMAJ        			(0xFF   << 8)
+-#define MDIO_VER_REVMIN        			(0xFF)
+-
+-/* PHY Registers */
+-#define MDIO_VER						(0x00)
+-#define MDIO_CONTROL					(0x04)
+-#define MDIO_ALIVE						(0x08)
+-#define MDIO_LINK						(0x0C)
+-#define MDIO_LINKINTRAW					(0x10)
+-#define MDIO_LINKINTMASKED				(0x14)
+-#define MDIO_USERINTRAW					(0x20)
+-#define MDIO_USERINTMASKED				(0x24)
+-#define MDIO_USERINTMASKED_SET			(0x28)
+-#define MDIO_USERINTMASKED_CLR			(0x2C)
+-#define MDIO_USERACCESS(inst)			(0x80+(inst*8))
+-#define MDIO_USERPHYSEL(inst) 			(0x84+(inst*8))
+-
+-#define MDIO_REG(reg)					(*((volatile unsigned int *)(emac_phy->base + (reg))))
+-
+-#define MDIO_REG_VER					MDIO_REG(MDIO_VER)
+-#define MDIO_REG_CONTROL				MDIO_REG(MDIO_CONTROL)
+-#define MDIO_REG_ALIVE					MDIO_REG(MDIO_ALIVE)
+-#define MDIO_REG_LINK					MDIO_REG(MDIO_LINK)
+-#define MDIO_REG_LINKINTRAW				MDIO_REG(MDIO_LINKINTRAW)
+-#define MDIO_REG_LINKINTMASKED			MDIO_REG(MDIO_LINKINTMASKED)
+-#define MDIO_REG_USERINTMASKED			MDIO_REG(MDIO_USERINTMASKED)
+-#define MDIO_REG_USERINTMASKED_SET		MDIO_REG(MDIO_USERINTMASKED_SET)
+-#define MDIO_REG_USERINTMASKED_CLR		MDIO_REG(MDIO_USERINTMASKED_CLR)
+-#define MDIO_REG_USERACCESS			MDIO_REG(MDIO_USERACCESS(0))
+-#define MDIO_REG_USERPHYSEL			MDIO_REG(MDIO_USERPHYSEL(0))
+-
+-/* Phy State */
+-#define PHY_NULL       (0)
+-#define PHY_INIT       (1)
+-#define PHY_FINDING    (2)
+-#define PHY_FOUND      (3)
+-#define PHY_NWAY_START (4)
+-#define PHY_NWAY_WAIT  (5)
+-#define PHY_LINK_WAIT  (6)
+-#define PHY_LINKED     (7)
+-#define PHY_LOOPBACK   (8)
+-
+-static char *phy_state_str[] = {
+-	"NULL", "INIT", "FINDING", "FOUND", "NWAY_START", "NWAY_WAIT",
+-	"LINK_WAIT", "LINKED", "LOOPBACK"
+-};
+-
+-#define PHY_NOT_FOUND  0xFFFF	/*  Used in Phy Detection */
+-
+-struct phy_info {
+-	unsigned int base;	/* Base address of mdio module */
+-	int state;		/* state of phy */
+-	int state_change;	/* phy state change ? */
+-	unsigned int timeout;	/* Timeout counter */
+-	unsigned int phy_mode;	/* requested phy mode */
+-	unsigned int speed;	/* current Speed - 10 / 100 */
+-	unsigned int duplex;	/* 0=Auto Negotiate, Full=3; Half=2, Unknown=1 */
+-	unsigned int phy_addr;	/* phy address */
+-	unsigned int phy_mask;	/* phy mask */
+-	unsigned int mlink_mask;/* mlink mask */
+-	int debug_mode;		/* debug mode */
+-};
+-
+-/* Global phy structure instance */
+-struct phy_info emac_phy_info;
+-struct phy_info *emac_phy = &emac_phy_info;
+-
+-void emac_mdio_get_ver(unsigned int mdio_base, unsigned int *module_id,
+-		       unsigned int *rev_major, unsigned int *rev_minor)
+-{
+-	unsigned int ver;
+-
+-	emac_phy->base = mdio_base;
+-	ver = MDIO_REG_VER;
+-
+-	*module_id = (ver & MDIO_VER_MODID) >> 16;
+-	*rev_major = (ver & MDIO_VER_REVMAJ) >> 8;
+-	*rev_minor = (ver & MDIO_VER_REVMIN);
+-}
+-
+-/* Initialize mdio module */
+-int emac_mdio_init(unsigned int mdio_base,
+-		   unsigned int phy_mask,
+-		   unsigned int mlink_mask,
+-		   unsigned int mdio_bus_freq,
+-		   unsigned int mdio_clock_freq, unsigned int verbose)
+-{
+-	unsigned int clk_div;
+-
+-	/* Set base addr and init phy state */
+-	emac_phy->base = mdio_base;
+-	emac_phy->phy_mask = phy_mask;
+-	emac_phy->mlink_mask = mlink_mask;
+-	emac_phy->state = PHY_INIT;
+-	emac_phy->debug_mode = verbose;
+-	emac_phy->speed = 10;
+-	emac_phy->duplex = PHY_DUPLEX_HALF;	/* Half duplex */
+-
+-	if (mdio_clock_freq & mdio_bus_freq) {
+-		clk_div = ((mdio_bus_freq / mdio_clock_freq) - 1);
+-	} else {
+-		clk_div = 0xFF;
+-	}
+-	clk_div &= MDIO_CONTROL_CLKDIV;
+-
+-	/* Set enable and clock divider in MDIOControl */
+-	MDIO_REG_CONTROL = (clk_div | MDIO_CONTROL_ENABLE);
+-
+-	return (0);
+-}
+-
+-/* Set PHY mode - autonegotiation or any other */
+-void emac_mdio_set_phy_mode(unsigned int phy_mode)
+-{
+-	emac_phy->phy_mode = phy_mode;
+-
+-	if ((emac_phy->state == PHY_NWAY_START) ||
+-	    (emac_phy->state == PHY_NWAY_WAIT) ||
+-	    (emac_phy->state == PHY_LINK_WAIT) ||
+-	    (emac_phy->state == PHY_LINKED) ||
+-	    (emac_phy->state == PHY_LOOPBACK)) {
+-		emac_phy->state = PHY_FOUND;
+-		emac_phy->state_change = 1;
+-	}
+-
+-	DPRINTK("PhyMode:%08X Auto:%d, FD10:%d, HD10:%d, FD100:%d, HD100:%d\n",
+-		phy_mode,
+-		phy_mode & NWAY_AUTO, phy_mode & MII_NWAY_FD10,
+-		phy_mode & MII_NWAY_HD10, phy_mode & MII_NWAY_FD100,
+-		phy_mode & MII_NWAY_HD100);
+-}
+-
+-/* Set PHY mode - autonegotiation or any other */
+-unsigned int emac_mdio_supported_rate(void)
+-{
+-	unsigned int supported_mode = 0;
+-
+-	if (emac_phy->phy_mode & NWAY_HD10)
+-		supported_mode |= SUPPORTED_10baseT_Half;
+-
+-	if (emac_phy->phy_mode & NWAY_FD10)
+-		supported_mode |= SUPPORTED_10baseT_Full;
+-
+-	if (emac_phy->phy_mode & NWAY_HD100)
+-		supported_mode |= SUPPORTED_100baseT_Half;
+-
+-	if (emac_phy->phy_mode & NWAY_FD100)
+-		supported_mode |= SUPPORTED_100baseT_Full;
+-
+-	if (emac_phy->phy_mode & NWAY_FD1000)
+-		supported_mode |= SUPPORTED_1000baseT_Full;
+-
+-	if (emac_phy->phy_mode & NWAY_AUTO)
+-		supported_mode |= SUPPORTED_Autoneg;
+-
+-	return supported_mode;
+-}
+-
+-/* get autonegotiate advertised rates */
+-unsigned int emac_mdio_autoneg_rate(void)
+-{
+-	unsigned int auto_mode = 0;
+-
+-	if (emac_phy->phy_mode & NWAY_HD10)
+-		auto_mode |= ADVERTISED_10baseT_Half;
+-
+-	if (emac_phy->phy_mode & NWAY_FD10)
+-		auto_mode |= ADVERTISED_10baseT_Full;
+-
+-	if (emac_phy->phy_mode & NWAY_HD100)
+-		auto_mode |= ADVERTISED_100baseT_Half;
+-
+-	if (emac_phy->phy_mode & NWAY_FD100)
+-		auto_mode |= ADVERTISED_100baseT_Full;
+-
+-	if (emac_phy->phy_mode & NWAY_FD1000)
+-		auto_mode |= ADVERTISED_1000baseT_Full;
+-
+-	if (emac_phy->phy_mode & NWAY_AUTO)
+-		auto_mode |= ADVERTISED_Autoneg;
+-
+-	return auto_mode;
+-}
+-
+-/* Get linked status - check if link is on - 1=link on, 0=link off */
+-int emac_mdio_is_linked(void)
+-{
+-	return ((emac_phy->state == PHY_LINKED) ? 1 : 0);
+-}
+-
+-/* Get speed - 10 / 100 Mbps */
+-int emac_mdio_get_speed(void)
+-{
+-	return (emac_phy->speed);
+-}
+-
+-/* Get duplex - 0=Auto Negotiate, Full Duplex = 3; Half Duplex = 2 Unknown = 1 */
+-int emac_mdio_get_duplex(void)
+-{
+-	return (emac_phy->duplex);
+-}
+-
+-/* Get Phy number/address */
+-int emac_mdio_get_phy_num(void)
+-{
+-	return (emac_phy->phy_addr);
+-}
+-
+-/* Get auto negotiation */
+-int emac_mdio_get_autoneg(void)
+-{
+-	return ((emac_phy->phy_mode & NWAY_AUTO) ? 1 : 0);
+-}
+-
+-/* Check if loopback enabled on phy */
+-int emac_mdio_is_loopback(void)
+-{
+-	return ((emac_phy->state == PHY_LOOPBACK) ? 1 : 0);
+-}
+-
+-/* Wait until mdio is ready for next command */
+-#define MDIO_WAIT_FOR_USER_ACCESS while ((MDIO_REG_USERACCESS & MDIO_USERACCESS_GO) != 0) {}
+-
+-/* Read from a phy register via mdio interface */
+-unsigned int emac_mdio_read(unsigned int phy_addr, unsigned int phy_reg)
+-{
+-	unsigned int phy_data = 0;
+-	unsigned int phy_control;
+-
+-	/* Wait until mdio is ready for next command */
+-	MDIO_WAIT_FOR_USER_ACCESS;
+-
+-	phy_control = (MDIO_USERACCESS_GO |
+-		       MDIO_USERACCESS_READ |
+-		       ((phy_reg << 21) & MDIO_USERACCESS_REGADR) |
+-		       ((phy_addr << 16) & MDIO_USERACCESS_PHYADR) |
+-		       (phy_data & MDIO_USERACCESS_DATA));
+-	MDIO_REG_USERACCESS = phy_control;
+-
+-	/* Wait until mdio is ready for next command */
+-	MDIO_WAIT_FOR_USER_ACCESS;
+-
+-	return (MDIO_REG_USERACCESS & MDIO_USERACCESS_DATA);
+-}
+-
+-/* Write to a phy register via mdio interface */
+-void emac_mdio_write(unsigned int phy_addr, unsigned int phy_reg,
+-		     unsigned int phy_data)
+-{
+-	unsigned int control;
+-
+-	/* Wait until mdio is ready for next command */
+-	MDIO_WAIT_FOR_USER_ACCESS;
+-
+-	control = (MDIO_USERACCESS_GO |
+-		   MDIO_USERACCESS_WRITE |
+-		   ((phy_reg << 21) & MDIO_USERACCESS_REGADR) |
+-		   ((phy_addr << 16) & MDIO_USERACCESS_PHYADR) |
+-		   (phy_data & MDIO_USERACCESS_DATA));
+-	MDIO_REG_USERACCESS = control;
+-
+-}
+-
+-/* Reset the selected phy */
+-void emac_mdio_phy_reset(unsigned int phy_addr)
+-{
+-	unsigned int control;
+-
+-	emac_mdio_write(phy_addr, PHY_CONTROL_REG, MII_PHY_RESET);
+-
+-	do {
+-		control = emac_mdio_read(phy_addr, PHY_CONTROL_REG);
+-	} while (control & MII_PHY_RESET);
+-
+-	/* CRITICAL: Fix for increasing PHY signal drive strength for
+-	 * TX lockup issue. On DaVinci EVM, the Intel LXT971 PHY
+-  	 * signal strength was low causing  TX to fail randomly. The
+-	 * fix is to Set bit 11 (Increased MII drive strength) of PHY
+-         * register 26 (Digital Config register) on this phy. */
+-	control = emac_mdio_read(phy_addr, 26);
+-	emac_mdio_write(phy_addr, 26, (control | 0x800));
+-	control = emac_mdio_read(phy_addr, 26);
+-}
+-
+-/* Timeout condition handler in PHY state machine */
+-void emac_mdio_phy_timeout(void)
+-{
+-	emac_phy->state = PHY_FOUND;
+-	emac_phy->state_change = 1;
+-
+-	/* If MDI/MDIX is supported then switch MDIX state */
+-}
+-
+-/* PHY state machine : Init state handler */
+-void emac_mdio_init_state(void)
+-{
+-	emac_phy->state = PHY_FINDING;
+-	emac_phy->state_change = 1;
+-	emac_phy->timeout = PHY_FIND_TIMEOUT;
+-}
+-
+-/* PHY state machine : Finding state handler */
+-void emac_mdio_finding_state(void)
+-{
+-	unsigned int phy_alive_status;
+-	int i, j;
+-
+-	emac_phy->phy_addr = PHY_NOT_FOUND;
+-
+-	/* Find if timeout complete */
+-	if (emac_phy->timeout) {
+-		/* Allow some time for phy to show up in alive register */
+-		--emac_phy->timeout;
+-	} else {
+-
+-		phy_alive_status = MDIO_REG_LINK;
+-		/* Check phys based upon user mask */
+-		phy_alive_status &= emac_phy->phy_mask;
+-
+-		/* Find the first interesting alive phy */
+-		for (i = 0, j = 1;
+-		     (i < 32) && ((j & phy_alive_status) == 0); i++, j <<= 1) ;
+-
+-		if ((phy_alive_status) && (i < 32)) {
+-			emac_phy->phy_addr = i;
+-		}
+-
+-		if (emac_phy->phy_addr != PHY_NOT_FOUND) {
+-			DPRINTK("PHY Found. Phy Number=%d\n",
+-				emac_phy->phy_addr);
+-			emac_phy->state = PHY_FOUND;
+-			emac_phy->state_change = 1;
+-		} else {
+-			/* Set Timer for finding timeout */
+-			DPRINTK("PHY NOT Found. Starting timeout\n");
+-			emac_phy->timeout = PHY_RECK_TIMEOUT;
+-		}
+-	}
+-}
+-
+-/* PHY state machine : Found state handler */
+-void emac_mdio_found_state(void)
+-{
+-	unsigned int phy_status;
+-	unsigned int phy_num;
+-	unsigned int cnt;
+-	unsigned int nway_advertise;
+-        unsigned int gbe_advertise;
+-
+-	/* Check if there is any phy mode requested by the user */
+-	if (emac_phy->phy_mode == 0) {
+-		return;
+-	}
+-
+-	/* Check alive phy's */
+-	phy_status = MDIO_REG_LINK;
+-	phy_status &= emac_phy->phy_mask;	/* Check phys based upon user mask */
+-
+-	/* we will now isolate all our phys, except the one we have decided to use */
+-	for (phy_num = 0, cnt = 1; phy_num < 32; phy_num++, cnt <<= 1) {
+-		if (phy_status & cnt) {
+-			if (phy_num != emac_phy->phy_addr) {
+-				/* Disable a phy that we are not using */
+-				/* CRITICAL: Note that this code assums that there is only 1 phy connected
+-				 * if this is not the case then the next statement should be commented
+-				 */
+-				emac_mdio_write(emac_phy->phy_addr,
+-						PHY_CONTROL_REG,
+-						(MII_PHY_ISOLATE |
+-						 MII_PHY_PDOWN));
+-			}
+-		}
+-	}
+-
+-	/*  Reset the Phy and proceed with auto-negotiation */
+-	emac_mdio_phy_reset(emac_phy->phy_addr);
+-
+-	/*  Set the way Link will be Monitored, Check the Link Selection Method */
+-	if ((1 << emac_phy->phy_addr) & emac_phy->mlink_mask) {
+-		MDIO_REG_USERPHYSEL =
+-		    (emac_phy->phy_addr | MDIO_USERPHYSEL_LINKSEL);
+-	}
+-
+-	/* For Phy Internal loopback , need to wait until Phy found */
+-	if (emac_phy->phy_mode & NWAY_LPBK) {
+-		/* Set Phy in Loopback and read mdio to confirm */
+-		emac_mdio_write(emac_phy->phy_addr, PHY_CONTROL_REG,
+-				(MII_PHY_LOOP | MII_PHY_FD));
+-		emac_mdio_read(emac_phy->phy_addr, PHY_STATUS_REG);
+-		emac_phy->state = PHY_LOOPBACK;
+-		emac_phy->state_change = 1;
+-		return;
+-	}
+-
+-	/* Start negotiation */
+-	nway_advertise = MII_NWAY_SEL;
+-	if (emac_phy->phy_mode & NWAY_FD100)
+-		nway_advertise |= MII_NWAY_FD100;
+-	if (emac_phy->phy_mode & NWAY_HD100)
+-		nway_advertise |= MII_NWAY_HD100;
+-	if (emac_phy->phy_mode & NWAY_FD10)
+-		nway_advertise |= MII_NWAY_FD10;
+-	if (emac_phy->phy_mode & NWAY_HD10)
+-		nway_advertise |= MII_NWAY_HD10;
+-
+-        gbe_advertise = 0;
+-        if (cpu_is_davinci_dm6467()) {
+-                if (emac_phy->phy_mode & NWAY_FD1000)
+-                        gbe_advertise |= MII_LOC_FD1000;
+-        }
+-
+-	phy_status = emac_mdio_read(emac_phy->phy_addr, PHY_STATUS_REG);
+-
+-	if ((phy_status & MII_NWAY_CAPABLE) && (emac_phy->phy_mode & NWAY_AUTO)) {
+-
+-		/* NWAY Phy Detected - following procedure for NWAY compliant Phys */
+-		emac_mdio_write(emac_phy->phy_addr, NWAY_ADVERTIZE_REG,
+-				nway_advertise);
+-
+-                if (cpu_is_davinci_dm6467())
+-                        emac_mdio_write(emac_phy->phy_addr, GBE_CONTROL_REG,
+-                                        gbe_advertise);
+-
+-		if (emac_phy->debug_mode) {
+-			DPRINTK("NWAY Advertising: ");
+-			if (nway_advertise & MII_NWAY_FD100)
+-				DPRINTK("100 Mbps FullDuplex");
+-			if (nway_advertise & MII_NWAY_HD100)
+-				DPRINTK("100 Mbps HalfDuplex");
+-			if (nway_advertise & MII_NWAY_FD10)
+-				DPRINTK("10 Mbps FullDuplex");
+-			if (nway_advertise & MII_NWAY_HD10)
+-				DPRINTK("10 Mbps HalfDuplex");
+-			DPRINTK("\n");
+-		}
+-
+-		/* Start/Restart autonegotiation */
+-		emac_mdio_write(emac_phy->phy_addr, PHY_CONTROL_REG,
+-				MII_AUTO_NEGOTIATE_EN);
+-		emac_mdio_write(emac_phy->phy_addr, PHY_CONTROL_REG,
+-				(MII_AUTO_NEGOTIATE_EN | MII_RENEGOTIATE));
+-		emac_phy->state = PHY_NWAY_START;
+-		emac_phy->state_change = 1;
+-		emac_phy->timeout = PHY_NWST_TIMEOUT;
+-
+-	} else {
+-		/* Phy cannot do auto negotiation */
+-		emac_phy->phy_mode &= ~NWAY_AUTO;
+-		nway_advertise &= ~MII_NWAY_SEL;
+-		phy_status = 0;
+-
+-                if (gbe_advertise & (MII_LOC_FD1000 | MII_LOC_HD1000)) {
+-                        phy_status = MII_PHY_1000;      /* Set 1000 Mbps */
+-                        gbe_advertise &= (MII_LOC_FD1000 | MII_LOC_HD1000);
+-                        emac_phy->speed = 1000;
+-                } else if (nway_advertise & (MII_NWAY_FD100 | MII_NWAY_HD100)) {
+-			phy_status = MII_PHY_100;	/* Set 100 Mbps if requested */
+-			nway_advertise &= (MII_NWAY_FD100 | MII_NWAY_HD100);
+-		} else {
+-			nway_advertise &= (MII_NWAY_FD10 | MII_NWAY_HD10);
+-		}
+-
+-		if (nway_advertise & (MII_NWAY_FD100 | MII_NWAY_FD10)) {
+-			phy_status |= MII_PHY_FD;	/* Set Full duplex if requested */
+-		}
+-
+-                if (cpu_is_davinci_dm6467())
+-                        emac_mdio_write(emac_phy->phy_addr, GBE_CONTROL_REG,
+-                                        gbe_advertise);
+-
+-		/* Set requested speed and duplex mode on phy */
+-		emac_mdio_write(emac_phy->phy_addr, PHY_CONTROL_REG,
+-				phy_status);
+-
+-		/* Set the phy speed and duplex mode */
+-		emac_phy->speed = (phy_status & MII_PHY_100) ? 100 : 10;
+-		emac_phy->duplex = (phy_status & MII_PHY_FD) ? 3 : 2;
+-
+-		emac_phy->state = PHY_LINK_WAIT;
+-		emac_phy->state_change = 1;
+-		emac_phy->timeout = PHY_LINK_TIMEOUT;
+-	}
+-
+-	/* TODO: When Auto MDIX is supported, add delay here
+-	   emac_mdio_mdix_delay();
+-	 */
+-}
+-
+-/* PHY state machine : NWAY Start state handler */
+-void emac_mdio_nwaystart_state(void)
+-{
+-	unsigned int status;
+-
+-	status = emac_mdio_read(emac_phy->phy_addr, PHY_CONTROL_REG);
+-	if ((status & MII_RENEGOTIATE) == 0) {
+-		/* Flush pending latched bits */
+-		status = emac_mdio_read(emac_phy->phy_addr, PHY_STATUS_REG);
+-		emac_phy->state = PHY_NWAY_WAIT;
+-		emac_phy->state_change = 1;
+-		emac_phy->timeout = PHY_NWDN_TIMEOUT;
+-	} else {
+-		if (emac_phy->timeout) {
+-			--emac_phy->timeout;
+-		} else {
+-			/* Timed Out for NWAY to start - very unlikely condition, back to Found */
+-			emac_mdio_phy_timeout();
+-		}
+-	}
+-}
+-
+-/* PHY state machine : NWAY Wait state handler */
+-void emac_mdio_nwaywait_state(void)
+-{
+-	unsigned int status;
+-	unsigned int my_cap, partner_cap, neg_mode;
+-        unsigned int gbe_cap, rgbe_cap, gbe_mode;
+-
+-	/* Check if nway negotiation complete */
+-	status = emac_mdio_read(emac_phy->phy_addr, PHY_STATUS_REG);
+-
+-	if (status & MII_NWAY_COMPLETE) {
+-		/* negotiation complete, check for partner capabilities */
+-		emac_phy->state_change = 1;
+-		my_cap = emac_mdio_read(emac_phy->phy_addr, NWAY_ADVERTIZE_REG);
+-		partner_cap =
+-		    emac_mdio_read(emac_phy->phy_addr, NWAY_REMADVERTISE_REG);
+-
+-                if (cpu_is_davinci_dm6467()) {
+-                        gbe_cap = emac_mdio_read(emac_phy->phy_addr,
+-                                                 GBE_CONTROL_REG);
+-                        rgbe_cap = emac_mdio_read(emac_phy->phy_addr,
+-                                                  GBE_STATUS_REG);
+-                        gbe_mode = (gbe_cap & (rgbe_cap >> 2)) &
+-                            (MII_LOC_FD1000);
+-                } else {
+-                        gbe_cap = 0;
+-                        rgbe_cap = 0;
+-                        gbe_mode = 0;
+-                }
+-
+-		/* Negotiated mode is what we and partnet have in common */
+-		neg_mode = my_cap & partner_cap;
+-		if (emac_phy->debug_mode) {
+-			DPRINTK
+-			    ("Phy %d, neg_mode %04X, my_cap %04X, partner_cap %04X\n",
+-			     emac_phy->phy_addr, neg_mode, my_cap, partner_cap);
+-		}
+-
+-		/* Limit negotiation to fields below */
+-		neg_mode &=
+-		    (MII_NWAY_FD100 | MII_NWAY_HD100 | MII_NWAY_FD10 |
+-		     MII_NWAY_HD10);
+-		if (neg_mode == 0)
+-			DPRINTK
+-			    ("WARNING: Negotiation complete but NO agreement, default is 10HD\n");
+-
+-
+-                if (gbe_mode & MII_LOC_FD1000)
+-                        DPRINTK("1000 Mbps FullDuplex");
+-                if (gbe_mode & MII_LOC_HD1000)
+-                        DPRINTK("1000 Mbps HalfDuplex");
+-		if (neg_mode & MII_NWAY_FD100)
+-			DPRINTK("100 Mbps FullDuplex");
+-		if (neg_mode & MII_NWAY_HD100)
+-			DPRINTK("100 Mbps HalfDuplex");
+-		if (neg_mode & MII_NWAY_FD10)
+-			DPRINTK("10 Mbps FullDuplex");
+-		if (neg_mode & MII_NWAY_HD10)
+-			DPRINTK("10 Mbps HalfDuplex");
+-		DPRINTK("\n");
+-
+-                if ((neg_mode != 0) || (gbe_mode != 0)) {
+-			if (status & MII_PHY_LINKED) {
+-				emac_phy->state = PHY_LINKED;
+-			} else {
+-				emac_phy->state = PHY_LINK_WAIT;
+-			}
+-		}
+-
+-		/* Set the phy speed and duplex mode */
+-                if (gbe_mode & (MII_LOC_FD1000 | MII_LOC_HD1000)) {
+-                        emac_mdio_write(emac_phy->phy_addr, PHY_CONFIG_REG,
+-                                        (PHY_FIFO_DEPTH_8 | PHY_EN_SYS_CLK |
+-                                         PHY_GTX_CLK));
+-                        emac_phy->speed = 1000;
+-                        emac_phy->duplex = (gbe_mode & MII_LOC_FD1000) ?
+-                            PHY_DUPLEX_FULL : PHY_DUPLEX_HALF;
+-                } else 	{
+-			emac_phy->speed =
+-				(neg_mode & (MII_NWAY_FD100 | MII_NWAY_HD100)) ? 100 : 10;
+-			emac_phy->duplex =
+-				(neg_mode & (MII_NWAY_FD100 | MII_NWAY_FD10)) ?
+-				PHY_DUPLEX_FULL : PHY_DUPLEX_HALF;
+-		}
+-	} else {
+-
+-		if (emac_phy->timeout) {
+-			--emac_phy->timeout;
+-		} else {
+-			/* Timed Out for NWAY to start - very unlikely condition, back to Found */
+-			emac_mdio_phy_timeout();
+-		}
+-	}
+-}
+-
+-/* PHY state machine : Link Wait state handler */
+-void emac_mdio_linkwait_state(void)
+-{
+-	unsigned int status;
+-
+-	/* Check if nway negotiation complete */
+-	status = emac_mdio_read(emac_phy->phy_addr, PHY_STATUS_REG);
+-	if (status & MII_PHY_LINKED) {
+-		emac_phy->state = PHY_LINKED;
+-		emac_phy->state_change = 1;
+-	} else {
+-		if (emac_phy->timeout) {
+-			--emac_phy->timeout;
+-		} else {
+-			/* Timed Out for link - very unlikely condition, back to Found */
+-			emac_mdio_phy_timeout();
+-		}
+-	}
+-}
+-
+-/* PHY state machine : Linked handler */
+-void emac_mdio_linked_state(void)
+-{
+-	if (MDIO_REG_LINK & (1 << emac_phy->phy_addr)) {
+-		return;		/* do nothing if already linked */
+-	}
+-
+-	/* If not linked, move mode to nway down or waiting for link */
+-	emac_phy->state_change = 1;
+-	if (emac_phy->phy_mode & NWAY_AUTO) {
+-		emac_phy->state = PHY_NWAY_WAIT;
+-		emac_phy->timeout = PHY_NWDN_TIMEOUT;
+-	} else {
+-		emac_phy->state = PHY_LINK_WAIT;
+-		emac_phy->timeout = PHY_LINK_TIMEOUT;
+-	}
+-
+-	/* TODO: When Auto MDIX is supported, add delay here
+-	   emac_mdio_mdix_delay();
+-	 */
+-}
+-
+-/* PHY state machine : Loopback handler */
+-void emac_mdio_loopback_state(void)
+-{
+-	return;
+-}
+-
+-/* PHY state machine : Default handler */
+-void emac_mdio_default_state(void)
+-{
+-	/* Awaiting a init call */
+-	emac_phy->state_change = 1;
+-}
+-
+-/* Detailed PHY dump for debug */
+-void emac_mdio_phy_dump(void)
+-{
+-	unsigned int status;
+-
+-	DPRINTK("\n");
+-	DPRINTK("PHY Addr/Num=%d, PHY State=%s, Speed=%d, Duplex=%d\n",
+-		emac_phy->phy_addr, phy_state_str[emac_phy->state],
+-		emac_phy->speed, emac_phy->duplex);
+-
+-	/* 0: Control register */
+-	status = emac_mdio_read(emac_phy->phy_addr, PHY_CONTROL_REG);
+-	DPRINTK("PhyControl: %04X, Loopback=%s, Speed=%s, Duplex=%s\n",
+-		status,
+-		status & MII_PHY_LOOP ? "On" : "Off",
+-		status & MII_PHY_100 ? "100" : "10",
+-		status & MII_PHY_FD ? "Full" : "Half");
+-
+-	/* 1: Status register */
+-	status = emac_mdio_read(emac_phy->phy_addr, PHY_STATUS_REG);
+-	DPRINTK("PhyStatus: %04X, AutoNeg=%s, Link=%s\n",
+-		status,
+-		status & MII_NWAY_COMPLETE ? "Complete" : "NotComplete",
+-		status & MII_PHY_LINKED ? "Up" : "Down");
+-
+-	/* 4: Auto Negotiation Advertisement register */
+-	status = emac_mdio_read(emac_phy->phy_addr, NWAY_ADVERTIZE_REG);
+-	DPRINTK("PhyMyCapability: %04X, 100FD=%s, 100HD=%s, 10FD=%s, 10HD=%s\n",
+-		status,
+-		status & MII_NWAY_FD100 ? "Yes" : "No",
+-		status & MII_NWAY_HD100 ? "Yes" : "No",
+-		status & MII_NWAY_FD10 ? "Yes" : "No",
+-		status & MII_NWAY_HD10 ? "Yes" : "No");
+-
+-	/* 5: Auto Negotiation Advertisement register */
+-	status = emac_mdio_read(emac_phy->phy_addr, NWAY_REMADVERTISE_REG);
+-	DPRINTK
+-	    ("PhyPartnerCapability: %04X, 100FD=%s, 100HD=%s, 10FD=%s, 10HD=%s\n",
+-	     status, status & MII_NWAY_FD100 ? "Yes" : "No",
+-	     status & MII_NWAY_HD100 ? "Yes" : "No",
+-	     status & MII_NWAY_FD10 ? "Yes" : "No",
+-	     status & MII_NWAY_HD10 ? "Yes" : "No");
+-
+-        if (cpu_is_davinci_dm6467()) {
+-	        /* 9: GBE control register */
+-                status = emac_mdio_read(emac_phy->phy_addr, GBE_CONTROL_REG);
+-                DPRINTK
+-                    ("PhyMyGBECapability: %04X, 1000FD=%s, 1000HD=%s\n",
+-                     status, status & MII_LOC_FD1000 ? "Yes" : "No",
+-                     status & MII_LOC_HD1000 ? "Yes" : "No");
+-
+-                /* 10: GBE status register */
+-                status = emac_mdio_read(emac_phy->phy_addr, GBE_STATUS_REG);
+-                DPRINTK
+-                    ("PhyPartnerGBECapability: %04X, 1000FD=%s, 1000HD=%s\n",
+-                     status, status & MII_REM_FD1000 ? "Yes" : "No",
+-                     status & MII_REM_HD1000 ? "Yes" : "No");
+-        }
+-}
+-
+-/* emac_mdio_tick is called every 10 mili seconds to process Phy states */
+-int emac_mdio_tick(void)
+-{
+-
+-	switch (emac_phy->state) {
+-
+-	case PHY_INIT:
+-		emac_mdio_init_state();
+-		break;
+-
+-	case PHY_FINDING:
+-		emac_mdio_finding_state();
+-		break;
+-
+-	case PHY_FOUND:
+-		emac_mdio_found_state();
+-		break;
+-
+-	case PHY_NWAY_START:
+-		emac_mdio_nwaystart_state();
+-		break;
+-
+-	case PHY_NWAY_WAIT:
+-		emac_mdio_nwaywait_state();
+-		break;
+-
+-	case PHY_LINK_WAIT:
+-		emac_mdio_linkwait_state();
+-		break;
+-
+-	case PHY_LINKED:
+-		emac_mdio_linked_state();
+-		break;
+-
+-	case PHY_LOOPBACK:
+-		emac_mdio_loopback_state();
+-		break;
+-
+-	default:
+-		emac_mdio_default_state();
+-		break;
+-	}
+-
+-	/* Check is MDI/MDIX mode switch is needed - not supported in DaVinci hardware */
+-
+-	/* Return state change to user */
+-	if (emac_phy->state_change) {
+-		emac_mdio_phy_dump();
+-		emac_phy->state_change = 0;
+-		return (1);
+-	} else {
+-		return (0);
+-	}
+-}
+Index: linux-2.6.18/include/linux/davinci_emac.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/davinci_emac.h
++++ linux-2.6.18/include/linux/davinci_emac.h
+@@ -48,15 +48,9 @@ struct emac_init_config {
+ 	u32 num_tx_channels;
+ 	u32 num_rx_channels;
+ 	u32 emac_bus_frequency;
+-	u32 base_address;
+-	u32 e_wrap_base_address;
+-	u32 intr_line;
+-	u32 num_intr_lines;
+ 	u32 reset_line;
+-	u32 mdio_base_address;
+ 	u32 mdio_reset_line;
+ 	u32 mdio_intr_line;
+-	u32 phy_mask;
+ 	u32 m_link_mask;
+ 	u32 mdio_bus_frequency;
+ 	u32 mdio_clock_frequency;
+@@ -64,6 +58,8 @@ struct emac_init_config {
+ 	u32 mib64cnt_msec;
+ 	u32 phy_mode;
+ 	struct emac_rx_config rx_cfg;
++
++	int mdio_irqs[32];
+ };
+ 
+ #endif
+Index: linux-2.6.18/mvl_patches/pro50-2133.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2133.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2133);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

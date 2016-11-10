@@ -1,0 +1,489 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_musb_host_fix_ep_allocation
+# Date: Thu Feb 19 14:56:52 2009
+# Source: MontaVista Software, Inc.
+# MR: 29115
+# Type: Enhancement
+# Disposition: submitted to linux-usb@vger.kernel.org
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# The MUSB host driver doesn't make use of all the available endpoints in certain
+# cases since it prevents using the same numbered Rx/Tx endpoints simultaneously
+# for the periodic transfers even if they don't share the same FIFO.
+# In order to amend that, start using 'in_qh' and 'out_qh' fields of the 'struct
+# musb_hw_ep' to check the endpoint's business insted of the 'periodic' field in
+# the 'struct musb', getting rid of that (now useless) field.
+# 
+# While at it, optimize out loop induction variable in the endpoint lookup code
+# and remove duplicate/unneeded code elsewhere...
+# 
+#  drivers/usb/musb/musb_core.h   |    1 
+#  drivers/usb/musb/musb_host.c   |   37 ++++++---------
+#  drivers/usb/musb/musb_procfs.c |  101 +++++++++++++++++------------------------
+#  3 files changed, 60 insertions(+), 79 deletions(-)
+# 
+
+PATCHNUM=2047
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 29115
+Type: Enhancement
+Disposition: submitted to linux-usb@vger.kernel.org
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+The MUSB host driver doesn't make use of all the available endpoints in certain
+cases since it prevents using the same numbered Rx/Tx endpoints simultaneously
+for the periodic transfers even if they don't share the same FIFO.
+In order to amend that, start using 'in_qh' and 'out_qh' fields of the 'struct
+musb_hw_ep' to check the endpoint's business insted of the 'periodic' field in
+the 'struct musb', getting rid of that (now useless) field.
+
+While at it, optimize out loop induction variable in the endpoint lookup code
+and remove duplicate/unneeded code elsewhere...
+
+ drivers/usb/musb/musb_core.h   |    1 
+ drivers/usb/musb/musb_host.c   |   37 ++++++---------
+ drivers/usb/musb/musb_procfs.c |  101 +++++++++++++++++------------------------
+ mvl_patches/pro50-2047.c       |   16 ++++++
+ 4 files changed, 76 insertions(+), 79 deletions(-)
+
+Index: linux-2.6.18/drivers/usb/musb/musb_core.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.h
++++ linux-2.6.18/drivers/usb/musb/musb_core.h
+@@ -344,7 +344,6 @@ struct musb {
+ 	struct list_head	control;	/* of musb_qh */
+ 	struct list_head	in_bulk;	/* of musb_qh */
+ 	struct list_head	out_bulk;	/* of musb_qh */
+-	struct musb_qh		*periodic[32];	/* tree of interrupt+iso */
+ #endif
+ 
+ 	/* called with IRQs blocked; ON/nonzero implies starting a session,
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -395,7 +395,6 @@ musb_giveback(struct musb_qh *qh, struct
+ 			 * de-allocated if it's tracked and allocated;
+ 			 * and where we'd update the schedule tree...
+ 			 */
+-			musb->periodic[ep->epnum] = NULL;
+ 			kfree(qh);
+ 			qh = NULL;
+ 			break;
+@@ -1727,8 +1726,10 @@ static int musb_schedule(
+ 			 * in progress -- as we don't have a queue, we can
+ 			 * only have one EP served at a time...
+ 			 */
+-			best_end = hw_ep->epnum;
+-			if (musb->periodic[best_end] == NULL)
++			if (is_in || hw_ep->is_shared_fifo) {
++				if (hw_ep->in_qh == NULL)
++					goto periodic;
++			} else if (hw_ep->out_qh == NULL)
+ 				goto periodic;
+ 			else
+ 				return -EBUSY;
+@@ -1743,31 +1744,26 @@ static int musb_schedule(
+ 
+ 	/* else, periodic transfers get muxed to other endpoints */
+ 
+-	/* FIXME this doesn't consider direction, so it can only
+-	 * work for one half of the endpoint hardware, and assumes
+-	 * the previous cases handled all non-shared endpoints...
+-	 */
+-
+-	/* we know this qh hasn't been scheduled, so all we need to do
+-	 * is choose which hardware endpoint to put it on ...
++	/*
++	 * We know this qh hasn't been scheduled, so all we need to do
++	 * is choose which hardware endpoint to put it on...
+ 	 *
+ 	 * REVISIT what we really want here is a regular schedule tree
+-	 * like e.g. OHCI uses, but for now musb->periodic is just an
+-	 * array of the _single_ logical endpoint associated with a
+-	 * given physical one (identity mapping logical->physical).
+-	 *
+-	 * that simplistic approach makes TT scheduling a lot simpler;
+-	 * there is none, and thus none of its complexity...
++	 * like e.g. OHCI uses.
+ 	 */
+ 	best_diff = 4096;
+ 	best_end = -1;
+ 
+-	for (epnum = 1; epnum < musb->nr_endpoints; epnum++) {
++	for (epnum = 1, hw_ep = musb->endpoints + 1; epnum < musb->nr_endpoints;
++	     epnum++, hw_ep++) {
+ 		int	diff;
+ 
+-		if (musb->periodic[epnum])
++		if (is_in || hw_ep->is_shared_fifo) {
++			if (hw_ep->in_qh != NULL)
++				continue;
++		} else if (hw_ep->out_qh != NULL)
+ 			continue;
+-		hw_ep = &musb->endpoints[epnum];
++
+ 		if (hw_ep == musb->bulk_ep || hw_ep == musb->iso_ep)
+ 			continue;
+ 
+@@ -1787,8 +1783,7 @@ static int musb_schedule(
+ 	hw_ep = musb->endpoints + best_end;
+ periodic:
+ 	idle = 1;
+-	musb->periodic[best_end] = qh;
+-	DBG(4, "qh %p periodic slot %d\n", qh, best_end);
++	DBG(4, "qh %p periodic slot %d\n", qh, hw_ep->epnum);
+ success:
+ 	qh->hw_ep = hw_ep;
+ 	qh->hep->hcpriv = qh;
+Index: linux-2.6.18/drivers/usb/musb/musb_procfs.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_procfs.c
++++ linux-2.6.18/drivers/usb/musb/musb_procfs.c
+@@ -232,13 +232,16 @@ dump_end_info(struct musb *musb, u8 epnu
+ 			} else if (hw_ep == musb->bulk_ep) {
+ 				dump_tx = !list_empty(&musb->out_bulk);
+ 				dump_rx = !list_empty(&musb->in_bulk);
+-			} else if (musb->periodic[epnum]) {
++			} else if (hw_ep->in_qh != NULL) {
+ 				struct usb_host_endpoint	*hep;
+ 
+-				hep = musb->periodic[epnum]->hep;
+-				dump_rx = hep->desc.bEndpointAddress
+-						& USB_ENDPOINT_DIR_MASK;
++				hep = hw_ep->in_qh->hep;
++				dump_rx = hep->desc.bEndpointAddress &
++					  USB_ENDPOINT_DIR_MASK;
+ 				dump_tx = !dump_rx;
++			} else if (hw_ep->out_qh != NULL) {
++				dump_tx = 1;
++				dump_rx = 0;
+ 			} else
+ 				break;
+ 			/* END TEMPORARY */
+@@ -248,8 +251,7 @@ dump_end_info(struct musb *musb, u8 epnu
+ 				code = snprintf(buf, max,
+ 					"\nRX%d: %s rxcsr %04x interval %02x "
+ 					"max %04x type %02x; "
+-					"dev %d hub %d port %d"
+-					"\n",
++					"dev %d hub %d port %d\n",
+ 					epnum,
+ 					hw_ep->rx_double_buffered
+ 						? "2buf" : "1buf",
+@@ -311,33 +313,27 @@ dump_end_info(struct musb *musb, u8 epnu
+ 					max -= code;
+ 				}
+ 
+-				if (hw_ep == musb->bulk_ep
+-						&& !list_empty(
+-							&musb->in_bulk)) {
+-					code = dump_queue(&musb->in_bulk,
+-							buf, max);
+-					if (code <= 0)
+-						break;
+-					code = min(code, (int) max);
+-					buf += code;
+-					max -= code;
+-				} else if (musb->periodic[epnum]) {
+-					code = dump_qh(musb->periodic[epnum],
+-							buf, max);
+-					if (code <= 0)
+-						break;
+-					code = min(code, (int) max);
+-					buf += code;
+-					max -= code;
+-				}
+-			}
++				if (hw_ep == musb->bulk_ep &&
++				    !list_empty(&musb->in_bulk)) {
++					code = dump_queue(&musb->in_bulk, buf,
++							  max);
++				} else if (hw_ep->in_qh != NULL) {
++					code = dump_qh(hw_ep->in_qh,  buf, max);
++				} else
++					goto dumped_rx;
+ 
++				if (code <= 0)
++					break;
++				code = min_t(int, code, max);
++				buf += code;
++				max -= code;
++			}
++dumped_rx:
+ 			if (dump_tx) {
+ 				code = snprintf(buf, max,
+ 					"\nTX%d: %s txcsr %04x interval %02x "
+ 					"max %04x type %02x; "
+-					"dev %d hub %d port %d"
+-					"\n",
++					"dev %d hub %d port %d\n",
+ 					epnum,
+ 					hw_ep->tx_double_buffered
+ 						? "2buf" : "1buf",
+@@ -392,37 +388,28 @@ dump_end_info(struct musb *musb, u8 epnu
+ 					max -= code;
+ 				}
+ 
+-				if (hw_ep == musb->control_ep
+-						&& !list_empty(
+-							&musb->control)) {
+-					code = dump_queue(&musb->control,
+-							buf, max);
+-					if (code <= 0)
+-						break;
+-					code = min(code, (int) max);
+-					buf += code;
+-					max -= code;
+-				} else if (hw_ep == musb->bulk_ep
+-						&& !list_empty(
+-							&musb->out_bulk)) {
+-					code = dump_queue(&musb->out_bulk,
+-							buf, max);
+-					if (code <= 0)
+-						break;
+-					code = min(code, (int) max);
+-					buf += code;
+-					max -= code;
+-				} else if (musb->periodic[epnum]) {
+-					code = dump_qh(musb->periodic[epnum],
+-							buf, max);
+-					if (code <= 0)
+-						break;
+-					code = min(code, (int) max);
+-					buf += code;
+-					max -= code;
+-				}
++				if (hw_ep == musb->control_ep &&
++				    !list_empty(&musb->control)) {
++					code = dump_queue(&musb->control,  buf,
++							  max);
++				} else if (hw_ep == musb->bulk_ep &&
++					   !list_empty(&musb->out_bulk)) {
++					code = dump_queue(&musb->out_bulk, buf,
++							  max);
++				} else if (hw_ep->out_qh != NULL) {
++					code = dump_qh(hw_ep->out_qh, buf, max);
++				} else if (hw_ep->in_qh  != NULL) {
++					code = dump_qh(hw_ep->in_qh,  buf, max);
++				} else
++					goto dumped_tx;
++				if (code <= 0)
++					break;
++				code = min_t(int, code, max);
++				buf += code;
++				max -= code;
+ 			}
+ 		}
++dumped_tx:	;
+ #endif
+ #ifdef CONFIG_USB_GADGET_MUSB_HDRC
+ 		if (is_peripheral_active(musb)) {
+Index: linux-2.6.18/mvl_patches/pro50-2047.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2047.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2047);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

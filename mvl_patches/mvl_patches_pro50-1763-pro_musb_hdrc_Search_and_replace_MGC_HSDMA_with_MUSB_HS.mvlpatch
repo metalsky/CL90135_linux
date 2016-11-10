@@ -1,0 +1,375 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_MGC_HSDMA_with_MUSB_HS
+# Date: Fri Sep 19 14:15:51 2008
+# From 0924f919d2c783e8c3b6be9ee89b5c82d65b28cb Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Fri, 17 Aug 2007 01:43:29 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace MGC_HSDMA with MUSB_HSDMA
+# 
+# Search and replace MGC_HSDMA with MUSB_HSDMA
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 3481a09192068c03e71e158afbff8521f1a7150a)
+
+PATCHNUM=1763
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 0924f919d2c783e8c3b6be9ee89b5c82d65b28cb Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Fri, 17 Aug 2007 01:43:29 -0700
+Subject: [PATCH] musb_hdrc: Search and replace MGC_HSDMA with MUSB_HSDMA
+
+Search and replace MGC_HSDMA with MUSB_HSDMA
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 3481a09192068c03e71e158afbff8521f1a7150a)
+Index: linux-2.6.18/drivers/usb/musb/musbhsdma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbhsdma.c
++++ linux-2.6.18/drivers/usb/musb/musbhsdma.c
+@@ -50,7 +50,7 @@
+ #define MUSB_HSDMA_ADDRESS		0x8
+ #define MUSB_HSDMA_COUNT		0xc
+ 
+-#define MGC_HSDMA_CHANNEL_OFFSET(_bChannel, _offset)		\
++#define MUSB_HSDMA_CHANNEL_OFFSET(_bChannel, _offset)		\
+ 		(MUSB_HSDMA_BASE + (_bChannel << 4) + _offset)
+ 
+ /* control register (16-bit): */
+@@ -62,12 +62,12 @@
+ #define MUSB_HSDMA_BUSERROR_SHIFT		8
+ #define MUSB_HSDMA_BURSTMODE_SHIFT		9
+ #define MUSB_HSDMA_BURSTMODE		(3 << MUSB_HSDMA_BURSTMODE_SHIFT)
+-#define MGC_HSDMA_BURSTMODE_UNSPEC	0
+-#define MGC_HSDMA_BURSTMODE_INCR4	1
+-#define MGC_HSDMA_BURSTMODE_INCR8	2
+-#define MGC_HSDMA_BURSTMODE_INCR16	3
++#define MUSB_HSDMA_BURSTMODE_UNSPEC	0
++#define MUSB_HSDMA_BURSTMODE_INCR4	1
++#define MUSB_HSDMA_BURSTMODE_INCR8	2
++#define MUSB_HSDMA_BURSTMODE_INCR16	3
+ 
+-#define MGC_HSDMA_CHANNELS		8
++#define MUSB_HSDMA_CHANNELS		8
+ 
+ struct musb_dma_controller;
+ 
+@@ -84,7 +84,7 @@ struct musb_dma_channel {
+ 
+ struct musb_dma_controller {
+ 	struct dma_controller		Controller;
+-	struct musb_dma_channel		aChannel[MGC_HSDMA_CHANNELS];
++	struct musb_dma_channel		aChannel[MUSB_HSDMA_CHANNELS];
+ 	void 				*pDmaPrivate;
+ 	void __iomem 			*pCoreBase;
+ 	u8 				bChannelCount;
+@@ -112,7 +112,7 @@ static int dma_controller_stop(struct dm
+ 		dev_err(musb->controller,
+ 			"Stopping DMA controller while channel active\n");
+ 
+-		for (bBit = 0; bBit < MGC_HSDMA_CHANNELS; bBit++) {
++		for (bBit = 0; bBit < MUSB_HSDMA_CHANNELS; bBit++) {
+ 			if (controller->bmUsedChannels & (1 << bBit)) {
+ 				pChannel = &(controller->aChannel[bBit].Channel);
+ 				dma_channel_release(pChannel);
+@@ -134,7 +134,7 @@ static struct dma_channel* dma_channel_a
+ 	struct musb_dma_controller *controller =
+ 			container_of(c, struct musb_dma_controller, Controller);
+ 
+-	for (bBit = 0; bBit < MGC_HSDMA_CHANNELS; bBit++) {
++	for (bBit = 0; bBit < MUSB_HSDMA_CHANNELS; bBit++) {
+ 		if (!(controller->bmUsedChannels & (1 << bBit))) {
+ 			controller->bmUsedChannels |= (1 << bBit);
+ 			pImplChannel = &(controller->aChannel[bBit]);
+@@ -191,13 +191,13 @@ static void configure_channel(struct dma
+ 		}
+ 		if (packet_sz >= 64) {
+ 			csr |=
+-			    MGC_HSDMA_BURSTMODE_INCR16 << MUSB_HSDMA_BURSTMODE_SHIFT;
++			    MUSB_HSDMA_BURSTMODE_INCR16 << MUSB_HSDMA_BURSTMODE_SHIFT;
+ 		} else if (packet_sz >= 32) {
+ 			csr |=
+-			    MGC_HSDMA_BURSTMODE_INCR8 << MUSB_HSDMA_BURSTMODE_SHIFT;
++			    MUSB_HSDMA_BURSTMODE_INCR8 << MUSB_HSDMA_BURSTMODE_SHIFT;
+ 		} else if (packet_sz >= 16) {
+ 			csr |=
+-			    MGC_HSDMA_BURSTMODE_INCR4 << MUSB_HSDMA_BURSTMODE_SHIFT;
++			    MUSB_HSDMA_BURSTMODE_INCR4 << MUSB_HSDMA_BURSTMODE_SHIFT;
+ 		}
+ 	}
+ 
+@@ -208,15 +208,15 @@ static void configure_channel(struct dma
+ 
+ 	/* address/count */
+ 	musb_writel(mbase,
+-		    MGC_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_ADDRESS),
++		    MUSB_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_ADDRESS),
+ 		    dma_addr);
+ 	musb_writel(mbase,
+-		    MGC_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_COUNT),
++		    MUSB_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_COUNT),
+ 		    len);
+ 
+ 	/* control (this should start things) */
+ 	musb_writew(mbase,
+-		    MGC_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_CONTROL),
++		    MUSB_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_CONTROL),
+ 		    csr);
+ }
+ 
+@@ -283,11 +283,11 @@ static int dma_channel_abort(struct dma_
+ 		}
+ 
+ 		musb_writew(mbase,
+-		   MGC_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_CONTROL), 0);
++		   MUSB_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_CONTROL), 0);
+ 		musb_writel(mbase,
+-		   MGC_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_ADDRESS), 0);
++		   MUSB_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_ADDRESS), 0);
+ 		musb_writel(mbase,
+-		   MGC_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_COUNT), 0);
++		   MUSB_HSDMA_CHANNEL_OFFSET(bChannel, MUSB_HSDMA_COUNT), 0);
+ 
+ 		pChannel->status = MUSB_DMA_STATUS_FREE;
+ 	}
+@@ -311,14 +311,14 @@ static irqreturn_t dma_controller_irq(in
+ 	if (!int_hsdma)
+ 		goto done;
+ 
+-	for (bChannel = 0; bChannel < MGC_HSDMA_CHANNELS; bChannel++) {
++	for (bChannel = 0; bChannel < MUSB_HSDMA_CHANNELS; bChannel++) {
+ 		if (int_hsdma & (1 << bChannel)) {
+ 			pImplChannel = (struct musb_dma_channel *)
+ 					&(controller->aChannel[bChannel]);
+ 			pChannel = &pImplChannel->Channel;
+ 
+ 			csr = musb_readw(mbase,
+-				       MGC_HSDMA_CHANNEL_OFFSET(bChannel,
++				       MUSB_HSDMA_CHANNEL_OFFSET(bChannel,
+ 							MUSB_HSDMA_CONTROL));
+ 
+ 			if (csr & (1 << MUSB_HSDMA_BUSERROR_SHIFT)) {
+@@ -326,7 +326,7 @@ static irqreturn_t dma_controller_irq(in
+ 				    MUSB_DMA_STATUS_BUS_ABORT;
+ 			} else {
+ 				dwAddress = musb_readl(mbase,
+-						MGC_HSDMA_CHANNEL_OFFSET(
++						MUSB_HSDMA_CHANNEL_OFFSET(
+ 							bChannel,
+ 							MUSB_HSDMA_ADDRESS));
+ 				pChannel->actual_len =
+@@ -403,7 +403,7 @@ dma_controller_create(struct musb *musb,
+ 				GFP_KERNEL)))
+ 		return NULL;
+ 
+-	controller->bChannelCount = MGC_HSDMA_CHANNELS;
++	controller->bChannelCount = MUSB_HSDMA_CHANNELS;
+ 	controller->pDmaPrivate = musb;
+ 	controller->pCoreBase = pCoreBase;
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1763.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1763.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1763);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

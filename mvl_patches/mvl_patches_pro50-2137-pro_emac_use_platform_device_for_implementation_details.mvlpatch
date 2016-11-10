@@ -1,0 +1,520 @@
+#! /usr/bin/env bash
+# Patch: -pro_emac_use_platform_device_for_implementation_details
+# Date: Thu Feb 19 15:03:11 2009
+# Source: MontaVista Software, Inc.
+# MR: 28780
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+# Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description: 
+# Use platform device to choose DaVinci EMAC implementation details.
+# 
+#  arch/arm/mach-davinci/devices.c |    4 +
+#  drivers/net/davinci_emac.c      |   85 +++++++++++++++++-----------------------
+#  include/linux/davinci_emac.h    |    2 
+#  3 files changed, 43 insertions(+), 48 deletions(-)
+# 
+
+PATCHNUM=2137
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28780
+Type: Enhancement
+Disposition: local
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description: 
+Use platform device to choose DaVinci EMAC implementation details.
+
+ arch/arm/mach-davinci/devices.c |    4 ++
+ drivers/net/davinci_emac.c      |   79 +++++++++++++++++-----------------------
+ include/linux/davinci_emac.h    |    2 +
+ mvl_patches/pro50-2137.c        |   16 ++++++++
+ 4 files changed, 57 insertions(+), 44 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/devices.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/devices.c
++++ linux-2.6.18/arch/arm/mach-davinci/devices.c
+@@ -215,6 +215,8 @@ static struct emac_init_config dm646x_em
+ 	.mdio_reset_line = 0,
+ 	.mdio_bus_frequency = 148500000,
+ 	.mdio_clock_frequency = 2200000,
++	.registers_old = 0,
++	.gigabit = 1,
+ };
+ 
+ static struct emac_init_config dm644x_emac_data = {
+@@ -223,6 +225,8 @@ static struct emac_init_config dm644x_em
+ 	.mdio_reset_line = 0,
+ 	.mdio_bus_frequency = 76500000,
+ 	.mdio_clock_frequency = 2200000,
++	.registers_old = 1,
++	.gigabit = 0,
+ };
+ 
+ static struct platform_device emac_device = {
+Index: linux-2.6.18/drivers/net/davinci_emac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac.c
++++ linux-2.6.18/drivers/net/davinci_emac.c
+@@ -1383,9 +1383,6 @@ static const char emac_ddcversion_string
+ 
+ static u32 emac_debug = 0x0;	/* no debug flags by default */
+ 
+-static bool device_is_dm646x = FALSE;
+-static bool device_is_dm644x = FALSE;
+-
+ /* ---------------------------------------------------------------
+  * prototypes
+  * --------------------------------------------------------------- */
+@@ -1767,13 +1764,13 @@ static void emac_net_get_config(struct e
+ 		} else {
+ 			if (g_link_mode == PHY_DUPLEX_FULL) {
+ 				i_cfg->phy_mode = SNWAY_FD10 | SNWAY_FD100;
+-                                if (device_is_dm646x)
+-                                        i_cfg->phy_mode |= SNWAY_FD1000;
++				if (dev->init_cfg.gigabit)
++					i_cfg->phy_mode |= SNWAY_FD1000;
+ 
+ 			} else {
+ 				i_cfg->phy_mode = SNWAY_HD10 | SNWAY_HD100;
+-                                if (device_is_dm646x)
+-                                        i_cfg->phy_mode |= SNWAY_HD1000;
++				if (dev->init_cfg.gigabit)
++					i_cfg->phy_mode |= SNWAY_HD1000;
+ 			}
+ 		}
+ 	}
+@@ -1795,11 +1792,6 @@ static void emac_net_get_config(struct e
+ 	i_cfg->rx_cfg.multicast_channel = EMAC_DEFAULT_MULTICAST_CHANNEL;
+ 	i_cfg->rx_cfg.buffer_offset = EMAC_DEFAULT_BUFFER_OFFSET;
+ 
+-	if (g_link_speed == 1000)
+-		dev->giga_bit_enable = TRUE;
+-	else
+-		dev->giga_bit_enable = FALSE;
+-
+ 	tx_ch_cfg->ch_num = EMAC_DEFAULT_TX_CHANNEL;
+ 	tx_ch_cfg->ch_dir = NET_CH_DIR_TX;
+ 	tx_ch_cfg->ch_state = NET_CH_UNINITIALIZED;
+@@ -2851,7 +2843,7 @@ static int phy_init(struct emac_dev *dev
+ 
+ 	dev->phydev->supported =  PHY_BASIC_FEATURES;
+ 
+-	if (dev->giga_bit_enable)
++	if (dev->init_cfg.gigabit)
+ 		dev->phydev->supported |= SUPPORTED_1000baseT_Full;
+ 
+ 	dev->phydev->advertising = dev->phydev->supported;
+@@ -3486,6 +3478,11 @@ static void emac_update_phy_status(struc
+ 		}
+ 	}
+ 
++	if (dev->status.phy_speed == 1000)
++		dev->mac_control |= (1 << EMAC_MACCONTROL_GIGABITEN_SHIFT);
++	else
++		dev->mac_control &= ~(1 << EMAC_MACCONTROL_GIGABITEN_SHIFT);
++
+ 	/* write mac control register from stored value */
+ 	dev->regs->mac_control = dev->mac_control;
+ 
+@@ -3787,7 +3784,7 @@ static int emac_open(struct emac_dev *de
+ 	/* get init config info structure pointer for easy access */
+ 	init_cfg = &dev->init_cfg;
+ 
+-        if (device_is_dm646x) {
++	if (!dev->init_cfg.registers_old) {
+ 		/* bring EMAC out of reset - for clean implementation, reset
+ 		 * and then unreset the module */
+ 		/* for EMAC 2.6 and beyond, reset is internal to the module */
+@@ -3835,7 +3832,7 @@ static int emac_open(struct emac_dev *de
+ 	/* enable adapter check interrupts - disable stats interupt */
+ 	dev->regs->mac_int_mask_set = EMAC_MAC_HOST_ERR_INTMASK_VAL;
+ 
+-	if (device_is_dm646x) {
++	if (!dev->init_cfg.registers_old) {
+ 		/* update wrapper book-keeping fields */
+ 		dev->misc_en = (EMAC_MAC_HOST_ERR_INTMASK_VAL);
+ 		dm646x_wrap->C0_MISCEN = EMAC_MAC_HOST_ERR_INTMASK_VAL;
+@@ -3845,8 +3842,7 @@ static int emac_open(struct emac_dev *de
+ 	dev->drv_state = DRV_OPENED;
+ 
+ 	/* set the mac_control register */
+-	dev->mac_control = (1 << EMAC_MACCONTROL_TXPTYPE_SHIFT) |
+-	((dev->giga_bit_enable ? 1 : 0) << EMAC_MACCONTROL_GIGABITEN_SHIFT);
++	dev->mac_control = (1 << EMAC_MACCONTROL_TXPTYPE_SHIFT);
+ 	dev->regs->mac_control = dev->mac_control;
+ 
+ 	/* set the PHY to a given mode - as per config parameters and
+@@ -4666,7 +4662,7 @@ static int emac_enable_channel(struct em
+ 		dev->regs->rx_int_mask_set = (1 << channel);
+ 		/* disable channel interrupt */
+ 		dev->regs->tx_int_mask_clear = (1 << channel);
+-		if (device_is_dm646x) {
++		if (!dev->init_cfg.registers_old) {
+ 			/* update wrapper book-keeping fields */
+ 			dev->tx_en &= (~(1 << channel));
+ 			((volatile struct ewrap_dm646x_regs)
+@@ -4677,7 +4673,7 @@ static int emac_enable_channel(struct em
+ 		dev->tx_int_threshold[channel] =
+ 			dev->tx_cppi[channel]->ch_info.service_max;
+ 
+-		if (device_is_dm646x) {
++		if (!dev->init_cfg.registers_old) {
+ 		/* update wrapper book-keeping fields */
+ 			dev->rx_en = (1 << channel);
+ 			((volatile struct ewrap_dm646x_regs)dev->
+@@ -4744,7 +4740,7 @@ static int emac_disable_channel(struct e
+ 
+ 		/* disable interrupt */
+ 		dev->regs->tx_int_mask_clear = (1 << channel);
+-                if (device_is_dm646x) {
++                if (!dev->init_cfg.registers_old) {
+                 /* update wrapper book-keeping fields */
+                         dev->tx_en &= (~(1 << channel));
+                         ((volatile struct ewrap_dm646x_regs)dev->
+@@ -5281,7 +5277,7 @@ static int emac_pkt_process(struct emac_
+ 	u32 mac_in_vector_rx_int_shift;
+ 	u32 mac_in_vector_host_int_vec;
+ 
+-	if (device_is_dm646x) {
++	if (!dev->init_cfg.registers_old) {
+ 		mac_in_vector_tx_int_vec = EMAC_DM646X_MAC_IN_VECTOR_TX_INT_VEC;
+ 		mac_in_vector_tx_int_shift =
+ 			EMAC_DM646X_MAC_IN_VECTOR_TX_INT_SHIFT;
+@@ -5335,7 +5331,7 @@ static int emac_pkt_process(struct emac_
+ 			if (!handle_pkts_and_status && is_eoq)
+ 				/* disable channel interrupt */
+ 				dev->regs->tx_int_mask_clear = (1 << channel);
+-				if (device_is_dm646x) {
++				if (!dev->init_cfg.registers_old) {
+ 					/* update wrapper book-keeping fields */
+ 					dev->tx_en &= (~(1 << channel));
+ 					((volatile struct ewrap_dm646x_regs)dev->
+@@ -5516,7 +5512,7 @@ static int emac_send(struct emac_dev *de
+ 			if (dev->tx_interrupt_disable == TRUE) {
+ 				/* enable channel interrupt */
+ 				dev->regs->tx_int_mask_set = (1 << channel);
+-				if (device_is_dm646x) {
++				if (!dev->init_cfg.registers_old) {
+ 					volatile struct ewrap_dm646x_regs *dm646x_wrap;
+ 					dm646x_wrap = &dev->ewrap_regs->
+ 					wrapper_646x_regs;
+@@ -6087,13 +6083,13 @@ static int emac_dev_tx(struct sk_buff *s
+ /* emac_disable_interrupt : Turns of the interrupts from the
+  * peripheral to the CPU. we have four interrupt lines
+  * running to the CPU, we handle them as a set*/
+-static void emac_disable_interrupt(struct emac_dev *edev)
++static void emac_disable_interrupt(struct emac_dev *dev)
+ {
+-        if (device_is_dm646x) {
++        if (!dev->init_cfg.registers_old) {
+                 unsigned long flags;
+                 volatile struct ewrap_dm646x_regs *dm646x_wrap;
+ 
+-                dm646x_wrap = &edev->ewrap_regs->wrapper_646x_regs;
++                dm646x_wrap = &dev->ewrap_regs->wrapper_646x_regs;
+                 local_irq_save(flags);
+                 /* Program C0_Int_En to zero to turn off
+                  * interrupts to the CPU */
+@@ -6106,26 +6102,26 @@ static void emac_disable_interrupt(struc
+         } else {
+                 volatile struct ewrap_dm644x_regs *dm644x_wrap;
+ 
+-                dm644x_wrap = &edev->ewrap_regs->wrapper_644x_regs;
++		dm644x_wrap = &dev->ewrap_regs->wrapper_644x_regs;
+                 dm644x_wrap->EWCTL = 0x0;
+         }
+ }
+ 
+-static void emac_enable_interrupt(struct emac_dev *edev, int ack_eoi)
++static void emac_enable_interrupt(struct emac_dev *dev, int ack_eoi)
+ {
+-        if (device_is_dm646x) {
++        if (!dev->init_cfg.registers_old) {
+                 unsigned long flags;
+                 volatile struct ewrap_dm646x_regs *dm646x_wrap;
+ 
+-                dm646x_wrap = &edev->ewrap_regs->wrapper_646x_regs;
++                dm646x_wrap = &dev->ewrap_regs->wrapper_646x_regs;
+ 
+                 local_irq_save(flags);
+ 
+                 /* Program C0_Int_En to zero to appropriate values */
+-                dm646x_wrap->C0_RXTHRESHEN = edev->rx_thresh_en;
+-                dm646x_wrap->C0_RXINTEN = edev->rx_en;
+-                dm646x_wrap->C0_TXINTEN = edev->tx_en;
+-                dm646x_wrap->C0_MISCEN = edev->misc_en;
++                dm646x_wrap->C0_RXTHRESHEN = dev->rx_thresh_en;
++                dm646x_wrap->C0_RXINTEN = dev->rx_en;
++                dm646x_wrap->C0_TXINTEN = dev->tx_en;
++                dm646x_wrap->C0_MISCEN = dev->misc_en;
+ 
+                 if (ack_eoi) {
+ 
+@@ -6133,16 +6129,16 @@ static void emac_enable_interrupt(struct
+                          * ack by writing appropriate values to the EOI
+                          * register*/
+                         /* ack rxthresh- only then a new pulse is generated */
+-                        edev->regs->mac_EOI_vector =
++			dev->regs->mac_EOI_vector =
+                             EMAC_DM646X_MAC_EOI_C0_RXTHRESH;
+ 			/*ack rxen only then a new pulse will be generated */
+-			edev->regs->mac_EOI_vector =
++			dev->regs->mac_EOI_vector =
+ 				EMAC_DM646X_MAC_EOI_C0_RXEN;
+                         /*ack txen- only then a new pulse will be generated */
+-                        edev->regs->mac_EOI_vector =
++			dev->regs->mac_EOI_vector =
+                             EMAC_DM646X_MAC_EOI_C0_TXEN;
+ 			/*ack macen- only then a new pulse will be generated */
+-                        edev->regs->mac_EOI_vector =
++			dev->regs->mac_EOI_vector =
+                             EMAC_DM646X_MAC_EOI_C0_MISCEN;
+                 }
+ 
+@@ -6150,7 +6146,7 @@ static void emac_enable_interrupt(struct
+         } else {
+                 volatile struct ewrap_dm644x_regs *dm644x_wrap;
+ 
+-                dm644x_wrap = &edev->ewrap_regs->wrapper_644x_regs;
++                dm644x_wrap = &dev->ewrap_regs->wrapper_644x_regs;
+                 dm644x_wrap->EWCTL = 0x1;
+         }
+ }
+@@ -6328,11 +6324,6 @@ static int __init davinci_emac_probe(str
+ 	struct emac_dev *dev;
+ 	int err = 0;
+ 
+-        if (cpu_is_davinci_dm6467())
+-                device_is_dm646x = TRUE;
+-        else
+-                device_is_dm644x = TRUE;
+-
+ 	/* obtain clock rate from kernel clock API's */
+ 	emac_clk = clk_get(0, "EMACCLK");
+ 	if (IS_ERR(emac_clk)) {
+Index: linux-2.6.18/include/linux/davinci_emac.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/davinci_emac.h
++++ linux-2.6.18/include/linux/davinci_emac.h
+@@ -57,6 +57,8 @@ struct emac_init_config {
+ 	u32 mdio_tick_msec;
+ 	u32 mib64cnt_msec;
+ 	u32 phy_mode;
++	u32 registers_old;
++	u32 gigabit;
+ 	struct emac_rx_config rx_cfg;
+ 
+ 	int mdio_irqs[32];
+Index: linux-2.6.18/mvl_patches/pro50-2137.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2137.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2137);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

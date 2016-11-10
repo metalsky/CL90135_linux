@@ -1,0 +1,647 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_MGC_END0_with_MUSB_EP0
+# Date: Fri Sep 19 14:15:33 2008
+# From 3bac8cfef144a02448c7e4044e7512b033621e11 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Fri, 17 Aug 2007 01:39:59 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace MGC_END0 with MUSB_EP0
+# 
+# Search and replace MGC_END0 with MUSB_EP0
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 5e678ea8e704070e8519782b5253b393cd14cdd0)
+
+PATCHNUM=1760
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 3bac8cfef144a02448c7e4044e7512b033621e11 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Fri, 17 Aug 2007 01:39:59 -0700
+Subject: [PATCH] musb_hdrc: Search and replace MGC_END0 with MUSB_EP0
+
+Search and replace MGC_END0 with MUSB_EP0
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 5e678ea8e704070e8519782b5253b393cd14cdd0)
+Index: linux-2.6.18/drivers/usb/musb/g_ep0.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/g_ep0.c
++++ linux-2.6.18/drivers/usb/musb/g_ep0.c
+@@ -58,12 +58,12 @@
+ static char *decode_ep0stage(u8 stage)
+ {
+ 	switch(stage) {
+-	case MGC_END0_STAGE_SETUP:	return "idle";
+-	case MGC_END0_STAGE_TX:		return "in";
+-	case MGC_END0_STAGE_RX:		return "out";
+-	case MGC_END0_STAGE_ACKWAIT:	return "wait";
+-	case MGC_END0_STAGE_STATUSIN:	return "in/status";
+-	case MGC_END0_STAGE_STATUSOUT:	return "out/status";
++	case MUSB_EP0_STAGE_SETUP:	return "idle";
++	case MUSB_EP0_STAGE_TX:		return "in";
++	case MUSB_EP0_STAGE_RX:		return "out";
++	case MUSB_EP0_STAGE_ACKWAIT:	return "wait";
++	case MUSB_EP0_STAGE_STATUSIN:	return "in/status";
++	case MUSB_EP0_STAGE_STATUSOUT:	return "out/status";
+ 	default:			return "?";
+ 	}
+ }
+@@ -197,7 +197,7 @@ service_in_request(struct musb *musb,
+  */
+ static void musb_g_ep0_giveback(struct musb *musb, struct usb_request *req)
+ {
+-	musb->ep0_state = MGC_END0_STAGE_SETUP;
++	musb->ep0_state = MUSB_EP0_STAGE_SETUP;
+ 	musb_g_giveback(&musb->endpoints[0].ep_in, req, 0);
+ }
+ 
+@@ -459,7 +459,7 @@ static void ep0_rxstate(struct musb *thi
+ 		req->actual += tmp;
+ 		tmp = MUSB_CSR0_P_SVDRXPKTRDY;
+ 		if (tmp < 64 || req->actual == req->length) {
+-			this->ep0_state = MGC_END0_STAGE_STATUSIN;
++			this->ep0_state = MUSB_EP0_STAGE_STATUSIN;
+ 			tmp |= MUSB_CSR0_P_DATAEND;
+ 		} else
+ 			req = NULL;
+@@ -506,7 +506,7 @@ static void ep0_txstate(struct musb *mus
+ 	/* update the flags */
+ 	if (fifo_count < MUSB_MAX_END0_PACKET
+ 			|| request->actual == request->length) {
+-		musb->ep0_state = MGC_END0_STAGE_STATUSOUT;
++		musb->ep0_state = MUSB_EP0_STAGE_STATUSOUT;
+ 		csr |= MUSB_CSR0_P_DATAEND;
+ 	} else
+ 		request = NULL;
+@@ -565,16 +565,16 @@ musb_read_setup(struct musb *musb, struc
+ 	if (req->wLength == 0) {
+ 		if (req->bRequestType & USB_DIR_IN)
+ 			musb->ackpend |= MUSB_CSR0_TXPKTRDY;
+-		musb->ep0_state = MGC_END0_STAGE_ACKWAIT;
++		musb->ep0_state = MUSB_EP0_STAGE_ACKWAIT;
+ 	} else if (req->bRequestType & USB_DIR_IN) {
+-		musb->ep0_state = MGC_END0_STAGE_TX;
++		musb->ep0_state = MUSB_EP0_STAGE_TX;
+ 		musb_writew(regs, MUSB_CSR0, MUSB_CSR0_P_SVDRXPKTRDY);
+ 		while ((musb_readw(regs, MUSB_CSR0)
+ 				& MUSB_CSR0_RXPKTRDY) != 0)
+ 			cpu_relax();
+ 		musb->ackpend = 0;
+ 	} else
+-		musb->ep0_state = MGC_END0_STAGE_RX;
++		musb->ep0_state = MUSB_EP0_STAGE_RX;
+ }
+ 
+ static int
+@@ -619,7 +619,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 		musb_writew(regs, MUSB_CSR0,
+ 				csr & ~MUSB_CSR0_P_SENTSTALL);
+ 		retval = IRQ_HANDLED;
+-		musb->ep0_state = MGC_END0_STAGE_SETUP;
++		musb->ep0_state = MUSB_EP0_STAGE_SETUP;
+ 		csr = musb_readw(regs, MUSB_CSR0);
+ 	}
+ 
+@@ -627,7 +627,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 	if (csr & MUSB_CSR0_P_SETUPEND) {
+ 		musb_writew(regs, MUSB_CSR0, MUSB_CSR0_P_SVDSETUPEND);
+ 		retval = IRQ_HANDLED;
+-		musb->ep0_state = MGC_END0_STAGE_SETUP;
++		musb->ep0_state = MUSB_EP0_STAGE_SETUP;
+ 		csr = musb_readw(regs, MUSB_CSR0);
+ 		/* NOTE:  request may need completion */
+ 	}
+@@ -638,7 +638,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 	 */
+ 	switch (musb->ep0_state) {
+ 
+-	case MGC_END0_STAGE_TX:
++	case MUSB_EP0_STAGE_TX:
+ 		/* irq on clearing txpktrdy */
+ 		if ((csr & MUSB_CSR0_TXPKTRDY) == 0) {
+ 			ep0_txstate(musb);
+@@ -646,7 +646,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 		}
+ 		break;
+ 
+-	case MGC_END0_STAGE_RX:
++	case MUSB_EP0_STAGE_RX:
+ 		/* irq on set rxpktrdy */
+ 		if (csr & MUSB_CSR0_RXPKTRDY) {
+ 			ep0_rxstate(musb);
+@@ -654,7 +654,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 		}
+ 		break;
+ 
+-	case MGC_END0_STAGE_STATUSIN:
++	case MUSB_EP0_STAGE_STATUSIN:
+ 		/* end of sequence #2 (OUT/RX state) or #3 (no data) */
+ 
+ 		/* update address (if needed) only @ the end of the
+@@ -679,7 +679,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 		}
+ 		/* FALLTHROUGH */
+ 
+-	case MGC_END0_STAGE_STATUSOUT:
++	case MUSB_EP0_STAGE_STATUSOUT:
+ 		/* end of sequence #1: write to host (TX state) */
+ 		{
+ 			struct usb_request	*req;
+@@ -689,10 +689,10 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 				musb_g_ep0_giveback(musb, req);
+ 		}
+ 		retval = IRQ_HANDLED;
+-		musb->ep0_state = MGC_END0_STAGE_SETUP;
++		musb->ep0_state = MUSB_EP0_STAGE_SETUP;
+ 		/* FALLTHROUGH */
+ 
+-	case MGC_END0_STAGE_SETUP:
++	case MUSB_EP0_STAGE_SETUP:
+ 		if (csr & MUSB_CSR0_RXPKTRDY) {
+ 			struct usb_ctrlrequest	setup;
+ 			int			handled = 0;
+@@ -724,7 +724,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 			 * device/endpoint feature set/clear operations)
+ 			 * plus SET_CONFIGURATION and others we must
+ 			 */
+-			case MGC_END0_STAGE_ACKWAIT:
++			case MUSB_EP0_STAGE_ACKWAIT:
+ 				handled = service_zero_data_request(
+ 						musb, &setup);
+ 
+@@ -732,7 +732,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 				if (handled > 0) {
+ 					musb->ackpend |= MUSB_CSR0_P_DATAEND;
+ 					musb->ep0_state =
+-						MGC_END0_STAGE_STATUSIN;
++						MUSB_EP0_STAGE_STATUSIN;
+ 				}
+ 				break;
+ 
+@@ -740,18 +740,18 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 			 * requests that we can't forward, GET_DESCRIPTOR
+ 			 * and others that we must
+ 			 */
+-			case MGC_END0_STAGE_TX:
++			case MUSB_EP0_STAGE_TX:
+ 				handled = service_in_request(musb, &setup);
+ 				if (handled > 0) {
+ 					musb->ackpend = MUSB_CSR0_TXPKTRDY
+ 						| MUSB_CSR0_P_DATAEND;
+ 					musb->ep0_state =
+-						MGC_END0_STAGE_STATUSOUT;
++						MUSB_EP0_STAGE_STATUSOUT;
+ 				}
+ 				break;
+ 
+ 			/* sequence #2 (OUT from host), always forward */
+-			default:		/* MGC_END0_STAGE_RX */
++			default:		/* MUSB_EP0_STAGE_RX */
+ 				break;
+ 			}
+ 
+@@ -774,7 +774,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ stall:
+ 				DBG(3, "stall (%d)\n", handled);
+ 				musb->ackpend |= MUSB_CSR0_P_SENDSTALL;
+-				musb->ep0_state = MGC_END0_STAGE_SETUP;
++				musb->ep0_state = MUSB_EP0_STAGE_SETUP;
+ finish:
+ 				musb_writew(regs, MUSB_CSR0,
+ 						musb->ackpend);
+@@ -783,7 +783,7 @@ finish:
+ 		}
+ 		break;
+ 
+-	case MGC_END0_STAGE_ACKWAIT:
++	case MUSB_EP0_STAGE_ACKWAIT:
+ 		/* This should not happen. But happens with tusb6010 with
+ 		 * g_file_storage and high speed. Do nothing.
+ 		 */
+@@ -794,7 +794,7 @@ finish:
+ 		/* "can't happen" */
+ 		WARN_ON(1);
+ 		musb_writew(regs, MUSB_CSR0, MUSB_CSR0_P_SENDSTALL);
+-		musb->ep0_state = MGC_END0_STAGE_SETUP;
++		musb->ep0_state = MUSB_EP0_STAGE_SETUP;
+ 		break;
+ 	}
+ 
+@@ -859,9 +859,9 @@ musb_g_ep0_queue(struct usb_ep *e, struc
+ 	}
+ 
+ 	switch (musb->ep0_state) {
+-	case MGC_END0_STAGE_RX:		/* control-OUT data */
+-	case MGC_END0_STAGE_TX:		/* control-IN data */
+-	case MGC_END0_STAGE_ACKWAIT:	/* zero-length data */
++	case MUSB_EP0_STAGE_RX:		/* control-OUT data */
++	case MUSB_EP0_STAGE_TX:		/* control-IN data */
++	case MUSB_EP0_STAGE_ACKWAIT:	/* zero-length data */
+ 		status = 0;
+ 		break;
+ 	default:
+@@ -881,15 +881,15 @@ musb_g_ep0_queue(struct usb_ep *e, struc
+ 	musb_ep_select(musb->mregs, 0);
+ 
+ 	/* sequence #1, IN ... start writing the data */
+-	if (musb->ep0_state == MGC_END0_STAGE_TX)
++	if (musb->ep0_state == MUSB_EP0_STAGE_TX)
+ 		ep0_txstate(musb);
+ 
+ 	/* sequence #3, no-data ... issue IN status */
+-	else if (musb->ep0_state == MGC_END0_STAGE_ACKWAIT) {
++	else if (musb->ep0_state == MUSB_EP0_STAGE_ACKWAIT) {
+ 		if (req->request.length)
+ 			status = -EINVAL;
+ 		else {
+-			musb->ep0_state = MGC_END0_STAGE_STATUSIN;
++			musb->ep0_state = MUSB_EP0_STAGE_STATUSIN;
+ 			musb_writew(regs, MUSB_CSR0,
+ 					musb->ackpend | MUSB_CSR0_P_DATAEND);
+ 			musb->ackpend = 0;
+@@ -942,16 +942,16 @@ static int musb_g_ep0_halt(struct usb_ep
+ 	}
+ 
+ 	switch (musb->ep0_state) {
+-	case MGC_END0_STAGE_TX:		/* control-IN data */
+-	case MGC_END0_STAGE_ACKWAIT:	/* STALL for zero-length data */
+-	case MGC_END0_STAGE_RX:		/* control-OUT data */
++	case MUSB_EP0_STAGE_TX:		/* control-IN data */
++	case MUSB_EP0_STAGE_ACKWAIT:	/* STALL for zero-length data */
++	case MUSB_EP0_STAGE_RX:		/* control-OUT data */
+ 		status = 0;
+ 
+ 		musb_ep_select(base, 0);
+ 		csr = musb_readw(regs, MUSB_CSR0);
+ 		csr |= MUSB_CSR0_P_SENDSTALL;
+ 		musb_writew(regs, MUSB_CSR0, csr);
+-		musb->ep0_state = MGC_END0_STAGE_SETUP;
++		musb->ep0_state = MUSB_EP0_STAGE_SETUP;
+ 		break;
+ 	default:
+ 		DBG(1, "ep0 can't halt in state %d\n", musb->ep0_state);
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -2070,7 +2070,7 @@ __acquires(musb->lock)
+ 	musb->is_suspended = 0;
+ 	MUSB_DEV_MODE(musb);
+ 	musb->address = 0;
+-	musb->ep0_state = MGC_END0_STAGE_SETUP;
++	musb->ep0_state = MUSB_EP0_STAGE_SETUP;
+ 
+ 	musb->may_wakeup = 0;
+ 	musb->g.b_hnp_enable = 0;
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -189,7 +189,7 @@ musb_start_urb(struct musb *musb, int is
+ 		/* control transfers always start with SETUP */
+ 		is_in = 0;
+ 		hw_ep->out_qh = qh;
+-		musb->ep0_stage = MGC_END0_START;
++		musb->ep0_stage = MUSB_EP0_START;
+ 		buf = urb->setup_packet;
+ 		len = 8;
+ 		break;
+@@ -953,7 +953,7 @@ static int musb_h_ep0_continue(struct mu
+ 	struct usb_ctrlrequest	*request;
+ 
+ 	switch (musb->ep0_stage) {
+-	case MGC_END0_IN:
++	case MUSB_EP0_IN:
+ 		fifo_dest = urb->transfer_buffer + urb->actual_length;
+ 		fifo_count = min(len, ((u16) (urb->transfer_buffer_length
+ 					- urb->actual_length)));
+@@ -971,7 +971,7 @@ static int musb_h_ep0_continue(struct mu
+ 				urb->transfer_buffer_length)
+ 			more = TRUE;
+ 		break;
+-	case MGC_END0_START:
++	case MUSB_EP0_START:
+ 		request = (struct usb_ctrlrequest *) urb->setup_packet;
+ 
+ 		if (!request->wLength) {
+@@ -979,16 +979,16 @@ static int musb_h_ep0_continue(struct mu
+ 			break;
+ 		} else if (request->bRequestType & USB_DIR_IN) {
+ 			DBG(4, "start IN-DATA\n");
+-			musb->ep0_stage = MGC_END0_IN;
++			musb->ep0_stage = MUSB_EP0_IN;
+ 			more = TRUE;
+ 			break;
+ 		} else {
+ 			DBG(4, "start OUT-DATA\n");
+-			musb->ep0_stage = MGC_END0_OUT;
++			musb->ep0_stage = MUSB_EP0_OUT;
+ 			more = TRUE;
+ 		}
+ 		/* FALLTHROUGH */
+-	case MGC_END0_OUT:
++	case MUSB_EP0_OUT:
+ 		fifo_count = min(qh->maxpacket, ((u16)
+ 				(urb->transfer_buffer_length
+ 				- urb->actual_length)));
+@@ -1043,7 +1043,7 @@ irqreturn_t musb_h_ep0_irq(struct musb *
+ 		csr, qh, len, urb, musb->ep0_stage);
+ 
+ 	/* if we just did status stage, we are done */
+-	if (MGC_END0_STATUS == musb->ep0_stage) {
++	if (MUSB_EP0_STATUS == musb->ep0_stage) {
+ 		retval = IRQ_HANDLED;
+ 		complete = TRUE;
+ 	}
+@@ -1114,7 +1114,7 @@ irqreturn_t musb_h_ep0_irq(struct musb *
+ 		/* call common logic and prepare response */
+ 		if (musb_h_ep0_continue(musb, len, urb)) {
+ 			/* more packets required */
+-			csr = (MGC_END0_IN == musb->ep0_stage)
++			csr = (MUSB_EP0_IN == musb->ep0_stage)
+ 				?  MUSB_CSR0_H_REQPKT : MUSB_CSR0_TXPKTRDY;
+ 		} else {
+ 			/* data transfer complete; perform status phase */
+@@ -1127,7 +1127,7 @@ irqreturn_t musb_h_ep0_irq(struct musb *
+ 					| MUSB_CSR0_TXPKTRDY;
+ 
+ 			/* flag status stage */
+-			musb->ep0_stage = MGC_END0_STATUS;
++			musb->ep0_stage = MUSB_EP0_STATUS;
+ 
+ 			DBG(5, "ep0 STATUS, csr %04x\n", csr);
+ 
+@@ -1135,7 +1135,7 @@ irqreturn_t musb_h_ep0_irq(struct musb *
+ 		musb_writew(epio, MUSB_CSR0, csr);
+ 		retval = IRQ_HANDLED;
+ 	} else
+-		musb->ep0_stage = MGC_END0_IDLE;
++		musb->ep0_stage = MUSB_EP0_IDLE;
+ 
+ 	/* call completion handler if done */
+ 	if (complete)
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -181,21 +181,21 @@ static inline void musb_host_rx(struct m
+ 
+ /* host side ep0 states */
+ enum musb_h_ep0_state {
+-	MGC_END0_IDLE,
+-	MGC_END0_START,			/* expect ack of setup */
+-	MGC_END0_IN,			/* expect IN DATA */
+-	MGC_END0_OUT,			/* expect ack of OUT DATA */
+-	MGC_END0_STATUS,		/* expect ack of STATUS */
++	MUSB_EP0_IDLE,
++	MUSB_EP0_START,			/* expect ack of setup */
++	MUSB_EP0_IN,			/* expect IN DATA */
++	MUSB_EP0_OUT,			/* expect ack of OUT DATA */
++	MUSB_EP0_STATUS,		/* expect ack of STATUS */
+ } __attribute__ ((packed));
+ 
+ /* peripheral side ep0 states */
+ enum musb_g_ep0_state {
+-	MGC_END0_STAGE_SETUP,		/* idle, waiting for setup */
+-	MGC_END0_STAGE_TX,		/* IN data */
+-	MGC_END0_STAGE_RX,		/* OUT data */
+-	MGC_END0_STAGE_STATUSIN,	/* (after OUT data) */
+-	MGC_END0_STAGE_STATUSOUT,	/* (after IN data) */
+-	MGC_END0_STAGE_ACKWAIT,		/* after zlp, before statusin */
++	MUSB_EP0_STAGE_SETUP,		/* idle, waiting for setup */
++	MUSB_EP0_STAGE_TX,		/* IN data */
++	MUSB_EP0_STAGE_RX,		/* OUT data */
++	MUSB_EP0_STAGE_STATUSIN,	/* (after OUT data) */
++	MUSB_EP0_STAGE_STATUSOUT,	/* (after IN data) */
++	MUSB_EP0_STAGE_ACKWAIT,		/* after zlp, before statusin */
+ } __attribute__ ((packed));
+ 
+ /* OTG protocol constants */
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -467,7 +467,7 @@ static irqreturn_t musb_stage0_irq(struc
+ 		 * a_wait_vrise_tmout triggers VBUS_ERROR transitions
+ 		 */
+ 		musb_writeb(mbase, MUSB_DEVCTL, MUSB_DEVCTL_SESSION);
+-		musb->ep0_stage = MGC_END0_START;
++		musb->ep0_stage = MUSB_EP0_START;
+ 		musb->xceiv.state = OTG_STATE_A_IDLE;
+ 		MUSB_HST_MODE(musb);
+ 		musb_set_vbus(musb, 1);
+@@ -550,7 +550,7 @@ static irqreturn_t musb_stage0_irq(struc
+ 		musb->is_active = 1;
+ 		set_bit(HCD_FLAG_SAW_IRQ, &hcd->flags);
+ 
+-		musb->ep0_stage = MGC_END0_START;
++		musb->ep0_stage = MUSB_EP0_START;
+ 
+ #ifdef CONFIG_USB_MUSB_OTG
+ 		/* flush endpoints when transitioning from Device Mode */
+Index: linux-2.6.18/mvl_patches/pro50-1760.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1760.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1760);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

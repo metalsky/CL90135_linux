@@ -1,0 +1,1393 @@
+#! /usr/bin/env bash
+# Patch: -pro_asoc_davinci
+# Date: Fri Sep 19 13:56:50 2008
+# Source: MontaVista Software, Inc.
+# MR: 26835
+# Type: Enhancement
+# Disposition: needs submitting to alsa-devel
+# Signed-off-by: Vladimir Barinov <vbarinov@ru.mvista.com>
+# Description:
+#     DAVINCI ASoC support
+#    
+#  sound/soc/Kconfig               |    1 
+#  sound/soc/Makefile              |    2 
+#  sound/soc/davinci/Kconfig       |   19 +
+#  sound/soc/davinci/Makefile      |   11 +
+#  sound/soc/davinci/davinci-evm.c |  209 ++++++++++++++++++++
+#  sound/soc/davinci/davinci-i2s.c |  408 ++++++++++++++++++++++++++++++++++++++++
+#  sound/soc/davinci/davinci-i2s.h |   17 +
+#  sound/soc/davinci/davinci-pcm.c |  391 ++++++++++++++++++++++++++++++++++++++
+#  sound/soc/davinci/davinci-pcm.h |   29 ++
+#  9 files changed, 1086 insertions(+), 1 deletion(-)
+#               
+
+PATCHNUM=1519
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 26835
+Type: Enhancement
+Disposition: needs submitting to alsa-devel
+Signed-off-by: Vladimir Barinov <vbarinov@ru.mvista.com>
+Description:
+    DAVINCI ASoC support
+   
+ mvl_patches/pro50-1519.c        |   16 +
+ sound/soc/Kconfig               |    1 
+ sound/soc/Makefile              |    2 
+ sound/soc/davinci/Kconfig       |   19 +
+ sound/soc/davinci/Makefile      |   11 +
+ sound/soc/davinci/davinci-evm.c |  209 ++++++++++++++++++++
+ sound/soc/davinci/davinci-i2s.c |  408 ++++++++++++++++++++++++++++++++++++++++
+ sound/soc/davinci/davinci-i2s.h |   17 +
+ sound/soc/davinci/davinci-pcm.c |  391 ++++++++++++++++++++++++++++++++++++++
+ sound/soc/davinci/davinci-pcm.h |   29 ++
+ 10 files changed, 1102 insertions(+), 1 deletion(-)
+              
+Index: linux-2.6.18/sound/soc/davinci/Makefile
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/davinci/Makefile
+@@ -0,0 +1,11 @@
++# DAVINCI Platform Support
++snd-soc-davinci-objs := davinci-pcm.o
++snd-soc-davinci-i2s-objs := davinci-i2s.o
++
++obj-$(CONFIG_SND_DAVINCI_SOC) += snd-soc-davinci.o
++obj-$(CONFIG_SND_DAVINCI_SOC_I2S) += snd-soc-davinci-i2s.o
++
++# DAVINCI Machine Support
++snd-soc-evm-objs := davinci-evm.o
++
++obj-$(CONFIG_SND_DAVINCI_SOC_EVM) += snd-soc-evm.o
+Index: linux-2.6.18/sound/soc/davinci/davinci-evm.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/davinci/davinci-evm.c
+@@ -0,0 +1,209 @@
++/*
++ * ASoC driver for TI DAVINCI EVM platform
++ *
++ * Author:      Vladimir Barinov, <vbarinov@ru.mvista.com>
++ * Copyright:   (C) 2007 MontaVista Software, Inc., <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/timer.h>
++#include <linux/interrupt.h>
++#include <linux/platform_device.h>
++#include <sound/driver.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/soc.h>
++#include <sound/soc-dapm.h>
++
++#include <asm/mach-types.h>
++#include <asm/dma.h>
++#include <asm/arch/hardware.h>
++
++#include "../codecs/tlv320aic3x.h"
++#include "davinci-pcm.h"
++#include "davinci-i2s.h"
++
++#define EVM_CODEC_CLOCK 22579200
++
++static int evm_hw_params(struct snd_pcm_substream *substream,
++			 struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct snd_soc_codec_dai *codec_dai = rtd->dai->codec_dai;
++	struct snd_soc_cpu_dai *cpu_dai = rtd->dai->cpu_dai;
++	int ret = 0;
++
++	/* set codec DAI configuration */
++	ret = codec_dai->dai_ops.set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
++					 SND_SOC_DAIFMT_CBM_CFM);
++	if (ret < 0)
++		return ret;
++
++	/* set cpu DAI configuration */
++	ret = cpu_dai->dai_ops.set_fmt(cpu_dai, SND_SOC_DAIFMT_CBM_CFM |
++				       SND_SOC_DAIFMT_IB_NF);
++	if (ret < 0)
++		return ret;
++
++	/* set the codec system clock */
++	ret = codec_dai->dai_ops.set_sysclk(codec_dai, 0, EVM_CODEC_CLOCK,
++					    SND_SOC_CLOCK_OUT);
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++
++static struct snd_soc_ops evm_ops = {
++	.hw_params = evm_hw_params,
++};
++
++/* davinci-evm machine dapm widgets */
++static const struct snd_soc_dapm_widget aic3x_dapm_widgets[] = {
++	SND_SOC_DAPM_HP("Headphone Jack", NULL),
++	SND_SOC_DAPM_LINE("Line Out", NULL),
++	SND_SOC_DAPM_MIC("Mic Jack", NULL),
++	SND_SOC_DAPM_LINE("Line In", NULL),
++};
++
++/* davinci-evm machine audio_mapnections to the codec pins */
++static const char *audio_map[][3] = {
++	/* Headphone connected to HPLOUT, HPROUT */
++	{"Headphone Jack", NULL, "HPLOUT"},
++	{"Headphone Jack", NULL, "HPROUT"},
++
++	/* Line Out connected to LLOUT, RLOUT */
++	{"Line Out", NULL, "LLOUT"},
++	{"Line Out", NULL, "RLOUT"},
++
++	/* Mic connected to (MIC3L | MIC3R) */
++	{"MIC3L", NULL, "Mic Bias 2V"},
++	{"MIC3R", NULL, "Mic Bias 2V"},
++	{"Mic Bias 2V", NULL, "Mic Jack"},
++
++	/* Line In connected to (LINE1L | LINE2L), (LINE1R | LINE2R) */
++	{"LINE1L", NULL, "Line In"},
++	{"LINE2L", NULL, "Line In"},
++	{"LINE1R", NULL, "Line In"},
++	{"LINE2R", NULL, "Line In"},
++
++	{NULL, NULL, NULL},
++};
++
++/* Logic for a aic3x as connected on a davinci-evm */
++static int evm_aic3x_init(struct snd_soc_codec *codec)
++{
++	int i;
++
++	/* Add davinci-evm specific widgets */
++	for (i = 0; i < ARRAY_SIZE(aic3x_dapm_widgets); i++)
++		snd_soc_dapm_new_control(codec, &aic3x_dapm_widgets[i]);
++
++	/* Set up davinci-evm specific audio path audio_map */
++	for (i = 0; audio_map[i][0] != NULL; i++)
++		snd_soc_dapm_connect_input(codec, audio_map[i][0],
++					   audio_map[i][1], audio_map[i][2]);
++
++	/* not connected */
++	snd_soc_dapm_set_endpoint(codec, "MONO_LOUT", 0);
++	snd_soc_dapm_set_endpoint(codec, "HPLCOM", 0);
++	snd_soc_dapm_set_endpoint(codec, "HPRCOM", 0);
++
++	/* always connected */
++	snd_soc_dapm_set_endpoint(codec, "Headphone Jack", 1);
++	snd_soc_dapm_set_endpoint(codec, "Line Out", 1);
++	snd_soc_dapm_set_endpoint(codec, "Mic Jack", 1);
++	snd_soc_dapm_set_endpoint(codec, "Line In", 1);
++
++	snd_soc_dapm_sync_endpoints(codec);
++
++	return 0;
++}
++
++/* davinci-evm digital audio interface glue - connects codec <--> CPU */
++static struct snd_soc_dai_link evm_dai = {
++	.name = "TLV320AIC3X",
++	.stream_name = "AIC3X",
++	.cpu_dai = &davinci_i2s_dai,
++	.codec_dai = &aic3x_dai,
++	.init = evm_aic3x_init,
++	.ops = &evm_ops,
++};
++
++/* davinci-evm audio machine driver */
++static struct snd_soc_machine snd_soc_machine_evm = {
++	.name = "DaVinci EVM",
++	.dai_link = &evm_dai,
++	.num_links = 1,
++};
++
++/* evm audio private data */
++static struct aic3x_setup_data evm_aic3x_setup = {
++	.i2c_address = 0x1b,
++};
++
++/* evm audio subsystem */
++static struct snd_soc_device evm_snd_devdata = {
++	.machine = &snd_soc_machine_evm,
++	.platform = &davinci_soc_platform,
++	.codec_dev = &soc_codec_dev_aic3x,
++	.codec_data = &evm_aic3x_setup,
++};
++
++static struct resource evm_snd_resources[] = {
++	{
++		.start = DAVINCI_MCBSP_BASE,
++		.end = DAVINCI_MCBSP_BASE + SZ_8K - 1,
++		.flags = IORESOURCE_MEM,
++	},
++};
++
++static struct evm_snd_platform_data evm_snd_data = {
++	.tx_dma_ch	= DM644X_DMACH_MCBSP_TX,
++	.rx_dma_ch	= DM644X_DMACH_MCBSP_RX,
++};
++
++static struct platform_device *evm_snd_device;
++
++static int __init evm_init(void)
++{
++	int ret;
++
++	evm_snd_device = platform_device_alloc("soc-audio", 0);
++	if (!evm_snd_device)
++		return -ENOMEM;
++
++	platform_set_drvdata(evm_snd_device, &evm_snd_devdata);
++	evm_snd_devdata.dev = &evm_snd_device->dev;
++	evm_snd_device->dev.platform_data = &evm_snd_data;
++
++	ret = platform_device_add_resources(evm_snd_device, evm_snd_resources,
++					    ARRAY_SIZE(evm_snd_resources));
++	if (ret) {
++		platform_device_put(evm_snd_device);
++		return ret;
++	}
++
++	ret = platform_device_add(evm_snd_device);
++	if (ret)
++		platform_device_put(evm_snd_device);
++
++	return ret;
++}
++
++static void __exit evm_exit(void)
++{
++	platform_device_unregister(evm_snd_device);
++}
++
++module_init(evm_init);
++module_exit(evm_exit);
++
++MODULE_AUTHOR("Vladimir Barinov");
++MODULE_DESCRIPTION("TI DAVINCI EVM ASoC driver");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/sound/soc/davinci/davinci-i2s.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/davinci/davinci-i2s.c
+@@ -0,0 +1,408 @@
++/*
++ * ALSA SoC I2S (McBSP) Audio Layer for TI DAVINCI processor
++ *
++ * Author:      Vladimir Barinov, <vbarinov@ru.mvista.com>
++ * Copyright:   (C) 2007 MontaVista Software, Inc., <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/device.h>
++#include <linux/delay.h>
++#include <linux/io.h>
++#include <linux/clk.h>
++
++#include <sound/driver.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/initval.h>
++#include <sound/soc.h>
++
++#include "davinci-pcm.h"
++
++#define DAVINCI_MCBSP_DRR_REG	0x00
++#define DAVINCI_MCBSP_DXR_REG	0x04
++#define DAVINCI_MCBSP_SPCR_REG	0x08
++#define DAVINCI_MCBSP_RCR_REG	0x0c
++#define DAVINCI_MCBSP_XCR_REG	0x10
++#define DAVINCI_MCBSP_SRGR_REG	0x14
++#define DAVINCI_MCBSP_PCR_REG	0x24
++
++#define DAVINCI_MCBSP_SPCR_RRST		(1 << 0)
++#define DAVINCI_MCBSP_SPCR_RINTM(v)	((v) << 4)
++#define DAVINCI_MCBSP_SPCR_XRST		(1 << 16)
++#define DAVINCI_MCBSP_SPCR_XINTM(v)	((v) << 20)
++#define DAVINCI_MCBSP_SPCR_GRST		(1 << 22)
++#define DAVINCI_MCBSP_SPCR_FRST		(1 << 23)
++#define DAVINCI_MCBSP_SPCR_FREE		(1 << 25)
++
++#define DAVINCI_MCBSP_RCR_RWDLEN1(v)	((v) << 5)
++#define DAVINCI_MCBSP_RCR_RFRLEN1(v)	((v) << 8)
++#define DAVINCI_MCBSP_RCR_RDATDLY(v)	((v) << 16)
++#define DAVINCI_MCBSP_RCR_RWDLEN2(v)	((v) << 21)
++
++#define DAVINCI_MCBSP_XCR_XWDLEN1(v)	((v) << 5)
++#define DAVINCI_MCBSP_XCR_XFRLEN1(v)	((v) << 8)
++#define DAVINCI_MCBSP_XCR_XDATDLY(v)	((v) << 16)
++#define DAVINCI_MCBSP_XCR_XFIG		(1 << 18)
++#define DAVINCI_MCBSP_XCR_XWDLEN2(v)	((v) << 21)
++
++#define DAVINCI_MCBSP_SRGR_FWID(v)	((v) << 8)
++#define DAVINCI_MCBSP_SRGR_FPER(v)	((v) << 16)
++#define DAVINCI_MCBSP_SRGR_FSGM		(1 << 28)
++
++#define DAVINCI_MCBSP_PCR_CLKRP		(1 << 0)
++#define DAVINCI_MCBSP_PCR_CLKXP		(1 << 1)
++#define DAVINCI_MCBSP_PCR_FSRP		(1 << 2)
++#define DAVINCI_MCBSP_PCR_FSXP		(1 << 3)
++#define DAVINCI_MCBSP_PCR_CLKRM		(1 << 8)
++#define DAVINCI_MCBSP_PCR_CLKXM		(1 << 9)
++#define DAVINCI_MCBSP_PCR_FSRM		(1 << 10)
++#define DAVINCI_MCBSP_PCR_FSXM		(1 << 11)
++
++#define MOD_REG_BIT(val, mask, set) do { \
++	if (set) { \
++		val |= mask; \
++	} else { \
++		val &= ~mask; \
++	} \
++} while (0)
++
++enum {
++	DAVINCI_MCBSP_WORD_8 = 0,
++	DAVINCI_MCBSP_WORD_12,
++	DAVINCI_MCBSP_WORD_16,
++	DAVINCI_MCBSP_WORD_20,
++	DAVINCI_MCBSP_WORD_24,
++	DAVINCI_MCBSP_WORD_32,
++};
++
++static struct davinci_pcm_dma_params davinci_i2s_pcm_out = {
++	.name = "I2S PCM Stereo out",
++};
++
++static struct davinci_pcm_dma_params davinci_i2s_pcm_in = {
++	.name = "I2S PCM Stereo in",
++};
++
++struct davinci_mcbsp_dev {
++	void __iomem			*base;
++	struct clk			*clk;
++	struct davinci_pcm_dma_params	*dma_params[2];
++};
++
++static inline void davinci_mcbsp_write_reg(struct davinci_mcbsp_dev *dev,
++					   int reg, u32 val)
++{
++	__raw_writel(val, dev->base + reg);
++}
++
++static inline u32 davinci_mcbsp_read_reg(struct davinci_mcbsp_dev *dev, int reg)
++{
++	return __raw_readl(dev->base + reg);
++}
++
++static void davinci_mcbsp_start(struct snd_pcm_substream *substream)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct davinci_mcbsp_dev *dev = rtd->dai->cpu_dai->private_data;
++	u32 w;
++
++	/* Start the sample generator and enable transmitter/receiver */
++	w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_SPCR_REG);
++	MOD_REG_BIT(w, DAVINCI_MCBSP_SPCR_GRST, 1);
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		MOD_REG_BIT(w, DAVINCI_MCBSP_SPCR_XRST, 1);
++	else
++		MOD_REG_BIT(w, DAVINCI_MCBSP_SPCR_RRST, 1);
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_SPCR_REG, w);
++
++	/* Start frame sync */
++	w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_SPCR_REG);
++	MOD_REG_BIT(w, DAVINCI_MCBSP_SPCR_FRST, 1);
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_SPCR_REG, w);
++}
++
++static void davinci_mcbsp_stop(struct snd_pcm_substream *substream)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct davinci_mcbsp_dev *dev = rtd->dai->cpu_dai->private_data;
++	u32 w;
++
++	/* Reset transmitter/receiver and sample rate/frame sync generators */
++	w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_SPCR_REG);
++	MOD_REG_BIT(w, DAVINCI_MCBSP_SPCR_GRST |
++		       DAVINCI_MCBSP_SPCR_FRST, 0);
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		MOD_REG_BIT(w, DAVINCI_MCBSP_SPCR_XRST, 0);
++	else
++		MOD_REG_BIT(w, DAVINCI_MCBSP_SPCR_RRST, 0);
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_SPCR_REG, w);
++}
++
++static int davinci_i2s_startup(struct snd_pcm_substream *substream)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct snd_soc_cpu_dai *cpu_dai = rtd->dai->cpu_dai;
++	struct davinci_mcbsp_dev *dev = rtd->dai->cpu_dai->private_data;
++
++	cpu_dai->dma_data = dev->dma_params[substream->stream];
++
++	return 0;
++}
++
++static int davinci_i2s_set_dai_fmt(struct snd_soc_cpu_dai *cpu_dai,
++				   unsigned int fmt)
++{
++	struct davinci_mcbsp_dev *dev = cpu_dai->private_data;
++	u32 w;
++
++	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
++	case SND_SOC_DAIFMT_CBS_CFS:
++		davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_PCR_REG,
++					DAVINCI_MCBSP_PCR_FSXM |
++					DAVINCI_MCBSP_PCR_FSRM |
++					DAVINCI_MCBSP_PCR_CLKXM |
++					DAVINCI_MCBSP_PCR_CLKRM);
++		davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_SRGR_REG,
++					DAVINCI_MCBSP_SRGR_FSGM);
++		break;
++	case SND_SOC_DAIFMT_CBM_CFM:
++		davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_PCR_REG, 0);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
++	case SND_SOC_DAIFMT_IB_NF:
++		w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_PCR_REG);
++		MOD_REG_BIT(w, DAVINCI_MCBSP_PCR_CLKXP |
++			       DAVINCI_MCBSP_PCR_CLKRP, 1);
++		davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_PCR_REG, w);
++		break;
++	case SND_SOC_DAIFMT_NB_IF:
++		w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_PCR_REG);
++		MOD_REG_BIT(w, DAVINCI_MCBSP_PCR_FSXP |
++			       DAVINCI_MCBSP_PCR_FSRP, 1);
++		davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_PCR_REG, w);
++		break;
++	case SND_SOC_DAIFMT_IB_IF:
++		w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_PCR_REG);
++		MOD_REG_BIT(w, DAVINCI_MCBSP_PCR_CLKXP |
++			       DAVINCI_MCBSP_PCR_CLKRP |
++			       DAVINCI_MCBSP_PCR_FSXP |
++			       DAVINCI_MCBSP_PCR_FSRP, 1);
++		davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_PCR_REG, w);
++		break;
++	case SND_SOC_DAIFMT_NB_NF:
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int davinci_i2s_hw_params(struct snd_pcm_substream *substream,
++				 struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct davinci_pcm_dma_params *dma_params = rtd->dai->cpu_dai->dma_data;
++	struct davinci_mcbsp_dev *dev = rtd->dai->cpu_dai->private_data;
++	struct snd_interval *i = NULL;
++	int mcbsp_word_length;
++	u32 w;
++
++	/* general line settings */
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_SPCR_REG,
++				DAVINCI_MCBSP_SPCR_RINTM(3) |
++				DAVINCI_MCBSP_SPCR_XINTM(3) |
++				DAVINCI_MCBSP_SPCR_FREE);
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_RCR_REG,
++				DAVINCI_MCBSP_RCR_RFRLEN1(1) |
++				DAVINCI_MCBSP_RCR_RDATDLY(1));
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_XCR_REG,
++				DAVINCI_MCBSP_XCR_XFRLEN1(1) |
++				DAVINCI_MCBSP_XCR_XDATDLY(1) |
++				DAVINCI_MCBSP_XCR_XFIG);
++
++	i = hw_param_interval(params, SNDRV_PCM_HW_PARAM_SAMPLE_BITS);
++	w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_SRGR_REG);
++	MOD_REG_BIT(w, DAVINCI_MCBSP_SRGR_FWID(snd_interval_value(i) - 1), 1);
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_SRGR_REG, w);
++
++	i = hw_param_interval(params, SNDRV_PCM_HW_PARAM_FRAME_BITS);
++	w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_SRGR_REG);
++	MOD_REG_BIT(w, DAVINCI_MCBSP_SRGR_FPER(snd_interval_value(i) - 1), 1);
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_SRGR_REG, w);
++
++	/* Determine xfer data type */
++	switch (params_format(params)) {
++	case SNDRV_PCM_FORMAT_S8:
++		dma_params->data_type = 1;
++		mcbsp_word_length = DAVINCI_MCBSP_WORD_8;
++		break;
++	case SNDRV_PCM_FORMAT_S16_LE:
++		dma_params->data_type = 2;
++		mcbsp_word_length = DAVINCI_MCBSP_WORD_16;
++		break;
++	case SNDRV_PCM_FORMAT_S32_LE:
++		dma_params->data_type = 4;
++		mcbsp_word_length = DAVINCI_MCBSP_WORD_32;
++		break;
++	default:
++		printk(KERN_WARNING "davinci-i2s: unsupported PCM format");
++		return -EINVAL;
++	}
++
++	w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_RCR_REG);
++	MOD_REG_BIT(w, DAVINCI_MCBSP_RCR_RWDLEN1(mcbsp_word_length) |
++		       DAVINCI_MCBSP_RCR_RWDLEN2(mcbsp_word_length), 1);
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_RCR_REG, w);
++
++	w = davinci_mcbsp_read_reg(dev, DAVINCI_MCBSP_XCR_REG);
++	MOD_REG_BIT(w, DAVINCI_MCBSP_XCR_XWDLEN1(mcbsp_word_length) |
++		       DAVINCI_MCBSP_XCR_XWDLEN2(mcbsp_word_length), 1);
++	davinci_mcbsp_write_reg(dev, DAVINCI_MCBSP_XCR_REG, w);
++
++	return 0;
++}
++
++static int davinci_i2s_trigger(struct snd_pcm_substream *substream, int cmd)
++{
++	int ret = 0;
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		davinci_mcbsp_start(substream);
++		break;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		davinci_mcbsp_stop(substream);
++		break;
++	default:
++		ret = -EINVAL;
++	}
++
++	return ret;
++}
++
++static int davinci_i2s_probe(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_machine *machine = socdev->machine;
++	struct snd_soc_cpu_dai *cpu_dai = machine->dai_link[pdev->id].cpu_dai;
++	struct davinci_mcbsp_dev *dev;
++	struct resource *mem, *ioarea;
++	struct evm_snd_platform_data *pdata;
++	int ret;
++
++	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!mem) {
++		dev_err(&pdev->dev, "no mem resource?\n");
++		return -ENODEV;
++	}
++
++	ioarea = request_mem_region(mem->start, (mem->end - mem->start) + 1,
++				    pdev->name);
++	if (!ioarea) {
++		dev_err(&pdev->dev, "McBSP region already claimed\n");
++		return -EBUSY;
++	}
++
++	dev = kzalloc(sizeof(struct davinci_mcbsp_dev), GFP_KERNEL);
++	if (!dev) {
++		ret = -ENOMEM;
++		goto err_release_region;
++	}
++
++	cpu_dai->private_data = dev;
++
++	dev->clk = clk_get(&pdev->dev, "McBSPCLK");
++	if (IS_ERR(dev->clk)) {
++		ret = -ENODEV;
++		goto err_free_mem;
++	}
++	clk_enable(dev->clk);
++
++	dev->base = (void __iomem *)IO_ADDRESS(mem->start);
++	pdata = pdev->dev.platform_data;
++
++	dev->dma_params[SNDRV_PCM_STREAM_PLAYBACK] = &davinci_i2s_pcm_out;
++	dev->dma_params[SNDRV_PCM_STREAM_PLAYBACK]->channel = pdata->tx_dma_ch;
++	dev->dma_params[SNDRV_PCM_STREAM_PLAYBACK]->dma_addr =
++	    (dma_addr_t)(io_v2p(dev->base) + DAVINCI_MCBSP_DXR_REG);
++
++	dev->dma_params[SNDRV_PCM_STREAM_CAPTURE] = &davinci_i2s_pcm_in;
++	dev->dma_params[SNDRV_PCM_STREAM_CAPTURE]->channel = pdata->rx_dma_ch;
++	dev->dma_params[SNDRV_PCM_STREAM_CAPTURE]->dma_addr =
++	    (dma_addr_t)(io_v2p(dev->base) + DAVINCI_MCBSP_DRR_REG);
++
++	return 0;
++
++err_free_mem:
++	kfree(dev);
++err_release_region:
++	release_mem_region(mem->start, (mem->end - mem->start) + 1);
++
++	return ret;
++}
++
++static void davinci_i2s_remove(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_machine *machine = socdev->machine;
++	struct snd_soc_cpu_dai *cpu_dai = machine->dai_link[pdev->id].cpu_dai;
++	struct davinci_mcbsp_dev *dev = cpu_dai->private_data;
++	struct resource *mem;
++
++	clk_disable(dev->clk);
++	clk_put(dev->clk);
++	dev->clk = NULL;
++
++	kfree(dev);
++
++	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	release_mem_region(mem->start, (mem->end - mem->start) + 1);
++}
++
++#define DAVINCI_I2S_RATES	SNDRV_PCM_RATE_8000_96000
++
++struct snd_soc_cpu_dai davinci_i2s_dai = {
++	.name = "davinci-i2s",
++	.id = 0,
++	.type = SND_SOC_DAI_I2S,
++	.probe = davinci_i2s_probe,
++	.remove = davinci_i2s_remove,
++	.playback = {
++		.channels_min = 2,
++		.channels_max = 2,
++		.rates = DAVINCI_I2S_RATES,
++		.formats = SNDRV_PCM_FMTBIT_S16_LE,},
++	.capture = {
++		.channels_min = 2,
++		.channels_max = 2,
++		.rates = DAVINCI_I2S_RATES,
++		.formats = SNDRV_PCM_FMTBIT_S16_LE,},
++	.ops = {
++		.startup = davinci_i2s_startup,
++		.trigger = davinci_i2s_trigger,
++		.hw_params = davinci_i2s_hw_params,},
++	.dai_ops = {
++		.set_fmt = davinci_i2s_set_dai_fmt,
++	},
++};
++EXPORT_SYMBOL_GPL(davinci_i2s_dai);
++
++MODULE_AUTHOR("Vladimir Barinov");
++MODULE_DESCRIPTION("TI DAVINCI I2S (McBSP) SoC Interface");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/sound/soc/davinci/davinci-i2s.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/davinci/davinci-i2s.h
+@@ -0,0 +1,17 @@
++/*
++ * ALSA SoC I2S (McBSP) Audio Layer for TI DAVINCI processor
++ *
++ * Author:      Vladimir Barinov, <vbarinov@ru.mvista.com>
++ * Copyright:   (C) 2007 MontaVista Software, Inc., <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef _DAVINCI_I2S_H
++#define _DAVINCI_I2S_H
++
++extern struct snd_soc_cpu_dai davinci_i2s_dai;
++
++#endif
+Index: linux-2.6.18/sound/soc/davinci/davinci-pcm.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/davinci/davinci-pcm.c
+@@ -0,0 +1,391 @@
++/*
++ * ALSA PCM interface for the TI DAVINCI processor
++ *
++ * Author:      Vladimir Barinov, <vbarinov@ru.mvista.com>
++ * Copyright:   (C) 2007 MontaVista Software, Inc., <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/dma-mapping.h>
++
++#include <sound/driver.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++#include <asm/dma.h>
++
++#include "davinci-pcm.h"
++
++#define DAVINCI_PCM_DEBUG 0
++#if DAVINCI_PCM_DEBUG
++#define DPRINTK(x...) printk(KERN_DEBUG x)
++#else
++#define DPRINTK(x...)
++#endif
++
++static struct snd_pcm_hardware davinci_pcm_hardware = {
++	.info = (SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER |
++		 SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
++		 SNDRV_PCM_INFO_PAUSE),
++	.formats = (SNDRV_PCM_FMTBIT_S16_LE),
++	.rates = (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |
++		  SNDRV_PCM_RATE_22050 | SNDRV_PCM_RATE_32000 |
++		  SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 |
++		  SNDRV_PCM_RATE_88200 | SNDRV_PCM_RATE_96000 |
++		  SNDRV_PCM_RATE_KNOT),
++	.rate_min = 8000,
++	.rate_max = 96000,
++	.channels_min = 2,
++	.channels_max = 2,
++	.buffer_bytes_max = 128 * 1024,
++	.period_bytes_min = 32,
++	.period_bytes_max = 8 * 1024,
++	.periods_min = 16,
++	.periods_max = 255,
++	.fifo_size = 0,
++};
++
++struct davinci_runtime_data {
++	spinlock_t lock;
++	int period;		/* current DMA period */
++	int master_lch;		/* Master DMA channel */
++	int slave_lch;		/* Slave DMA channel */
++	struct davinci_pcm_dma_params *params;	/* DMA params */
++};
++
++static void davinci_pcm_enqueue_dma(struct snd_pcm_substream *substream)
++{
++	struct davinci_runtime_data *prtd = substream->runtime->private_data;
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	int lch = prtd->slave_lch;
++	unsigned int period_size;
++	unsigned int dma_offset;
++	dma_addr_t dma_pos;
++	dma_addr_t src, dst;
++	unsigned short src_bidx, dst_bidx;
++	unsigned int data_type;
++	unsigned int count;
++
++	period_size = snd_pcm_lib_period_bytes(substream);
++	dma_offset = prtd->period * period_size;
++	dma_pos = runtime->dma_addr + dma_offset;
++
++	DPRINTK("audio_set_dma_params_play channel = %d dma_ptr = %x "
++		"period_size=%x\n", lch, dma_pos, period_size);
++
++	data_type = prtd->params->data_type;
++	count = period_size / data_type;
++
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
++		src = dma_pos;
++		dst = prtd->params->dma_addr;
++		src_bidx = data_type;
++		dst_bidx = 0;
++	} else {
++		src = prtd->params->dma_addr;
++		dst = dma_pos;
++		src_bidx = 0;
++		dst_bidx = data_type;
++	}
++
++	davinci_set_dma_src_params(lch, src, INCR, W8BIT);
++	davinci_set_dma_dest_params(lch, dst, INCR, W8BIT);
++	davinci_set_dma_src_index(lch, src_bidx, 0);
++	davinci_set_dma_dest_index(lch, dst_bidx, 0);
++	davinci_set_dma_transfer_params(lch, data_type, count, 1, 0, ASYNC);
++
++	prtd->period++;
++	if (unlikely(prtd->period >= runtime->periods))
++		prtd->period = 0;
++}
++
++static void davinci_pcm_dma_irq(int lch, u16 ch_status, void *data)
++{
++	struct snd_pcm_substream *substream = data;
++	struct davinci_runtime_data *prtd = substream->runtime->private_data;
++
++	DPRINTK("lch=%d, status=0x%x\n", lch, ch_status);
++
++	if (unlikely(ch_status != DMA_COMPLETE))
++		return;
++
++	if (snd_pcm_running(substream)) {
++		snd_pcm_period_elapsed(substream);
++
++		spin_lock(&prtd->lock);
++		davinci_pcm_enqueue_dma(substream);
++		spin_unlock(&prtd->lock);
++	}
++}
++
++static int davinci_pcm_dma_request(struct snd_pcm_substream *substream)
++{
++	struct davinci_runtime_data *prtd = substream->runtime->private_data;
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct davinci_pcm_dma_params *dma_data = rtd->dai->cpu_dai->dma_data;
++	int tcc = TCC_ANY;
++	int ret;
++
++	if (!dma_data)
++		return -ENODEV;
++
++	prtd->params = dma_data;
++
++	/* Request master DMA channel */
++	ret = davinci_request_dma(prtd->params->channel, prtd->params->name,
++				  davinci_pcm_dma_irq, substream,
++				  &prtd->master_lch, &tcc, EVENTQ_0);
++	if (ret)
++		return ret;
++
++	/* Request slave DMA channel */
++	ret = davinci_request_dma(PARAM_ANY, "Link",
++				  NULL, NULL, &prtd->slave_lch, &tcc, EVENTQ_0);
++	if (ret) {
++		davinci_free_dma(prtd->master_lch);
++		return ret;
++	}
++
++	/* Link slave DMA channel in loopback */
++	davinci_dma_link_lch(prtd->slave_lch, prtd->slave_lch);
++
++	return 0;
++}
++
++static int davinci_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
++{
++	struct davinci_runtime_data *prtd = substream->runtime->private_data;
++	int ret = 0;
++
++	spin_lock(&prtd->lock);
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		davinci_start_dma(prtd->master_lch);
++		break;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		davinci_stop_dma(prtd->master_lch);
++		break;
++	default:
++		ret = -EINVAL;
++		break;
++	}
++
++	spin_unlock(&prtd->lock);
++
++	return ret;
++}
++
++static int davinci_pcm_prepare(struct snd_pcm_substream *substream)
++{
++	struct davinci_runtime_data *prtd = substream->runtime->private_data;
++	struct paramentry_descriptor temp;
++
++	prtd->period = 0;
++	davinci_pcm_enqueue_dma(substream);
++
++	/* Get slave channel dma params for master channel startup */
++	davinci_get_dma_params(prtd->slave_lch, &temp);
++	davinci_set_dma_params(prtd->master_lch, &temp);
++
++	return 0;
++}
++
++static snd_pcm_uframes_t
++davinci_pcm_pointer(struct snd_pcm_substream *substream)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	struct davinci_runtime_data *prtd = runtime->private_data;
++	unsigned int offset;
++	dma_addr_t count;
++	dma_addr_t src, dst;
++
++	spin_lock(&prtd->lock);
++
++	davinci_dma_getposition(prtd->master_lch, &src, &dst);
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		count = src - runtime->dma_addr;
++	else
++		count = dst - runtime->dma_addr;;
++
++	spin_unlock(&prtd->lock);
++
++	offset = bytes_to_frames(runtime, count);
++	if (offset >= runtime->buffer_size)
++		offset = 0;
++
++	return offset;
++}
++
++static int davinci_pcm_open(struct snd_pcm_substream *substream)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	struct davinci_runtime_data *prtd;
++	int ret = 0;
++
++	snd_soc_set_runtime_hwparams(substream, &davinci_pcm_hardware);
++
++	prtd = kzalloc(sizeof(struct davinci_runtime_data), GFP_KERNEL);
++	if (prtd == NULL)
++		return -ENOMEM;
++
++	spin_lock_init(&prtd->lock);
++
++	runtime->private_data = prtd;
++
++	ret = davinci_pcm_dma_request(substream);
++	if (ret) {
++		printk(KERN_ERR "davinci_pcm: Failed to get dma channels\n");
++		kfree(prtd);
++	}
++
++	return ret;
++}
++
++static int davinci_pcm_close(struct snd_pcm_substream *substream)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	struct davinci_runtime_data *prtd = runtime->private_data;
++
++	davinci_dma_unlink_lch(prtd->slave_lch, prtd->slave_lch);
++
++	davinci_free_dma(prtd->slave_lch);
++	davinci_free_dma(prtd->master_lch);
++
++	kfree(prtd);
++
++	return 0;
++}
++
++static int davinci_pcm_hw_params(struct snd_pcm_substream *substream,
++				 struct snd_pcm_hw_params *hw_params)
++{
++	return snd_pcm_lib_malloc_pages(substream,
++					params_buffer_bytes(hw_params));
++}
++
++static int davinci_pcm_hw_free(struct snd_pcm_substream *substream)
++{
++	return snd_pcm_lib_free_pages(substream);
++}
++
++static int davinci_pcm_mmap(struct snd_pcm_substream *substream,
++			    struct vm_area_struct *vma)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++
++	return dma_mmap_writecombine(substream->pcm->card->dev, vma,
++				     runtime->dma_area,
++				     runtime->dma_addr,
++				     runtime->dma_bytes);
++}
++
++struct snd_pcm_ops davinci_pcm_ops = {
++	.open = 	davinci_pcm_open,
++	.close = 	davinci_pcm_close,
++	.ioctl = 	snd_pcm_lib_ioctl,
++	.hw_params = 	davinci_pcm_hw_params,
++	.hw_free = 	davinci_pcm_hw_free,
++	.prepare = 	davinci_pcm_prepare,
++	.trigger = 	davinci_pcm_trigger,
++	.pointer = 	davinci_pcm_pointer,
++	.mmap = 	davinci_pcm_mmap,
++};
++
++static int davinci_pcm_preallocate_dma_buffer(struct snd_pcm *pcm,
++        int stream)
++{
++	struct snd_pcm_substream *substream = pcm->streams[stream].substream;
++	struct snd_dma_buffer *buf = &substream->dma_buffer;
++	size_t size = davinci_pcm_hardware.buffer_bytes_max;
++
++	buf->dev.type = SNDRV_DMA_TYPE_DEV;
++	buf->dev.dev = pcm->card->dev;
++	buf->private_data = NULL;
++	buf->area = dma_alloc_writecombine(pcm->card->dev, size,
++					   &buf->addr, GFP_KERNEL);
++
++	DPRINTK("preallocate_dma_buffer: area=%p, addr=%p, size=%d\n",
++		(void *) buf->area, (void *) buf->addr, size);
++
++	if (!buf->area)
++		return -ENOMEM;
++
++	buf->bytes = size;
++	return 0;
++}
++
++static void davinci_pcm_free(struct snd_pcm *pcm)
++{
++	struct snd_pcm_substream *substream;
++	struct snd_dma_buffer *buf;
++	int stream;
++
++	for (stream = 0; stream < 2; stream++) {
++		substream = pcm->streams[stream].substream;
++		if (!substream)
++			continue;
++
++		buf = &substream->dma_buffer;
++		if (!buf->area)
++			continue;
++
++		dma_free_writecombine(pcm->card->dev, buf->bytes,
++				      buf->area, buf->addr);
++		buf->area = NULL;
++	}
++}
++
++static u64 davinci_pcm_dmamask = 0xffffffff;
++
++static int davinci_pcm_new(struct snd_card *card,
++			   struct snd_soc_codec_dai *dai, struct snd_pcm *pcm)
++{
++	int ret;
++
++	if (!card->dev->dma_mask)
++		card->dev->dma_mask = &davinci_pcm_dmamask;
++	if (!card->dev->coherent_dma_mask)
++		card->dev->coherent_dma_mask = 0xffffffff;
++
++	if (dai->playback.channels_min) {
++		ret = davinci_pcm_preallocate_dma_buffer(pcm,
++			SNDRV_PCM_STREAM_PLAYBACK);
++		if (ret)
++			return ret;
++	}
++
++	if (dai->capture.channels_min) {
++		ret = davinci_pcm_preallocate_dma_buffer(pcm,
++			SNDRV_PCM_STREAM_CAPTURE);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++struct snd_soc_platform davinci_soc_platform = {
++	.name = 	"davinci-audio",
++	.pcm_ops = 	&davinci_pcm_ops,
++	.pcm_new = 	davinci_pcm_new,
++	.pcm_free = 	davinci_pcm_free,
++};
++EXPORT_SYMBOL_GPL(davinci_soc_platform);
++
++MODULE_AUTHOR("Vladimir Barinov");
++MODULE_DESCRIPTION("TI DAVINCI PCM DMA module");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/sound/soc/davinci/davinci-pcm.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/davinci/davinci-pcm.h
+@@ -0,0 +1,29 @@
++/*
++ * ALSA PCM interface for the TI DAVINCI processor
++ *
++ * Author:      Vladimir Barinov, <vbarinov@ru.mvista.com>
++ * Copyright:   (C) 2007 MontaVista Software, Inc., <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#ifndef _DAVINCI_PCM_H
++#define _DAVINCI_PCM_H
++
++struct davinci_pcm_dma_params {
++	char *name;		/* stream identifier */
++	int channel;		/* sync dma channel ID */
++	dma_addr_t dma_addr;	/* device physical address for DMA */
++	unsigned int data_type;	/* xfer data type */
++};
++
++struct evm_snd_platform_data {
++	int tx_dma_ch;
++	int rx_dma_ch;
++};
++
++extern struct snd_soc_platform davinci_soc_platform;
++
++#endif
+Index: linux-2.6.18/sound/soc/Kconfig
+===================================================================
+--- linux-2.6.18.orig/sound/soc/Kconfig
++++ linux-2.6.18/sound/soc/Kconfig
+@@ -29,6 +29,7 @@ source "sound/soc/pxa/Kconfig"
+ source "sound/soc/s3c24xx/Kconfig"
+ source "sound/soc/sh/Kconfig"
+ source "sound/soc/fsl/Kconfig"
++source "sound/soc/davinci/Kconfig"
+ 
+ # Supported codecs
+ source "sound/soc/codecs/Kconfig"
+Index: linux-2.6.18/sound/soc/Makefile
+===================================================================
+--- linux-2.6.18.orig/sound/soc/Makefile
++++ linux-2.6.18/sound/soc/Makefile
+@@ -1,4 +1,4 @@
+ snd-soc-core-objs := soc-core.o soc-dapm.o
+ 
+ obj-$(CONFIG_SND_SOC)	+= snd-soc-core.o
+-obj-$(CONFIG_SND_SOC)	+= codecs/ at91/ pxa/ s3c24xx/ sh/ fsl/
++obj-$(CONFIG_SND_SOC)	+= codecs/ at91/ pxa/ s3c24xx/ sh/ davinci/
+Index: linux-2.6.18/sound/soc/davinci/Kconfig
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/davinci/Kconfig
+@@ -0,0 +1,19 @@
++config SND_DAVINCI_SOC
++	tristate "SoC Audio for the TI DAVINCI chip"
++	depends on ARCH_DAVINCI && SND_SOC
++	help
++	  Say Y or M if you want to add support for codecs attached to
++	  the DAVINCI AC97 or I2S interface. You will also need
++	  to select the audio interfaces to support below.
++
++config SND_DAVINCI_SOC_I2S
++	tristate
++
++config SND_DAVINCI_SOC_EVM
++	tristate "SoC Audio support for DaVinci EVM"
++	depends on SND_DAVINCI_SOC && MACH_DAVINCI_EVM
++	select SND_DAVINCI_SOC_I2S
++	select SND_SOC_TLV320AIC3X
++	help
++	  Say Y if you want to add support for SoC audio on TI
++	  DaVinci EVM platform.
+Index: linux-2.6.18/mvl_patches/pro50-1519.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1519.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1519);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

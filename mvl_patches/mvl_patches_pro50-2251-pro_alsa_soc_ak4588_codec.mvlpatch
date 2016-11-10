@@ -1,0 +1,1759 @@
+#! /usr/bin/env bash
+# Patch: -pro_alsa_soc_ak4588_codec
+# Date: Thu Feb 19 15:11:26 2009
+# Source: MontaVista Software, Inc.
+# MR: 28687
+# Type: Enhancement
+# Disposition: needs submitting to alsa-devel@alsa-project.org
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Add support for AK4588 codec to the ALSA SOC layer.
+# The AK4588 integrates AK4114 and AK4628 into a single silicon.  This patch
+# adds a translation layer in sound/soc/ which utilize the existing ak4114 and
+# ak4xxx-adda drivers.
+# 
+#  include/sound/ak4114-soc-ditr.h    |   22 +
+#  include/sound/ak4114.h             |    4 
+#  include/sound/ak4588-soc.h         |   32 ++
+#  include/sound/ak4xxx-adda.h        |   11 
+#  sound/i2c/other/Makefile           |    1 
+#  sound/i2c/other/ak4114.c           |   10 
+#  sound/i2c/other/ak4xxx-adda.c      |   74 ++++++
+#  sound/soc/codecs/Kconfig           |   12 +
+#  sound/soc/codecs/Makefile          |    2 
+#  sound/soc/codecs/ak4114-soc-ditr.c |  305 ++++++++++++++++++++++++++
+#  sound/soc/codecs/ak4588-soc.c      |  351 ++++++++++++++++++++++++++++++
+#  sound/soc/codecs/ak4xxx-soc-adda.c |  432 +++++++++++++++++++++++++++++++++++++
+#  sound/soc/codecs/ak4xxx-soc-adda.h |   41 +++
+#  13 files changed, 1290 insertions(+), 7 deletions(-)
+# 
+
+PATCHNUM=2251
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28687
+Type: Enhancement
+Disposition: needs submitting to alsa-devel@alsa-project.org
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Add support for AK4588 codec to the ALSA SOC layer.
+The AK4588 integrates AK4114 and AK4628 into a single silicon.  This patch
+adds a translation layer in sound/soc/ which utilize the existing ak4114 and
+ak4xxx-adda drivers.
+
+ include/sound/ak4114-soc-ditr.h    |   22 +
+ include/sound/ak4114.h             |    4 
+ include/sound/ak4588-soc.h         |   32 ++
+ include/sound/ak4xxx-adda.h        |   11 
+ mvl_patches/pro50-2251.c           |   16 +
+ sound/i2c/other/Makefile           |    1 
+ sound/i2c/other/ak4114.c           |   10 
+ sound/i2c/other/ak4xxx-adda.c      |   74 ++++++
+ sound/soc/codecs/Kconfig           |   12 +
+ sound/soc/codecs/Makefile          |    2 
+ sound/soc/codecs/ak4114-soc-ditr.c |  305 ++++++++++++++++++++++++++
+ sound/soc/codecs/ak4588-soc.c      |  351 ++++++++++++++++++++++++++++++
+ sound/soc/codecs/ak4xxx-soc-adda.c |  432 +++++++++++++++++++++++++++++++++++++
+ sound/soc/codecs/ak4xxx-soc-adda.h |   41 +++
+ 14 files changed, 1306 insertions(+), 7 deletions(-)
+
+Index: linux-2.6.18/include/sound/ak4114-soc-ditr.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/sound/ak4114-soc-ditr.h
+@@ -0,0 +1,22 @@
++/*
++ * AK4114 DIT/DIR wrapper header file
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++
++#ifndef AK4114_SOC_DITR_H
++#define AK4114_SOC_DITR_H
++
++unsigned int ak4114_ditr_read(struct snd_soc_codec *codec, unsigned int reg);
++int ak4114_ditr_write(struct snd_soc_codec *codec,
++		      unsigned int reg, unsigned int value);
++int ak4114_ditr_dapm_event(struct snd_soc_codec *codec, int event);
++int ak4114_ditr_init(struct snd_soc_device *socdev);
++
++extern struct snd_soc_codec_dai ak4114_dir_dai;
++extern struct snd_soc_codec_device soc_codec_ak4114_ditr;
++
++#endif	/* AK4114_SOC_DITR_H */
+Index: linux-2.6.18/include/sound/ak4114.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/ak4114.h
++++ linux-2.6.18/include/sound/ak4114.h
+@@ -73,7 +73,7 @@
+ 
+ /* AK4114_REQ_FORMAT bits */
+ #define AK4114_MONO		(1<<7)	/* Double Sampling Frequency Mode: 0 = stereo, 1 = mono */
+-#define AK4114_DIF2		(1<<5)	/* Audio Data Control */
++#define AK4114_DIF2		(1<<6)	/* Audio Data Control */
+ #define AK4114_DIF1		(1<<5)	/* Audio Data Control */
+ #define AK4114_DIF0		(1<<4)	/* Audio Data Control */
+ #define AK4114_DIF_16R		(0)				/* STDO: 16-bit, right justified */
+@@ -172,6 +172,7 @@ struct ak4114 {
+ 	spinlock_t lock;
+ 	unsigned char regmap[7];
+ 	unsigned char txcsb[5];
++	unsigned char using_soc_layer;
+ 	struct snd_kcontrol *kctls[AK4114_CONTROLS];
+ 	struct snd_pcm_substream *playback_substream;
+ 	struct snd_pcm_substream *capture_substream;
+@@ -192,6 +193,7 @@ int snd_ak4114_create(struct snd_card *c
+ 		      const unsigned char pgm[7], const unsigned char txcsb[5],
+ 		      void *private_data, struct ak4114 **r_ak4114);
+ void snd_ak4114_reg_write(struct ak4114 *ak4114, unsigned char reg, unsigned char mask, unsigned char val);
++unsigned char snd_ak4114_reg_read(struct ak4114 *chip, unsigned char reg);
+ void snd_ak4114_reinit(struct ak4114 *ak4114);
+ int snd_ak4114_build(struct ak4114 *ak4114,
+ 		     struct snd_pcm_substream *playback_substream,
+Index: linux-2.6.18/include/sound/ak4588-soc.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/sound/ak4588-soc.h
+@@ -0,0 +1,32 @@
++/*
++ * AK4588 SOC CODEC wrapper header file
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++
++#ifndef AK4XXX_SOC_H
++#define AK4XXX_SOC_H
++
++#include <sound/ak4xxx-adda.h>
++#include <sound/ak4114.h>
++
++#define AK4588_SW_REG	0xFF
++
++struct snd_soc_ak4588_codec {
++	struct snd_akm4xxx *addac;
++	struct ak4114 *spdif;
++	unsigned int sysclk;
++	int master;
++	struct snd_soc_codec *codec;
++	int (*sw_reg_set)(unsigned int reg, unsigned int value);
++	unsigned int (*sw_reg_get)(unsigned int reg);
++};
++
++#define AK4588_SPDIF_MASK	0x100
++
++extern struct snd_soc_codec_device soc_codec_dev_ak4588;
++
++#endif	/* AK4XXX_SOC_H */
+Index: linux-2.6.18/include/sound/ak4xxx-adda.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/ak4xxx-adda.h
++++ linux-2.6.18/include/sound/ak4xxx-adda.h
+@@ -27,6 +27,8 @@
+ #define AK4XXX_MAX_CHIPS	4
+ #endif
+ 
++#define AK4628_MAX_REGS		0x0A
++
+ struct snd_akm4xxx;
+ 
+ struct snd_ak4xxx_ops {
+@@ -67,8 +69,8 @@ struct snd_akm4xxx {
+ 	unsigned int idx_offset;		/* control index offset */
+ 	enum {
+ 		SND_AK4524, SND_AK4528, SND_AK4529,
+-		SND_AK4355, SND_AK4358, SND_AK4381,
+-		SND_AK5365
++		SND_AK4628, SND_AK4355, SND_AK4358,
++		SND_AK4381, SND_AK5365, SND_AKEND
+ 	} type;
+ 
+ 	/* (array) information of combined codecs */
+@@ -78,11 +80,16 @@ struct snd_akm4xxx {
+ 	struct snd_ak4xxx_ops ops;
+ };
+ 
++struct ak4xxx_setup_data {
++	unsigned short i2c_address;
++};
++
+ void snd_akm4xxx_write(struct snd_akm4xxx *ak, int chip, unsigned char reg,
+ 		       unsigned char val);
+ void snd_akm4xxx_reset(struct snd_akm4xxx *ak, int state);
+ void snd_akm4xxx_init(struct snd_akm4xxx *ak);
+ int snd_akm4xxx_build_controls(struct snd_akm4xxx *ak);
++void snd_akm4xxx_mute(struct snd_akm4xxx *ak, int mute_on);
+ 
+ #define snd_akm4xxx_get(ak,chip,reg) \
+ 	(ak)->images[(chip) * 16 + (reg)]
+Index: linux-2.6.18/sound/i2c/other/Makefile
+===================================================================
+--- linux-2.6.18.orig/sound/i2c/other/Makefile
++++ linux-2.6.18/sound/i2c/other/Makefile
+@@ -14,3 +14,4 @@ obj-$(CONFIG_SND_PDAUDIOCF) += snd-ak411
+ obj-$(CONFIG_SND_ICE1712) += snd-ak4xxx-adda.o
+ obj-$(CONFIG_SND_ICE1724) += snd-ak4114.o snd-ak4xxx-adda.o snd-pt2258.o
+ obj-$(CONFIG_SND_FM801_TEA575X) += snd-tea575x-tuner.o
++obj-$(CONFIG_SND_SOC_AK4588) += snd-ak4114.o snd-ak4xxx-adda.o
+Index: linux-2.6.18/sound/i2c/other/ak4114.c
+===================================================================
+--- linux-2.6.18.orig/sound/i2c/other/ak4114.c
++++ linux-2.6.18/sound/i2c/other/ak4114.c
+@@ -137,6 +137,12 @@ void snd_ak4114_reg_write(struct ak4114 
+ 		reg_write(chip, reg, (chip->txcsb[reg] & ~mask) | val);
+ }
+ 
++unsigned char snd_ak4114_reg_read(struct ak4114 *chip, unsigned char reg)
++{
++	return reg_read(chip, reg);
++}
++EXPORT_SYMBOL(snd_ak4114_reg_read);
++
+ void snd_ak4114_reinit(struct ak4114 *chip)
+ {
+ 	unsigned char old = chip->regmap[AK4114_REG_PWRDN], reg;
+@@ -549,7 +555,9 @@ int snd_ak4114_check_rate_and_errors(str
+       __rate:
+ 	/* compare rate */
+ 	res = external_rate(rcs1);
+-	if (!(flags & AK4114_CHECK_NO_RATE) && runtime && runtime->rate != res) {
++	if ((ak4114->using_soc_layer == 0) &&
++	    !(flags & AK4114_CHECK_NO_RATE) &&
++	    runtime && runtime->rate != res) {
+ 		snd_pcm_stream_lock_irqsave(ak4114->capture_substream, _flags);
+ 		if (snd_pcm_running(ak4114->capture_substream)) {
+ 			// printk(KERN_DEBUG "rate changed (%i <- %i)\n", runtime->rate, res);
+Index: linux-2.6.18/sound/i2c/other/ak4xxx-adda.c
+===================================================================
+--- linux-2.6.18.orig/sound/i2c/other/ak4xxx-adda.c
++++ linux-2.6.18/sound/i2c/other/ak4xxx-adda.c
+@@ -70,6 +70,28 @@ static void ak4524_reset(struct snd_akm4
+ 	}
+ }
+ 
++/* reset procedure for AK4628 */
++static void ak4628_reset(struct snd_akm4xxx *ak, int state)
++{
++	u8 val;
++	unsigned char reg;
++
++	if (state) {
++		snd_akm4xxx_write(ak, 0, 0x00, 0x01); /* soft-mute */
++		snd_akm4xxx_write(ak, 0, 0x09, 0x00); /* reset */
++	} else {
++		for (reg = 0x00; reg < AK4628_MAX_REGS; reg++)
++			if ((reg != 0x00) && (reg != 0x09))
++				snd_akm4xxx_write(ak, 0, reg,
++						snd_akm4xxx_get(ak, 0, reg));
++
++		val = snd_akm4xxx_get(ak, 0, 0) | 0x01;
++		snd_akm4xxx_write(ak, 0, 0x09, 0x01); /* un-reset */
++		val = snd_akm4xxx_get(ak, 0, 0) & ~0xfe;
++		snd_akm4xxx_write(ak, 0, 0x00, val); /* unmute */
++	}
++}
++
+ /* reset procedure for AK4355 and AK4358 */
+ static void ak4355_reset(struct snd_akm4xxx *ak, int state)
+ {
+@@ -118,6 +140,9 @@ void snd_akm4xxx_reset(struct snd_akm4xx
+ 	case SND_AK4529:
+ 		/* FIXME: needed for ak4529? */
+ 		break;
++	case SND_AK4628:
++		ak4628_reset(ak, state);
++		break;
+ 	case SND_AK4355:
+ 	case SND_AK4358:
+ 		ak4355_reset(ak, state);
+@@ -133,6 +158,38 @@ void snd_akm4xxx_reset(struct snd_akm4xx
+ EXPORT_SYMBOL(snd_akm4xxx_reset);
+ 
+ 
++/* mute procedure for AK4628 */
++static void ak4628_mute(struct snd_akm4xxx *ak, int mute_on)
++{
++	u8 val;
++
++	if (mute_on)
++		val = snd_akm4xxx_get(ak, 0, 0) | 0x01;
++	else
++		val = snd_akm4xxx_get(ak, 0, 0) & 0xfe;
++
++	snd_akm4xxx_write(ak, 0, 0x00, val);
++}
++
++/*
++ * Mute the AKM codecs
++ * @mute_on: 1 = mute codec, 0 = unmute codec
++ *
++ * assert the reset operation and restores the register values to the chips.
++ */
++void snd_akm4xxx_mute(struct snd_akm4xxx *ak, int mute_on)
++{
++	switch (ak->type) {
++	case SND_AK4529:
++	case SND_AK4628:
++		ak4628_mute(ak, mute_on);
++		break;
++	default:
++		break;
++	}
++}
++EXPORT_SYMBOL(snd_akm4xxx_mute);
++
+ /*
+  * Volume conversion table for non-linear volumes
+  * from -63.5dB (mute) to 0dB step 0.5dB
+@@ -194,10 +251,15 @@ void snd_akm4xxx_init(struct snd_akm4xxx
+ 		0x05, 0x00, /* 5: ADC right muted */
+ 		0xff, 0xff
+ 	};
++	static const unsigned char inits_ak4628[] = {
++		0x00, 0x0c, /* 0: TDM=0, 24bit I2S, SMUTE=0 */
++		0x09, 0x31, /* RSTN=1 (normal), ATS1/0=3 (256fs) */
++		0xff, 0xff
++	};
+ 	static const unsigned char inits_ak4529[] = {
+ 		0x09, 0x01, /* 9: ATS=0, RSTN=1 */
+ 		0x0a, 0x3f, /* A: all power up, no zero/overflow detection */
+-		0x00, 0x0c, /* 0: TDM=0, 24bit I2S, SMUTE=0 */
++		0x00, 0x0c, /* 0: TDM1/2=0, 24bit I2S, SMUTE=0 */
+ 		0x01, 0x00, /* 1: ACKS=0, ADC, loop off */
+ 		0x02, 0xff, /* 2: LOUT1 muted */
+ 		0x03, 0xff, /* 3: ROUT1 muted */
+@@ -278,6 +340,10 @@ void snd_akm4xxx_init(struct snd_akm4xxx
+ 		inits = inits_ak4529;
+ 		num_chips = 1;
+ 		break;
++	case SND_AK4628:
++		inits = inits_ak4628;
++		num_chips = 1;
++		break;
+ 	case SND_AK4355:
+ 		inits = inits_ak4355;
+ 		num_chips = 1;
+@@ -665,7 +731,8 @@ static int build_dac_controls(struct snd
+ 				AK_VOL_CVT;
+ 			knew.tlv.p = db_scale_vol_datt;
+ 			break;
+-		case SND_AK4529: {
++		case SND_AK4529:
++		case SND_AK4628: {
+ 			/* registers 2-7 and b,c */
+ 			int val = idx < 6 ? idx + 2 : (idx - 6) + 0xb;
+ 			knew.private_value =
+@@ -815,7 +882,8 @@ static int build_deemphasis(struct snd_a
+ 			/* register 3 */
+ 			knew.private_value = AK_COMPOSE(idx, 3, 0, 0);
+ 			break;
+-		case SND_AK4529: {
++		case SND_AK4529:
++		case SND_AK4628: {
+ 			int shift = idx == 3 ? 6 : (2 - idx) * 2;
+ 			/* register 8 with shift */
+ 			knew.private_value = AK_COMPOSE(0, 8, shift, 0);
+Index: linux-2.6.18/sound/soc/codecs/Kconfig
+===================================================================
+--- linux-2.6.18.orig/sound/soc/codecs/Kconfig
++++ linux-2.6.18/sound/soc/codecs/Kconfig
+@@ -41,6 +41,18 @@ config SND_SOC_TLV320AIC3X
+ 	tristate
+ 	depends on SND_SOC && I2C
+ 
++config SND_SOC_AK4588
++	tristate
++	depends on SND_SOC && (I2C || SPI)
++
++config SND_SOC_AK4588_SPI
++	bool
++	depends on SND_SOC_AK4588 && SPI
++
++config SND_SOC_AK4588_I2C
++	bool
++	depends on SND_SOC_AK4588 && I2C
++
+ config SND_SOC_CODEC_STUBS
+ 	tristate
+ 	depends on SND_SOC && I2C
+Index: linux-2.6.18/sound/soc/codecs/Makefile
+===================================================================
+--- linux-2.6.18.orig/sound/soc/codecs/Makefile
++++ linux-2.6.18/sound/soc/codecs/Makefile
+@@ -5,6 +5,7 @@ snd-soc-wm8753-objs := wm8753.o
+ snd-soc-wm9712-objs := wm9712.o
+ snd-soc-cs4270-objs := cs4270.o
+ snd-soc-tlv320aic3x-objs := tlv320aic3x.o
++snd-soc-ak4588-objs := ak4588-soc.o ak4xxx-soc-adda.o ak4114-soc-ditr.o
+ snd-soc-codec_stubs-objs := codec_stubs.o
+ 
+ obj-$(CONFIG_SND_SOC_AC97_CODEC)	+= snd-soc-ac97.o
+@@ -14,4 +15,5 @@ obj-$(CONFIG_SND_SOC_WM8753)	+= snd-soc-
+ obj-$(CONFIG_SND_SOC_WM9712)	+= snd-soc-wm9712.o
+ obj-$(CONFIG_SND_SOC_CS4270)	+= snd-soc-cs4270.o
+ obj-$(CONFIG_SND_SOC_TLV320AIC3X)	+= snd-soc-tlv320aic3x.o
++obj-$(CONFIG_SND_SOC_AK4588)	+= snd-soc-ak4588.o
+ obj-$(CONFIG_SND_SOC_CODEC_STUBS)	+= snd-soc-codec_stubs.o
+Index: linux-2.6.18/sound/soc/codecs/ak4114-soc-ditr.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/codecs/ak4114-soc-ditr.c
+@@ -0,0 +1,305 @@
++/*
++ * AK4114 DIT/DIR wrapper
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <linux/pm.h>
++#include <linux/i2c.h>
++#include <linux/platform_device.h>
++#include <sound/driver.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <sound/soc-dapm.h>
++#include <sound/initval.h>
++#include <sound/ak4114.h>
++#include <sound/ak4588-soc.h>
++
++#define AUDIO_NAME "AK4114 DIT/R"
++#define AK4114_DITR_VERSION "0.1"
++
++#define STUB_RATES	SNDRV_PCM_RATE_48000
++#define STUB_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE |  \
++			 SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE)
++
++struct snd_soc_codec_dai ak4114_dir_dai = {
++	.name = "DIR",
++	.capture = {
++		.stream_name = "Capture",
++		.channels_min = 1,
++		.channels_max = 384,
++		.rates = STUB_RATES,
++		.formats = STUB_FORMATS,
++	},
++};
++EXPORT_SYMBOL_GPL(ak4114_dir_dai);
++
++/*
++ * Read AK4114 register cache
++ */
++unsigned int ak4114_ditr_read(struct snd_soc_codec *codec, unsigned int reg)
++{
++	struct snd_soc_ak4588_codec *chip = codec->private_data;
++	struct ak4114 *ak = chip->spdif;
++
++	return snd_ak4114_reg_read(ak, reg);
++}
++
++/*
++ * Write to the AK4114 register space
++ */
++int ak4114_ditr_write(struct snd_soc_codec *codec,
++			     unsigned int reg, unsigned int value)
++{
++	struct snd_soc_ak4588_codec *chip = codec->private_data;
++	struct ak4114 *ak = chip->spdif;
++
++	snd_ak4114_reg_write(ak, reg, 0, value);
++	return 0;
++}
++
++int ak4114_ditr_dapm_event(struct snd_soc_codec *codec, int event)
++{
++	/*
++	 * The entire device can be powered down.
++	 * Not sure if that is what we want to do here...
++	 */
++	switch (event) {
++	case SNDRV_CTL_POWER_D0:
++	case SNDRV_CTL_POWER_D1:
++	case SNDRV_CTL_POWER_D2:
++	case SNDRV_CTL_POWER_D3:
++	default:
++		break;
++	}
++	codec->dapm_state = event;
++	return 0;
++}
++
++#if defined(CONFIG_SND_SOC_AK4588_I2C)
++
++/*
++ * Callbacks from ak4114 driver's reg_read/write that access the hardware
++ */
++static unsigned char ak4114_ditr_hw_read(void *private_data, unsigned char addr)
++{
++	/*
++	 * Since DA8xx EVM audio card does not use I2C,
++	 * this will be left blank for now...
++	 */
++	return 0;
++}
++
++static void ak4114_ditr_hw_write(void *private_data, unsigned char addr,
++				 unsigned char data)
++
++{
++	struct snd_soc_codec *codec = private_data;
++	u8 buf[3];
++
++	/*
++	 * Data format is:
++	 * byte 1 (slave address) - 0  0  1  0  0  CAD1 CAD0 R/W
++	 * byte 2 (reg address)   - *  *  *  A4 A3  A2	 A1  A0
++	 * byte 3 (data)	  - D7 D6 D5 D4 D3  D2	 D1  D0
++	 */
++
++	/*
++	 * 0x20 - Fixed pattern.
++	 * 0x02 - CAD1 = 0, CAD0 = 1, When both CAD1/0 = 0, the message is
++	 *	  for DIT/R part, all other patterns are for the ADC/DAC part.
++	 * 0x01 - R/W = 1 is write mode
++	 */
++	buf[0] = 0x21;
++	buf[1] = addr & 0x1f;
++	buf[2] = data;
++
++	codec->hw_write(codec->control_data, buf, 3);
++}
++
++#elif defined(CONFIG_SND_SOC_AK4588_SPI)
++
++/*
++ * Callbacks from ak4114 driver's reg_read/write that access the hardware
++ */
++static unsigned char ak4114_ditr_hw_read(void *private_data, unsigned char addr)
++{
++	struct snd_soc_codec *codec = private_data;
++	u8 buf[2];
++
++	/*
++	 * Data format is:
++	 * byte 0 (control + reg address) - CAD1 CAD0 R/W A4 A3 A2 A1 A0
++	 * byte 1 (data)		  -  D7   D6  D5  D4 D3 D2 D1 D0
++	 */
++
++	/*
++	 * 0x00 - CAD1 = 0, CAD0 = 0; when both CAD1/0 = 0, the message is
++	 *	  for DIT/R part, all other patterns are for the ADC/DAC part.
++	 * 0x00 - R/W = 0 is read mode
++	 */
++	buf[0] = addr & 0x1f;
++	buf[1] = 0;
++
++	codec->hw_read(codec->control_data, buf, 2);
++
++	return buf[1];
++}
++
++static void ak4114_ditr_hw_write(void *private_data, unsigned char addr,
++					unsigned char data)
++{
++	struct snd_soc_codec *codec = private_data;
++	u8 buf[2];
++
++	/*
++	 * Data format is:
++	 * byte 0 (control + reg address) - CAD1 CAD0 R/W A4 A3 A2 A1 A0
++	 * byte 1 (data)		  -  D7   D6  D5  D4 D3 D2 D1 D0
++	 */
++
++	/*
++	 * 0x00 - CAD1 = 0, CAD0 = 0; when both CAD1/0 = 0, the message is
++	 *	  for DIT/R part, all other patterns are for the ADC/DAC part.
++	 * 0x20 - R/W = 1 is write mode
++	 */
++	buf[0] = 0x20 | (addr & 0x1f);
++	buf[1] = data;
++
++	codec->hw_write(codec->control_data, buf, 2);
++}
++
++#else
++	/* Add other methods to access the registers here */
++#endif
++
++/*
++ * Initialise the AK4114 driver
++ */
++int ak4114_ditr_init(struct snd_soc_device *socdev)
++{
++	int ret = 0;
++	struct snd_soc_codec *codec = socdev->codec;
++	struct snd_pcm *pcm;
++	struct snd_pcm_substream *pss = NULL, *css = NULL;
++	struct list_head *list;
++	struct snd_device *dev;
++	struct snd_pcm_str *pcm_str;
++	struct snd_soc_ak4588_codec *ak4588_data = codec->private_data;
++	static unsigned char ak4114_init_vals[] = {
++		AK4114_RST | AK4114_PWN | AK4114_OCKS1 | AK4114_CM1,
++		AK4114_DEM0 | AK4114_DIF0 | AK4114_DIF2,
++		AK4114_TX1E | AK4114_TX0E,
++		AK4114_EFH0 | AK4114_DIT,
++		AK4117_MQI | AK4117_MAT | AK4117_MCI | AK4117_MDTS |
++			AK4117_MPE | AK4117_MAN,
++		AK4114_QINT | AK4114_CINT | AK4114_UNLCK | AK4114_PEM |
++			AK4114_PAR,
++		0
++	};
++	static unsigned char ak4114_init_txcsb[] = {
++		0x0, 0x00, 0x0, 0x00, 0x00
++	};
++
++	ret = snd_ak4114_create(codec->card,
++				ak4114_ditr_hw_read, ak4114_ditr_hw_write,
++				ak4114_init_vals, ak4114_init_txcsb,
++				codec, &ak4588_data->spdif);
++
++	if (ret == 0)
++		ak4588_data->spdif->using_soc_layer = 1;
++
++	/* off, with power on */
++	ak4114_ditr_dapm_event(codec, SNDRV_CTL_POWER_D3hot);
++
++	list_for_each(list, &codec->card->devices) {
++		dev = snd_device(list);
++		pcm = dev->device_data;
++		pcm_str = pcm->streams;
++		if (strstr(pcm->id, "DIT"))
++			pss = pcm_str[SNDRV_PCM_STREAM_PLAYBACK].substream;
++
++		if (strstr(pcm->id, "DIR"))
++			css = pcm_str[SNDRV_PCM_STREAM_CAPTURE].substream;
++	}
++
++	if (pss != NULL && css != NULL)
++		snd_ak4114_build(ak4588_data->spdif, pss, css);
++	else
++		printk(KERN_INFO "Play or Capture substream is NULL (%p, %p)\n",
++		       pss, css);
++
++	/*
++	 * Note that the device can to be partially powered down.
++	 * Therefore, no DAPM widgets to initialize...
++	 */
++
++	return ret;
++}
++
++
++static int ak4114_ditr_probe(struct platform_device *pdev)
++{
++	printk(KERN_INFO "AK4114 DIT/DIR %s\n", AK4114_DITR_VERSION);
++
++	return 0;
++}
++
++static int ak4114_ditr_remove(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_codec *codec = socdev->codec;
++
++	/* power down chip */
++	if (codec->control_data)
++		ak4114_ditr_dapm_event(codec, SNDRV_CTL_POWER_D3);
++
++	return 0;
++}
++
++static int ak4114_ditr_suspend(struct platform_device *pdev, pm_message_t state)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_codec *codec = socdev->codec;
++
++	ak4114_ditr_dapm_event(codec, SNDRV_CTL_POWER_D3cold);
++
++	return 0;
++}
++
++static int ak4114_ditr_resume(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_codec *codec = socdev->codec;
++	struct snd_soc_ak4588_codec *ak4588_data = codec->private_data;
++
++	/* copy over register cache into hardware */
++	snd_ak4114_reinit(ak4588_data->spdif);
++
++	ak4114_ditr_dapm_event(codec, codec->suspend_dapm_state);
++
++	return 0;
++}
++
++struct snd_soc_codec_device soc_codec_ak4114_ditr = {
++	.probe = ak4114_ditr_probe,
++	.remove = ak4114_ditr_remove,
++	.suspend = ak4114_ditr_suspend,
++	.resume = ak4114_ditr_resume,
++};
++EXPORT_SYMBOL_GPL(soc_codec_ak4114_ditr);
++
++MODULE_DESCRIPTION("ASoC AK4XXX DIT/R wrapper");
++MODULE_AUTHOR("Steve Chen");
++MODULE_LICENSE("GPL");
++
+Index: linux-2.6.18/sound/soc/codecs/ak4588-soc.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/codecs/ak4588-soc.c
+@@ -0,0 +1,351 @@
++/*
++ * AK4588 SOC CODEC wrapper
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <linux/pm.h>
++#include <linux/i2c.h>
++#include <linux/platform_device.h>
++#include <linux/spi/spi.h>
++#include <linux/spi/davinci_spi_master.h>
++#include <sound/driver.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <sound/soc-dapm.h>
++#include <sound/initval.h>
++#include <sound/ak4xxx-adda.h>
++#include <sound/ak4588-soc.h>
++#include <sound/ak4114-soc-ditr.h>
++#include "ak4xxx-soc-adda.h"
++
++#define AUDIO_NAME "AK4588"
++#define AK4588_VERSION "0.1"
++
++static struct snd_soc_device *ak4588_socdev;
++
++/*
++ * Read AK4588 register cache
++ */
++static unsigned int ak4588_wrapper_read(struct snd_soc_codec *codec,
++					unsigned int reg)
++{
++	if (reg & AK4588_SPDIF_MASK)
++		return ak4114_ditr_read(codec, reg & ~AK4588_SPDIF_MASK);
++	else
++		return ak4xxx_adda_read_cache(codec, reg & ~AK4588_SPDIF_MASK);
++}
++
++/*
++ * Write to the AK4588 register space
++ */
++static int ak4588_wrapper_write(struct snd_soc_codec *codec,
++				unsigned int reg, unsigned int value)
++{
++	if (reg & AK4588_SPDIF_MASK)
++		return ak4114_ditr_write(codec, reg & ~AK4588_SPDIF_MASK,
++					 value);
++	else
++		return ak4xxx_adda_write(codec, reg & ~AK4588_SPDIF_MASK,
++					 value);
++}
++
++struct snd_soc_codec_dai ak4588_wrapper_dai[2];
++EXPORT_SYMBOL_GPL(ak4588_wrapper_dai);
++
++static int ak4588_wrapper_dapm_event(struct snd_soc_codec *codec, int event)
++{
++	ak4xxx_adda_dapm_event(codec, event);
++	ak4114_ditr_dapm_event(codec, event);
++
++	return 0;
++}
++
++/*
++ * Initialise the AK4588 driver
++ */
++static int ak4588_wrapper_init(struct snd_soc_device *socdev)
++{
++	struct snd_soc_codec *codec = socdev->codec;
++	int ret = 0;
++
++	codec->name = "ak4xxx";
++	codec->owner = THIS_MODULE;
++	codec->read = ak4588_wrapper_read;
++	codec->write = ak4588_wrapper_write;
++	codec->dapm_event = ak4588_wrapper_dapm_event;
++	ak4588_wrapper_dai[0] = ak4xxx_adda_dai,
++	ak4588_wrapper_dai[1] = ak4114_dir_dai,
++	codec->dai = ak4588_wrapper_dai;
++	codec->num_dai = 2;
++
++	/* Register PCMs */
++	ret = snd_soc_new_pcms(socdev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1);
++	if (ret < 0) {
++		printk(KERN_ERR "ak4588: failed to create PCMs\n");
++		goto pcm_err;
++	}
++
++	ak4xxx_adda_init(socdev);
++	ak4114_ditr_init(socdev);
++
++	ret = snd_soc_register_card(socdev);
++	if (ret < 0) {
++		printk(KERN_ERR "ak4588: failed to register card\n");
++		goto card_err;
++	}
++	return ret;
++
++card_err:
++	snd_soc_free_pcms(socdev);
++	snd_soc_dapm_free(socdev);
++pcm_err:
++	return ret;
++}
++
++#if defined(CONFIG_SND_SOC_AK4588_I2C)
++
++/*
++ * AK4588 2-wire address can be up to 4 devices with device addresses:
++ * 0x20/1 - for DIR/DIT block
++ * 0x22/3
++ * 0x24/5 - for ADC/DAC block
++ * 0x26/7
++ */
++static unsigned short normal_i2c[] = { 0, I2C_CLIENT_END };
++
++/* Magic definition of all other variables and things */
++I2C_CLIENT_INSMOD;
++
++static struct i2c_driver ak4588_i2c_driver;
++static struct i2c_client client_template;
++/*
++ * If the I2C layer weren't so broken, we could pass this kind of data around.
++ */
++
++static int ak4588_i2c_codec_probe(struct i2c_adapter *adap, int addr, int kind)
++{
++	struct snd_soc_device *socdev = ak4588_socdev;
++	struct ak4xxx_setup_data *setup = socdev->codec_data;
++	struct snd_soc_codec *codec = socdev->codec;
++	struct i2c_client *i2c;
++	int ret;
++
++	if (addr != setup->i2c_address)
++		return -ENODEV;
++
++	client_template.adapter = adap;
++	client_template.addr = addr;
++
++	i2c = kmemdup(&client_template, sizeof(client_template), GFP_KERNEL);
++	if (i2c == NULL) {
++		kfree(codec);
++		return -ENOMEM;
++	}
++	i2c_set_clientdata(i2c, codec);
++	codec->control_data = i2c;
++
++	ret = i2c_attach_client(i2c);
++	if (ret < 0) {
++		printk(KERN_ERR "ak4588: failed to attach codec at addr %x\n",
++		       addr);
++		goto err;
++	}
++
++	ret = ak4588_wrapper_init(socdev);
++	if (ret < 0) {
++		printk(KERN_ERR "ak4588: failed to initialise AK4xxx\n");
++		goto err;
++	}
++	return ret;
++
++err:
++	kfree(codec);
++	kfree(i2c);
++	return ret;
++}
++
++static int ak4588_i2c_detach(struct i2c_client *client)
++{
++	i2c_detach_client(client);
++	kfree(client);
++
++	return 0;
++}
++
++static int ak4588_i2c_attach(struct i2c_adapter *adap)
++{
++	return i2c_probe(adap, &addr_data, ak4588_i2c_codec_probe);
++}
++/* machine i2c codec control layer */
++static struct i2c_driver ak4588_i2c_driver = {
++	.driver = {
++		.name	= "AK4588 I2C Codec",
++		.owner	= THIS_MODULE,
++	},
++	.id		= I2C_DRIVERID_I2CDEV,
++	.attach_adapter = ak4588_i2c_attach,
++	.detach_client	= ak4588_i2c_detach,
++};
++
++static struct i2c_client client_template = {
++	.name	= "AK4588",
++	.driver = &ak4588_i2c_driver,
++};
++
++#elif defined(CONFIG_SND_SOC_AK4588_SPI)
++
++static int ak4588_wrapper_hw_write(void *spi, const char *buf, int len)
++{
++	spi_write(spi, buf, len);
++
++	return buf[1];
++}
++
++static int ak4588_wrapper_hw_read(void *spi, char *buf, int len)
++{
++	spi_write_then_read(spi, &buf[0], 1, &buf[1], 1);
++
++	return buf[1];
++}
++
++static int __devinit ak4588_spi_codec_probe(struct spi_device *spi)
++{
++	int ret;
++	struct snd_soc_device *socdev = ak4588_socdev;
++	struct snd_soc_codec *codec = socdev->codec;
++
++	codec->control_data = spi;
++	codec->hw_write = ak4588_wrapper_hw_write;
++	codec->hw_read = ak4588_wrapper_hw_read;
++
++	ret = ak4588_wrapper_init(socdev);
++	if (ret < 0) {
++		printk(KERN_ERR "ak4588: failed to initialise AK4xxx\n");
++		goto err;
++	}
++	return ret;
++
++err:
++	kfree(codec);
++	return -1;
++}
++
++static struct spi_driver spi_codec_driver = {
++	.driver = {
++		   .name = "AK4588 audio codec",
++		   .bus = &spi_bus_type,
++		   .owner = THIS_MODULE,
++		   },
++	.probe = ak4588_spi_codec_probe,
++};
++#endif
++
++static struct snd_soc_ak4588_codec ak4588_codec_data;
++
++static int ak4588_probe(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_codec *codec;
++	int ret = 0;
++#ifdef CONFIG_SND_SOC_AK4588_I2C
++	struct ak4xxx_setup_data *setup = socdev->codec_data;
++#endif
++
++	printk(KERN_INFO "AK4588 Audio Codec %s\n", AK4588_VERSION);
++
++	codec = kzalloc(sizeof(struct snd_soc_codec), GFP_KERNEL);
++	if (codec == NULL)
++		return -ENOMEM;
++
++	ak4588_codec_data.codec = codec;
++	codec->private_data = &ak4588_codec_data;
++	socdev->codec = codec;
++
++	mutex_init(&codec->mutex);
++	INIT_LIST_HEAD(&codec->dapm_widgets);
++	INIT_LIST_HEAD(&codec->dapm_paths);
++
++	ak4588_socdev = socdev;
++
++	soc_codec_ak4xxx_adda.probe(pdev);
++	soc_codec_ak4114_ditr.probe(pdev);
++
++#if defined(CONFIG_SND_SOC_AK4588_I2C)
++	if (setup->i2c_address) {
++		normal_i2c[0] = setup->i2c_address;
++		codec->hw_write = (hw_write_t) i2c_master_send;
++		ret = i2c_add_driver(&ak4588_i2c_driver);
++		if (ret != 0)
++			printk(KERN_ERR "can't add i2c driver");
++	}
++#elif defined(CONFIG_SND_SOC_AK4588_SPI)
++	ret = spi_register_driver(&spi_codec_driver);
++
++	if (ak4588_wrapper_read(codec, AK4588_SPDIF_MASK) == 0xff)
++		ret = -1;
++
++#else
++	/* Add other interfaces here */
++#endif
++	return ret;
++}
++
++static int ak4588_remove(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_codec *codec = socdev->codec;
++
++	/* power down chip */
++	soc_codec_ak4xxx_adda.remove(pdev);
++	soc_codec_ak4114_ditr.remove(pdev);
++
++	snd_soc_free_pcms(socdev);
++	snd_soc_dapm_free(socdev);
++
++#if defined(CONFIG_SND_SOC_AK4588_I2C)
++	i2c_del_driver(&ak4588_i2c_driver);
++#elif defined(CONFIG_SND_SOC_AK4588_SPI)
++	spi_unregister_driver(&spi_codec_driver);
++#endif
++	kfree(codec);
++
++	return 0;
++}
++
++static int ak4588_suspend(struct platform_device *pdev, pm_message_t state)
++{
++	soc_codec_ak4xxx_adda.suspend(pdev, state);
++	soc_codec_ak4114_ditr.suspend(pdev, state);
++	return 0;
++}
++
++static int ak4588_resume(struct platform_device *pdev)
++{
++	soc_codec_ak4xxx_adda.resume(pdev);
++	soc_codec_ak4114_ditr.resume(pdev);
++	return 0;
++}
++
++struct snd_soc_codec_device soc_codec_dev_ak4588 = {
++	.probe = ak4588_probe,
++	.remove = ak4588_remove,
++	.suspend = ak4588_suspend,
++	.resume = ak4588_resume,
++};
++EXPORT_SYMBOL_GPL(soc_codec_dev_ak4588);
++
++MODULE_DESCRIPTION("ASoC AK4XXX codec driver");
++MODULE_AUTHOR("Steve Chen");
++MODULE_LICENSE("GPL");
++
+Index: linux-2.6.18/sound/soc/codecs/ak4xxx-soc-adda.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/codecs/ak4xxx-soc-adda.c
+@@ -0,0 +1,432 @@
++/*
++ * AK4588 ADC/DAC SOC CODEC wrapper
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <linux/pm.h>
++#include <linux/i2c.h>
++#include <linux/platform_device.h>
++#include <sound/driver.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <sound/soc-dapm.h>
++#include <sound/initval.h>
++#include <sound/ak4xxx-adda.h>
++#include <sound/ak4588-soc.h>
++
++#define AUDIO_NAME "AK4XXX ADDA"
++#define AK4XXX_VERSION "0.1"
++
++static const struct snd_akm4xxx_dac_channel ak4628_dac_info[] = {
++	{
++		.name = "PCM Playback Volume",
++		.num_channels = 2,
++	},
++	{
++		.name = "PCM Center Playback Volume",
++		.num_channels = 2,
++	},
++	{
++		.name = "PCM LFE Playback Volume",
++		.num_channels = 2,
++	},
++	{
++		.name = "PCM Rear Playback Volume",
++		.num_channels = 2,
++	},
++};
++
++static struct snd_akm4xxx ak4xxx_codec_data = {
++		.type =	SND_AK4628,
++		.num_adcs = 0,
++		.num_dacs = 8,
++		.dac_info = ak4628_dac_info,
++};
++/*
++ * read ak4xxx register cache
++ */
++unsigned int ak4xxx_adda_read_cache(struct snd_soc_codec *codec,
++				    unsigned int reg)
++{
++	struct snd_soc_ak4588_codec *chip = codec->private_data;
++	struct snd_akm4xxx *ak = chip->addac;
++
++	if ((reg == AK4588_SW_REG) && (chip->sw_reg_get))
++		return chip->sw_reg_get(reg);
++	else if (reg >= AK4XXX_IMAGE_SIZE)
++		return -1;
++
++	return snd_akm4xxx_get(ak, 0, reg);
++}
++
++/*
++ * write to the ak4xxx register space
++ */
++int ak4xxx_adda_write(struct snd_soc_codec *codec,
++		      unsigned int reg, unsigned int value)
++{
++	struct snd_soc_ak4588_codec *chip = codec->private_data;
++	struct snd_akm4xxx *ak = chip->addac;
++
++	if ((reg == AK4588_SW_REG) && (chip->sw_reg_set))
++		chip->sw_reg_set(reg, value);
++	else if (reg >= AK4XXX_IMAGE_SIZE)
++		return -1;
++	else
++		snd_akm4xxx_write(ak, 0, reg, value);
++
++	return 0;
++}
++
++int ak4xxx_adda_hw_params(struct snd_pcm_substream *substream,
++			  struct snd_pcm_hw_params *params)
++{
++	return 0;
++}
++
++static int ak4xxx_adda_mute(struct snd_soc_codec_dai *dai, int mute)
++{
++	struct snd_soc_codec *codec = dai->codec;
++	struct snd_soc_ak4588_codec *chip = codec->private_data;
++	struct snd_akm4xxx *ak = chip->addac;
++
++	snd_akm4xxx_mute(ak, mute);
++
++	return 0;
++}
++
++static int ak4xxx_adda_set_dai_sysclk(struct snd_soc_codec_dai *codec_dai,
++					 int clk_id, unsigned int freq, int dir)
++{
++	struct snd_soc_codec *codec = codec_dai->codec;
++	struct snd_soc_ak4588_codec *chip = codec->private_data;
++
++	switch (freq) {
++	case  8192000:
++	case 11289600:
++	case 12288000:
++	case 16384000:
++	case 16934400:
++	case 18432000:
++	case 22579200:
++	case 24576000:
++		chip->sysclk = freq;
++		return 0;
++	}
++
++	return -EINVAL;
++}
++
++static int ak4xxx_adda_set_dai_fmt(struct snd_soc_codec_dai *codec_dai,
++				   unsigned int fmt)
++{
++	struct snd_soc_codec *codec = codec_dai->codec;
++	struct snd_soc_ak4588_codec *chip = codec->private_data;
++	u8 dif_val = 0;
++
++	/* set master/slave audio interface */
++	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
++	case SND_SOC_DAIFMT_CBM_CFM:
++	case SND_SOC_DAIFMT_CBM_CFS:
++		chip->master = 1;
++		break;
++	case SND_SOC_DAIFMT_CBS_CFS:
++		chip->master = 0;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	/* interface format */
++	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
++	case SND_SOC_DAIFMT_I2S:
++		dif_val = 0x3;
++		break;
++	case SND_SOC_DAIFMT_RIGHT_J:
++		dif_val = 0x1;
++		break;
++	case SND_SOC_DAIFMT_LEFT_J:
++		dif_val = 0x2;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	/* set iface */
++	dif_val = (ak4xxx_adda_read_cache(codec, 0) & 0xf3) | (dif_val << 2);
++	ak4xxx_adda_write(codec, 0, dif_val);
++
++	return 0;
++}
++
++static int ak4xxx_adda_hw_free(struct snd_pcm_substream *substream)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct snd_soc_device *socdev = rtd->socdev;
++	struct snd_soc_codec *codec = socdev->codec;
++	struct snd_soc_ak4588_codec *chip = codec->private_data;
++	struct snd_akm4xxx *ak = chip->addac;
++
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		snd_akm4xxx_mute(ak, 1);
++
++	return 0;
++}
++
++#define AK4XXX_RATES	(SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_48000 |\
++			 SNDRV_PCM_RATE_64000 | SNDRV_PCM_RATE_96000)
++#define AK4XXX_FORMATS	(SNDRV_PCM_FMTBIT_S24_LE |  SNDRV_PCM_FMTBIT_S32_LE |\
++			 SNDRV_PCM_FMTBIT_S16_LE)
++
++struct snd_soc_codec_dai ak4xxx_adda_dai = {
++	.name = "ak4xxx",
++	.playback = {
++		.stream_name = "AK4xxx Playback",
++		.channels_min = 2,
++		.channels_max = 2,
++		.rates = AK4XXX_RATES,
++		.formats = AK4XXX_FORMATS,
++	},
++	.capture = {
++		.stream_name = "AK4xxx Capture",
++		.channels_min = 2,
++		.channels_max = 2,
++		.rates = AK4XXX_RATES,
++		.formats = AK4XXX_FORMATS,
++	},
++	.ops = {
++		.hw_params = ak4xxx_adda_hw_params,
++		.hw_free = ak4xxx_adda_hw_free,
++	},
++	.dai_ops = {
++		.digital_mute = ak4xxx_adda_mute,
++		.set_sysclk = ak4xxx_adda_set_dai_sysclk,
++		.set_fmt = ak4xxx_adda_set_dai_fmt,
++	}
++};
++EXPORT_SYMBOL_GPL(ak4xxx_adda_dai);
++
++static void ak4xxx_adda_lock(struct snd_akm4xxx *ak, int chip)
++{
++	struct snd_soc_ak4588_codec *priv_data = ak->private_data[0];
++	struct snd_soc_codec *codec = priv_data->codec;
++
++	mutex_lock(&codec->mutex);
++}
++
++static void ak4xxx_adda_unlock(struct snd_akm4xxx *ak, int chip)
++{
++	struct snd_soc_ak4588_codec *priv_data = ak->private_data[0];
++	struct snd_soc_codec *codec = priv_data->codec;
++
++	mutex_unlock(&codec->mutex);
++}
++
++int ak4xxx_adda_dapm_event(struct snd_soc_codec *codec, int event)
++{
++	switch (event) {
++	case SNDRV_CTL_POWER_D0:
++	case SNDRV_CTL_POWER_D1:
++	case SNDRV_CTL_POWER_D2:
++	case SNDRV_CTL_POWER_D3:
++	default:
++		break;
++	}
++	codec->dapm_state = event;
++	return 0;
++}
++
++static const struct snd_soc_dapm_widget ak4628_dapm_widgets[] = {
++	SND_SOC_DAPM_DAC("ak4628 DAC GLB", "AK4xxx Playback", 0x0A, 0, 0),
++	SND_SOC_DAPM_DAC("ak4628 DAC_0", "AK4xxx Playback", 0x09, 1, 0),
++	SND_SOC_DAPM_DAC("ak4628 DAC_1", "AK4xxx Playback", 0x09, 2, 0),
++	SND_SOC_DAPM_DAC("ak4628 DAC_2", "AK4xxx Playback", 0x09, 3, 0),
++	SND_SOC_DAPM_DAC("ak4628 DAC_3", "AK4xxx Playback", 0x09, 6, 0),
++	SND_SOC_DAPM_ADC("ak4628 ADC_GLB", "AK4xxx Capture", 0x0A, 1, 0),
++
++	SND_SOC_DAPM_OUTPUT("LF-RF_OUT"),
++	SND_SOC_DAPM_OUTPUT("LS-RS_OUT"),
++	SND_SOC_DAPM_OUTPUT("C-SW_OUT"),
++	SND_SOC_DAPM_OUTPUT("LB-RB_OUT"),
++
++	SND_SOC_DAPM_INPUT("LF-RF_IN"),
++	SND_SOC_DAPM_INPUT("LS-RS_IN"),
++	SND_SOC_DAPM_INPUT("C-SW_IN"),
++	SND_SOC_DAPM_INPUT("LB-RB_IN"),
++};
++
++static int ak4xxx_adda_add_widgets(struct snd_soc_codec *codec)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(ak4628_dapm_widgets); i++)
++		snd_soc_dapm_new_control(codec, &ak4628_dapm_widgets[i]);
++
++	return 0;
++}
++
++#if defined(CONFIG_SND_SOC_AK4588_I2C)
++/*
++ * callback from snd_akm4xxx_write that actually writes into hardware
++ */
++static void ak4xxx_adda_hw_write(struct snd_akm4xxx *ak, int chip,
++				 unsigned char reg, unsigned char val)
++
++{
++	struct snd_soc_ak4588_codec *priv_data = ak->private_data[0];
++	struct snd_soc_codec *codec = priv_data->codec;
++	u8 data[3];
++
++	/* data format are
++	 *   Byte 1 (slave address) - 0 0 1 0 0 CAD1 CAD0 R/W
++	 *   Byte 2 (Reg address)   - * * * A4 A3 A2 A1 A0
++	 *   Byte 3 (Data)          - D7 D6 D5 D4 D3 D2 D1 D0
++	 */
++
++	/*
++	 * 0x20 - Fixed pattern.
++	 * 0x02 - CAD1 = 0, CAD0 = 1, When both CAD1/0 = 0, the message is
++	 *	  for DIT/R part, all other patterns are for the ADC/DAC part.
++	 * 0x01 - R/W = 1 is write mode
++	 */
++	data[0] = 0x21 | 0x02;
++	data[1] = reg & 0x1f;
++	data[2] = val & 0xff;
++
++	codec->hw_write(codec->control_data, data, 3);
++}
++
++#elif defined(CONFIG_SND_SOC_AK4588_SPI)
++static void ak4xxx_adda_hw_write(struct snd_akm4xxx *ak, int chip,
++				 unsigned char reg, unsigned char val)
++{
++	struct snd_soc_ak4588_codec *priv_data = ak->private_data[0];
++	struct snd_soc_codec *codec = priv_data->codec;
++	u8 buf[2];
++
++	/* data format are
++	 *   Byte 0 (Control + Reg address)  - CAD1 CAD0 R/W A4 A3 A2 A1 A0
++	 *   Byte 1 (Data)                   - D7 D6 D5 D4 D3 D2 D1 D0
++	 */
++
++	/*
++	 * 0x01 - CAD1 = 0, CAD0 = 1, When both CAD1/0 = 0, the message is
++	 *	for DIT/R part, all other patterns are for the ADC/DAC part.
++	 * 0x01 - R/W = 1 is write mode
++	 */
++	buf[0] = 0x60 | (reg & 0x1f);
++	buf[1] = val & 0xff;
++
++	codec->hw_write(codec->control_data, buf, 2);
++}
++
++#else
++	/* Add other interfaces here */
++#endif
++
++/*
++ * initialise the AK4XXX driver
++ */
++int ak4xxx_adda_init(struct snd_soc_device *socdev)
++{
++	struct snd_soc_codec *codec = socdev->codec;
++	struct snd_soc_ak4588_codec *chip = codec->private_data;
++	struct snd_akm4xxx *ak = chip->addac;
++
++	ak->card = codec->card;
++
++	/* off, with power on */
++	ak4xxx_adda_dapm_event(codec, SNDRV_CTL_POWER_D3hot);
++
++	snd_akm4xxx_build_controls(ak);
++	ak4xxx_adda_add_widgets(codec);
++	snd_akm4xxx_init(ak);
++
++	return 0;
++}
++
++
++
++static int ak4xxx_adda_probe(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_codec *codec = socdev->codec;
++	struct snd_soc_ak4588_codec *ak4588_data = codec->private_data;
++	struct snd_akm4xxx *ak;
++	int ret = 0;
++
++	printk(KERN_INFO "AK4xxx ADC/DAC %s\n", AK4XXX_VERSION);
++
++	ak = &ak4xxx_codec_data;
++	ak->private_data[0] = ak4588_data;
++	ak4588_data->addac = ak;
++
++	if (ak->ops.lock == NULL)
++		ak->ops.lock = ak4xxx_adda_lock;
++	if (ak->ops.unlock == NULL)
++		ak->ops.unlock = ak4xxx_adda_unlock;
++	if (ak->ops.write == NULL)
++		ak->ops.write = ak4xxx_adda_hw_write;
++
++	return ret;
++}
++static int ak4xxx_adda_remove(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_codec *codec = socdev->codec;
++
++	/* power down chip */
++	if (codec->control_data)
++		ak4xxx_adda_dapm_event(codec, SNDRV_CTL_POWER_D3);
++
++	return 0;
++}
++
++static int ak4xxx_adda_suspend(struct platform_device *pdev, pm_message_t state)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_codec *codec = socdev->codec;
++
++	ak4xxx_adda_dapm_event(codec, SNDRV_CTL_POWER_D3cold);
++
++	return 0;
++}
++
++static int ak4xxx_adda_resume(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_codec *codec = socdev->codec;
++	struct snd_soc_ak4588_codec *ak4588_data = codec->private_data;
++	struct snd_akm4xxx *ak = ak4588_data->addac;
++
++
++	/* copy over register cache into hardware */
++	snd_akm4xxx_reset(ak, 0);
++
++	ak4xxx_adda_dapm_event(codec, codec->suspend_dapm_state);
++
++	return 0;
++}
++
++struct snd_soc_codec_device soc_codec_ak4xxx_adda = {
++	.probe = ak4xxx_adda_probe,
++	.remove = ak4xxx_adda_remove,
++	.suspend = ak4xxx_adda_suspend,
++	.resume = ak4xxx_adda_resume,
++};
++EXPORT_SYMBOL_GPL(soc_codec_ak4xxx_adda);
++
++MODULE_DESCRIPTION("ASoC AK4XXX codec driver");
++MODULE_AUTHOR("Steve Chen");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/sound/soc/codecs/ak4xxx-soc-adda.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/codecs/ak4xxx-soc-adda.h
+@@ -0,0 +1,41 @@
++/*
++ * AK4588 ADC/DAC SOC CODEC wrapper header file
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++
++#ifndef __SOUND_AK4XXX_SOC_ADDA_H
++#define __SOUND_AK4XXX_SOC_ADDA_H
++
++#define AK4XXX_CONTROL_1	0x0
++#define AK4XXX_CONTROL_2	0x1
++#define AK4XXX_LOUT_1		0x2
++#define AK4XXX_ROUT_1		0x3
++#define AK4XXX_LOUT_2		0x4
++#define AK4XXX_ROUT_2		0x5
++#define AK4XXX_LOUT_3		0x6
++#define AK4XXX_ROUT_3		0x7
++
++#define AK4XXX_DE_EMPH		0x8
++#define AK4XXX_ATT_PWDC		0x9
++#define AK4XXX_ZERO_DET		0xA
++
++#define AK4XXX_LOUT_4		0xB
++#define AK4XXX_ROUT_4		0xC
++
++unsigned int ak4xxx_adda_read_cache(struct snd_soc_codec *codec,
++				    unsigned int reg);
++int ak4xxx_adda_write(struct snd_soc_codec *codec,
++		      unsigned int reg, unsigned int value);
++int ak4xxx_adda_hw_params(struct snd_pcm_substream *substream,
++			  struct snd_pcm_hw_params *params);
++int ak4xxx_adda_dapm_event(struct snd_soc_codec *codec, int event);
++int ak4xxx_adda_init(struct snd_soc_device *socdev);
++
++extern struct snd_soc_codec_dai ak4xxx_adda_dai;
++extern struct snd_soc_codec_device soc_codec_ak4xxx_adda;
++
++#endif		/*  */
+Index: linux-2.6.18/mvl_patches/pro50-2251.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2251.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2251);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

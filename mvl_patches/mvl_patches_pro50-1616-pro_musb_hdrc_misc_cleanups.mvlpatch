@@ -1,0 +1,449 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_misc_cleanups
+# Date: Fri Sep 19 14:03:38 2008
+# From 632313983b4ff86e4aec28964cf27892ced38dab Mon Sep 17 00:00:00 2001
+# From: David Brownell <dbrownell@users.sourceforge.net>
+# Date: Wed, 17 Jan 2007 14:13:40 -0800
+# Subject: [PATCH] musb_hdrc misc cleanups
+# 
+# Remove debug/prototype sysfs attribute 'musb_otg', so there's only
+# the one (compound) state machine to follow.  (If we need an option
+# it'd more likely be to match the N800:  Mini-B connector forced
+# into host mode, with gender-bender assistance.)
+# 
+# Minor DaVinci tweak:  on driver shutdown, don't wait for VBUS to fall
+# unless we're the host which was supplying that voltage.
+# 
+# Remove some more UglyCamelCasing.
+# 
+# Clear HR in some peripheral side code; the silicon doesn't clear it
+# in various cases you'd expect such stuff to be automatic.
+# 
+# Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+# (cherry picked from commit 03aa3a18891c84fc8d64cad194560a2c04cd550e)
+
+PATCHNUM=1616
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 632313983b4ff86e4aec28964cf27892ced38dab Mon Sep 17 00:00:00 2001
+From: David Brownell <dbrownell@users.sourceforge.net>
+Date: Wed, 17 Jan 2007 14:13:40 -0800
+Subject: [PATCH] musb_hdrc misc cleanups
+
+Remove debug/prototype sysfs attribute 'musb_otg', so there's only
+the one (compound) state machine to follow.  (If we need an option
+it'd more likely be to match the N800:  Mini-B connector forced
+into host mode, with gender-bender assistance.)
+
+Minor DaVinci tweak:  on driver shutdown, don't wait for VBUS to fall
+unless we're the host which was supplying that voltage.
+
+Remove some more UglyCamelCasing.
+
+Clear HR in some peripheral side code; the silicon doesn't clear it
+in various cases you'd expect such stuff to be automatic.
+
+Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+(cherry picked from commit 03aa3a18891c84fc8d64cad194560a2c04cd550e)
+Index: linux-2.6.18/drivers/usb/musb/davinci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/davinci.c
++++ linux-2.6.18/drivers/usb/musb/davinci.c
+@@ -432,7 +432,7 @@ int musb_platform_exit(struct musb *musb
+ 	davinci_source_power(musb, 0 /*off*/, 1);
+ 
+ 	/* delay, to avoid problems with module reload */
+-	if (is_host_enabled(musb)) {
++	if (is_host_enabled(musb) && musb->xceiv.default_a) {
+ 		int	maxdelay = 30;
+ 		u8	devctl, warn = 0;
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -1659,7 +1659,7 @@ static inline void __init musb_g_init_en
+ /* called once during driver setup to initialize and link into
+  * the driver model; memory is zeroed.
+  */
+-int __init musb_gadget_setup(struct musb *pThis)
++int __init musb_gadget_setup(struct musb *musb)
+ {
+ 	int status;
+ 
+@@ -1669,36 +1669,39 @@ int __init musb_gadget_setup(struct musb
+ 	 */
+ 	if (the_gadget)
+ 		return -EBUSY;
+-	the_gadget = pThis;
++	the_gadget = musb;
+ 
+-	pThis->g.ops = &musb_gadget_operations;
+-	pThis->g.is_dualspeed = 1;
+-	pThis->g.speed = USB_SPEED_UNKNOWN;
++	musb->g.ops = &musb_gadget_operations;
++	musb->g.is_dualspeed = 1;
++	musb->g.speed = USB_SPEED_UNKNOWN;
+ 
+ 	/* this "gadget" abstracts/virtualizes the controller */
+-	strcpy(pThis->g.dev.bus_id, "gadget");
+-	pThis->g.dev.parent = pThis->controller;
+-	pThis->g.dev.dma_mask = pThis->controller->dma_mask;
+-	pThis->g.dev.release = musb_gadget_release;
+-	pThis->g.name = musb_driver_name;
++	strcpy(musb->g.dev.bus_id, "gadget");
++	musb->g.dev.parent = musb->controller;
++	musb->g.dev.dma_mask = musb->controller->dma_mask;
++	musb->g.dev.release = musb_gadget_release;
++	musb->g.name = musb_driver_name;
+ 
+-	musb_g_init_endpoints(pThis);
++	if (is_otg_enabled(musb))
++		musb->g.is_otg = 1;
+ 
+-	pThis->is_active = 0;
+-	musb_platform_try_idle(pThis);
++	musb_g_init_endpoints(musb);
++
++	musb->is_active = 0;
++	musb_platform_try_idle(musb);
+ 
+-	status = device_register(&pThis->g.dev);
++	status = device_register(&musb->g.dev);
+ 	if (status != 0)
+ 		the_gadget = NULL;
+ 	return status;
+ }
+ 
+-void musb_gadget_cleanup(struct musb *pThis)
++void musb_gadget_cleanup(struct musb *musb)
+ {
+-	if (pThis != the_gadget)
++	if (musb != the_gadget)
+ 		return;
+ 
+-	device_unregister(&pThis->g.dev);
++	device_unregister(&musb->g.dev);
+ 	the_gadget = NULL;
+ }
+ 
+@@ -1955,7 +1958,13 @@ void musb_g_suspend(struct musb *pThis)
+ /* called when VBUS drops below session threshold, and in other cases */
+ void musb_g_disconnect(struct musb *pThis)
+ {
+-	DBG(3, "devctl %02x\n", musb_readb(pThis->pRegs, MGC_O_HDRC_DEVCTL));
++	void __iomem	*mregs = pThis->pRegs;
++	u8	devctl = musb_readb(mregs, MGC_O_HDRC_DEVCTL);
++
++	DBG(3, "devctl %02x\n", devctl);
++
++	/* clear HR */
++	musb_writeb(mregs, MGC_O_HDRC_DEVCTL, devctl & MGC_M_DEVCTL_SESSION);
+ 
+ 	/* don't draw vbus until new b-default session */
+ 	(void) musb_gadget_vbus_draw(&pThis->g, 0);
+@@ -2002,14 +2011,15 @@ __acquires(pThis->Lock)
+ 				: NULL
+ 			);
+ 
+-	/* HR does NOT clear itself */
+-	if (devctl & MGC_M_DEVCTL_HR)
+-		musb_writeb(pBase, MGC_O_HDRC_DEVCTL, MGC_M_DEVCTL_SESSION);
+-
+ 	/* report disconnect, if we didn't already (flushing EP state) */
+ 	if (pThis->g.speed != USB_SPEED_UNKNOWN)
+ 		musb_g_disconnect(pThis);
+ 
++	/* clear HR */
++	else if (devctl & MGC_M_DEVCTL_HR)
++		musb_writeb(pBase, MGC_O_HDRC_DEVCTL, MGC_M_DEVCTL_SESSION);
++
++
+ 	/* what speed did we negotiate? */
+ 	power = musb_readb(pBase, MGC_O_HDRC_POWER);
+ 	pThis->g.speed = (power & MGC_M_POWER_HSMODE)
+@@ -2026,16 +2036,13 @@ __acquires(pThis->Lock)
+ 	pThis->g.a_alt_hnp_support = 0;
+ 	pThis->g.a_hnp_support = 0;
+ 
+-	if (is_otg_enabled(pThis))
+-		pThis->g.is_otg = !!musb_otg;
+-
+ 	/* Normal reset, as B-Device;
+ 	 * or else after HNP, as A-Device
+ 	 */
+ 	if (devctl & MGC_M_DEVCTL_BDEVICE) {
+ 		pThis->xceiv.state = OTG_STATE_B_PERIPHERAL;
+ 		pThis->g.is_a_peripheral = 0;
+-	} else if (is_otg_enabled(pThis) && musb_otg) {
++	} else if (is_otg_enabled(pThis)) {
+ 		pThis->xceiv.state = OTG_STATE_A_PERIPHERAL;
+ 		pThis->g.is_a_peripheral = 1;
+ 	} else
+@@ -2043,5 +2050,5 @@ __acquires(pThis->Lock)
+ 
+ 	/* start with default limits on VBUS power draw */
+ 	(void) musb_gadget_vbus_draw(&pThis->g,
+-			(is_otg_enabled(pThis) && musb_otg) ? 8 : 100);
++			is_otg_enabled(pThis) ? 8 : 100);
+ }
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -490,13 +490,6 @@ static inline struct musb *gadget_to_mus
+ }
+ #endif
+ 
+-#ifdef CONFIG_USB_MUSB_OTG
+-/* sysfs flag to seletively force peripheral-only operation */
+-extern int musb_otg;
+-#else
+-#define musb_otg 0
+-#endif
+-
+ 
+ /***************************** Glue it together *****************************/
+ 
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -145,19 +145,6 @@ MODULE_LICENSE("GPL");
+ 
+ /*-------------------------------------------------------------------------*/
+ 
+-#ifdef	CONFIG_USB_MUSB_OTG
+-
+-/* For debugging/prototyping:  allow disabling host side support on boards
+- * with Mini-AB (or Mini-A) connectors, making peripheral side support look
+- * like pure peripherals (not reporting OTG capabilities, and able to
+- * draw a full 100mA unit load).
+- */
+-int musb_otg = 1;
+-
+-module_param(musb_otg, bool, 0);
+-MODULE_PARM_DESC(musb_otg, "enable/disable OTG capabilities");
+-#endif
+-
+ static inline struct musb *dev_to_musb(struct device *dev)
+ {
+ #ifdef CONFIG_USB_MUSB_HDRC_HCD
+@@ -1782,11 +1769,6 @@ musb_init_controller(struct device *dev,
+ 	}
+ #endif				/* CONFIG_USB_MUSB_HDRC_HCD */
+ 
+-#ifdef CONFIG_USB_MUSB_OTG
+-	if (!is_otg_enabled(pThis))
+-		musb_otg = 0;
+-#endif
+-
+ 	/* For the host-only role, we can activate right away.
+ 	 * (We expect the ID pin to be forcibly grounded!!)
+ 	 * Otherwise, wait till the gadget driver hooks up.
+Index: linux-2.6.18/mvl_patches/pro50-1616.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1616.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1616);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

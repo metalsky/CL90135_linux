@@ -1,0 +1,373 @@
+#! /usr/bin/env bash
+# Patch: -pro_davinci_wdt_do_not_duplicate_reg_macros
+# Date: Thu Feb 19 15:11:54 2009
+# Source: MontaVista Software, Inc.
+# MR: 28872
+# Type: Enhancement
+# Disposition: needs submitting to Wim van Sebroek <wim@iguana.be>
+# Signed-off-by: David A. Griego <dgriego@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Use timer definitions from include/asm-arm/arch-davinci/time.h, so they won't
+# be defined in two places.
+# While at it, fix error returned by davinci_wdt_ioctl() for a non-implemented
+# call...
+# 
+#  drivers/char/watchdog/davinci_wdt.c |   82 +++++++++++++-----------------------
+#  1 files changed, 31 insertions(+), 51 deletions(-)
+# 
+
+PATCHNUM=2258
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28872
+Type: Enhancement
+Disposition: needs submitting to Wim van Sebroek <wim@iguana.be>
+Signed-off-by: David A. Griego <dgriego@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Use timer definitions from include/asm-arm/arch-davinci/time.h, so they won't
+be defined in two places.
+While at it, fix error returned by davinci_wdt_ioctl() for a non-implemented
+call...
+
+ drivers/char/watchdog/davinci_wdt.c |   82 +++++++++++++-----------------------
+ mvl_patches/pro50-2258.c            |   16 +++++++
+ 2 files changed, 47 insertions(+), 51 deletions(-)
+
+Index: linux-2.6.18/drivers/char/watchdog/davinci_wdt.c
+===================================================================
+--- linux-2.6.18.orig/drivers/char/watchdog/davinci_wdt.c
++++ linux-2.6.18/drivers/char/watchdog/davinci_wdt.c
+@@ -27,38 +27,14 @@
+ #include <asm/uaccess.h>
+ #include <asm/io.h>
+ 
++#include <asm/arch/time.h>
++
+ #define MODULE_NAME "DAVINCI-WDT: "
+ 
+ #define DEFAULT_HEARTBEAT 60
+ #define MAX_HEARTBEAT     600	/* really the max margin is 264/27MHz*/
+ 
+ /* Timer register set definition */
+-#define PID12	(0x0)
+-#define EMUMGT	(0x4)
+-#define TIM12	(0x10)
+-#define TIM34	(0x14)
+-#define PRD12	(0x18)
+-#define PRD34	(0x1C)
+-#define TCR	(0x20)
+-#define TGCR	(0x24)
+-#define WDTCR	(0x28)
+-
+-/* TCR bit definitions */
+-#define ENAMODE12_DISABLED	(0 << 6)
+-#define ENAMODE12_ONESHOT	(1 << 6)
+-#define ENAMODE12_PERIODIC	(2 << 6)
+-
+-/* TGCR bit definitions */
+-#define TIM12RS_UNRESET		(1 << 0)
+-#define TIM34RS_UNRESET		(1 << 1)
+-#define TIMMODE_64BIT_WDOG      (2 << 2)
+-
+-/* WDTCR bit definitions */
+-#define WDEN			(1 << 14)
+-#define WDFLAG			(1 << 15)
+-#define WDKEY_SEQ0		(0xa5c6 << 16)
+-#define WDKEY_SEQ1		(0xda7e << 16)
+-
+ static int heartbeat = DEFAULT_HEARTBEAT;
+ 
+ static spinlock_t io_lock;
+@@ -75,46 +51,50 @@ static void wdt_service(void)
+ {
+ 	spin_lock(&io_lock);
+ 
+-	/* put watchdog in service state */
+-	davinci_writel(WDKEY_SEQ0, wdt_base + WDTCR);
+-	/* put watchdog in active state */
+-	davinci_writel(WDKEY_SEQ1, wdt_base + WDTCR);
++	/* Put watchdog in service state */
++	davinci_writel(WDTCR_WDKEY_SEQ0 << WDTCR_WDKEY_SHIFT, wdt_base + WDTCR);
++	/* Put watchdog in active state */
++	davinci_writel(WDTCR_WDKEY_SEQ1 << WDTCR_WDKEY_SHIFT, wdt_base + WDTCR);
+ 
+ 	spin_unlock(&io_lock);
+ }
+ 
+ static void wdt_enable(void)
+ {
+-	u32 tgcr;
+-	u32 timer_margin;
++	u64 timer_margin = (u64)heartbeat * DAVINCI_CLOCK_TICK_RATE;
++	u32 tgcr, wdtcr;
+ 
+ 	spin_lock(&io_lock);
+ 
+-	/* disable, internal clock source */
++	/* Disable, internal clock source */
+ 	davinci_writel(0, wdt_base + TCR);
+-	/* reset timer, set mode to 64-bit watchdog, and unreset */
++	/* Reset timer, set mode to 64-bit watchdog, and unreset */
+ 	davinci_writel(0, wdt_base + TGCR);
+-	tgcr = TIMMODE_64BIT_WDOG | TIM12RS_UNRESET | TIM34RS_UNRESET;
++	tgcr =	(TGCR_TIMMODE_64BIT_WDOG << TGCR_TIMMODE_SHIFT) |
++		(TGCR_UNRESET << TGCR_TIM12RS_SHIFT) |
++		(TGCR_UNRESET << TGCR_TIM34RS_SHIFT);
+ 	davinci_writel(tgcr, wdt_base + TGCR);
+-	/* clear counter regs */
++	/* Clear counter registers */
+ 	davinci_writel(0, wdt_base + TIM12);
+ 	davinci_writel(0, wdt_base + TIM34);
+-	/* set timeout period */
+-	timer_margin = (((u64)heartbeat * DAVINCI_CLOCK_TICK_RATE) &
+-			0xffffffff);
+-	davinci_writel(timer_margin, wdt_base + PRD12);
+-	timer_margin = (((u64)heartbeat * DAVINCI_CLOCK_TICK_RATE) >> 32);
+-	davinci_writel(timer_margin, wdt_base + PRD34);
+-	/* enable run continuously */
+-	davinci_writel(ENAMODE12_PERIODIC, wdt_base + TCR);
+-	/* Once the WDT is in pre-active state write to
+-	 * TIM12, TIM34, PRD12, PRD34, TCR, TGCR, WDTCR are
+-	 * write protected (except for the WDKEY field)
++	/* Set timeout period */
++	davinci_writel((u32) timer_margin, wdt_base + PRD12);
++	davinci_writel((u32)(timer_margin >> 32), wdt_base + PRD34);
++	/* Enable continuous timer mode */
++	davinci_writel(TCR_ENAMODE_PERIODIC << ENAMODE12_SHIFT, wdt_base + TCR);
++	/*
++	 * Put watchdog in pre-active state.
++	 * NOTE: once the WDT is in pre-active state, TIM12, TIM34,
++	 * PRD12, PRD34, TCR, TGCR, WDTCR registers are write protected
++	 * (except for the WDKEY field).
+ 	 */
+-	/* put watchdog in pre-active state */
+-	davinci_writel(WDKEY_SEQ0 | WDEN, wdt_base + WDTCR);
++	wdtcr = (WDTCR_WDKEY_SEQ0 << WDTCR_WDKEY_SHIFT) |
++		(WDTCR_WDEN_ENABLE << WDTCR_WDEN_SHIFT);
++	davinci_writel(wdtcr, wdt_base + WDTCR);
+ 	/* put watchdog in active state */
+-	davinci_writel(WDKEY_SEQ1 | WDEN, wdt_base + WDTCR);
++	wdtcr = (WDTCR_WDKEY_SEQ1 << WDTCR_WDKEY_SHIFT) |
++		(WDTCR_WDEN_ENABLE << WDTCR_WDEN_SHIFT);
++	davinci_writel(wdtcr, wdt_base + WDTCR);
+ 
+ 	spin_unlock(&io_lock);
+ }
+@@ -148,7 +128,7 @@ static int
+ davinci_wdt_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
+ 		  unsigned long arg)
+ {
+-	int ret = -ENOTTY;
++	int ret = -ENOIOCTLCMD;
+ 
+ 	switch (cmd) {
+ 	case WDIOC_GETSUPPORT:
+Index: linux-2.6.18/mvl_patches/pro50-2258.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2258.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2258);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

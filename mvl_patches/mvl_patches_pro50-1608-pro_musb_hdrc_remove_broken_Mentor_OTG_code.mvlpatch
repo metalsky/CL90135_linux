@@ -1,0 +1,1141 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_remove_broken_Mentor_OTG_code
+# Date: Fri Sep 19 14:03:06 2008
+# From 51a6fc0fdebf2b714d21f6ae0b498e571db9f606 Mon Sep 17 00:00:00 2001
+# From: David Brownell <dbrownell@users.sourceforge.net>
+# Date: Thu, 9 Nov 2006 22:19:13 +0200
+# Subject: [PATCH] musb_hdrc: remove broken Mentor OTG code
+# 
+# Remove most of the strange OTG-incompatible logic from Mentor, with
+# its CamelCasing and so forth.  It's better to trigger the transitions
+# explicitly with relevant operations, like suspend triggering HNP, than
+# trying to track a subset of the OTG triggers.
+# 
+# Plus some minor cleanups related to previous patches:  better fix
+# for the "use_dma=n" related compiler warning, pt_regs for omap2430.
+# 
+# Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+# (cherry picked from commit 8e84c38747a831d205c02004825cb8a50f60251f)
+
+PATCHNUM=1608
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 51a6fc0fdebf2b714d21f6ae0b498e571db9f606 Mon Sep 17 00:00:00 2001
+From: David Brownell <dbrownell@users.sourceforge.net>
+Date: Thu, 9 Nov 2006 22:19:13 +0200
+Subject: [PATCH] musb_hdrc: remove broken Mentor OTG code
+
+Remove most of the strange OTG-incompatible logic from Mentor, with
+its CamelCasing and so forth.  It's better to trigger the transitions
+explicitly with relevant operations, like suspend triggering HNP, than
+trying to track a subset of the OTG triggers.
+
+Plus some minor cleanups related to previous patches:  better fix
+for the "use_dma=n" related compiler warning, pt_regs for omap2430.
+
+Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+(cherry picked from commit 8e84c38747a831d205c02004825cb8a50f60251f)
+Index: linux-2.6.18/drivers/usb/musb/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/Makefile
++++ linux-2.6.18/drivers/usb/musb/Makefile
+@@ -18,10 +18,6 @@ ifeq ($(CONFIG_ARCH_OMAP243X),y)
+ 	musb_hdrc-objs	+= omap2430.o
+ endif
+ 
+-ifeq ($(CONFIG_USB_MUSB_OTG),y)
+-	musb_hdrc-objs	+= otg.o
+-endif
+-
+ ifeq ($(CONFIG_USB_GADGET_MUSB_HDRC),y)
+ 	musb_hdrc-objs		+= g_ep0.o musb_gadget.o
+ endif
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -72,7 +72,6 @@ struct musb_ep;
+ #include "musb_gadget.h"
+ #include "../core/hcd.h"
+ #include "musb_host.h"
+-#include "otg.h"
+ 
+ 
+ 
+@@ -255,24 +254,14 @@ enum musb_g_ep0_state {
+ /****************************** FUNCTIONS ********************************/
+ 
+ #define MUSB_HST_MODE(_pthis)\
+-	{ (_pthis)->bIsHost=TRUE; (_pthis)->bIsDevice=FALSE; }
++	{ (_pthis)->bIsHost=TRUE; }
+ #define MUSB_DEV_MODE(_pthis) \
+-	{ (_pthis)->bIsHost=FALSE; (_pthis)->bIsDevice=TRUE; }
+-#define MUSB_OTG_MODE(_pthis) \
+-	{ (_pthis)->bIsHost=FALSE; (_pthis)->bIsDevice=FALSE; }
+-
+-#define MUSB_IS_HST(_x) ((_x)->bIsHost && !(_x)->bIsDevice)
+-#define MUSB_IS_DEV(_x) (!(_x)->bIsHost && (_x)->bIsDevice)
+-#define MUSB_IS_OTG(_x) (!(_x)->bIsHost && !(_x)->bIsDevice)
++	{ (_pthis)->bIsHost=FALSE; }
+ 
+ #define test_devctl_hst_mode(_x) \
+ 	(musb_readb((_x)->pRegs, MGC_O_HDRC_DEVCTL)&MGC_M_DEVCTL_HM)
+ 
+-/* REVISIT OTG isn't a third non-error mode... */
+-#define MUSB_MODE(_x) ( MUSB_IS_HST(_x)?"HOST" \
+-		:(MUSB_IS_DEV(_x)?"PERIPHERAL" \
+-		:(MUSB_IS_OTG(_x)?"UNCONNECTED" \
+-		:"ERROR")) )
++#define MUSB_MODE(musb) ((musb)->bIsHost ? "Host" : "Peripheral")
+ 
+ /************************** Ep Configuration ********************************/
+ 
+@@ -439,7 +428,6 @@ struct musb {
+ 	unsigned is_active:1;
+ 
+ 	unsigned bIsMultipoint:1;
+-	unsigned bIsDevice:1;
+ 	unsigned bIsHost:1;
+ 	unsigned bIgnoreDisconnect:1;	/* during bus resets */
+ 
+@@ -480,7 +468,7 @@ struct musb {
+ #endif
+ 
+ #ifdef CONFIG_USB_MUSB_OTG
+-	struct otg_machine	OtgMachine;
++	/* FIXME this can't be OTG-specific ... ? */
+ 	u8 bDelayPortPowerOff;
+ #endif
+ 
+@@ -501,6 +489,13 @@ static inline struct musb *gadget_to_mus
+ }
+ #endif
+ 
++#ifdef CONFIG_USB_MUSB_OTG
++/* sysfs flag to seletively force peripheral-only operation */
++extern int musb_otg;
++#else
++#define musb_otg 0
++#endif
++
+ 
+ /***************************** Glue it together *****************************/
+ 
+Index: linux-2.6.18/drivers/usb/musb/musbhsdma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbhsdma.c
++++ linux-2.6.18/drivers/usb/musb/musbhsdma.c
+@@ -274,8 +274,7 @@ static int MGC_HsDmaAbortChannel(struct 
+ 	return 0;
+ }
+ 
+-static irqreturn_t
+-hsdma_irq(int irq, void *pPrivateData, struct pt_regs *regs)
++static irqreturn_t hsdma_irq(int irq, void *pPrivateData)
+ {
+ 	u8 bChannel;
+ 	u16 wCsr;
+Index: linux-2.6.18/drivers/usb/musb/otg.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/otg.c
++++ /dev/null
+@@ -1,391 +0,0 @@
+-/******************************************************************
+- * Copyright 2005 Mentor Graphics Corporation
+- * Copyright (C) 2005-2006 by Texas Instruments
+- *
+- * This file is part of the Inventra Controller Driver for Linux.
+- *
+- * The Inventra Controller Driver for Linux is free software; you
+- * can redistribute it and/or modify it under the terms of the GNU
+- * General Public License version 2 as published by the Free Software
+- * Foundation.
+- *
+- * The Inventra Controller Driver for Linux is distributed in
+- * the hope that it will be useful, but WITHOUT ANY WARRANTY;
+- * without even the implied warranty of MERCHANTABILITY or
+- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
+- * License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with The Inventra Controller Driver for Linux ; if not,
+- * write to the Free Software Foundation, Inc., 59 Temple Place,
+- * Suite 330, Boston, MA  02111-1307  USA
+- *
+- * ANY DOWNLOAD, USE, REPRODUCTION, MODIFICATION OR DISTRIBUTION
+- * OF THIS DRIVER INDICATES YOUR COMPLETE AND UNCONDITIONAL ACCEPTANCE
+- * OF THOSE TERMS.THIS DRIVER IS PROVIDED "AS IS" AND MENTOR GRAPHICS
+- * MAKES NO WARRANTIES, EXPRESS OR IMPLIED, RELATED TO THIS DRIVER.
+- * MENTOR GRAPHICS SPECIFICALLY DISCLAIMS ALL IMPLIED WARRANTIES
+- * OF MERCHANTABILITY; FITNESS FOR A PARTICULAR PURPOSE AND
+- * NON-INFRINGEMENT.  MENTOR GRAPHICS DOES NOT PROVIDE SUPPORT
+- * SERVICES OR UPDATES FOR THIS DRIVER, EVEN IF YOU ARE A MENTOR
+- * GRAPHICS SUPPORT CUSTOMER.
+- ******************************************************************/
+-
+-/* OTG state machine status 8-mar:
+- *
+- *   - on DaVinci
+- *        + EVM gamma boards have troublesome C133, preventing
+- *          conformant timings for A_WAIT_VFALL transitions
+- *        + ID-pin based role initialization and VBUS switching
+- *          seems partly functional ... seems to bypass this code.
+- *        + haven't tried HNP or SRP.
+- *
+- *   - needs updating along the lines of <linux/usb_otg.h>
+- *
+- *   - TUSB has a hardware OTG timer, unclear how much of this would
+- *     ever be needed for it ...
+- *
+- *   - doesn't yet use all the linux 2.6.10 usbcore hooks for OTG, but
+- *     some of the conversion (and consequent shrinkage) has begun.
+- *
+- *   - it's not clear if any version of this code ever have passed
+- *     the USB-IF OTG tests even at full speed; presumably not.
+- */
+-
+-#include <linux/module.h>
+-#include <linux/kernel.h>
+-#include <linux/delay.h>
+-#include <linux/sched.h>
+-#include <linux/slab.h>
+-#include <linux/smp_lock.h>
+-#include <linux/errno.h>
+-#include <linux/init.h>
+-#include <linux/time.h>
+-#include <linux/timer.h>
+-
+-#include "musbdefs.h"
+-#include "otg.h"
+-
+-
+-static void otg_set_session(struct musb *musb, u8 bSession)
+-{
+-	void __iomem *pBase = musb->pRegs;
+-	u8 devctl = musb_readb(pBase, MGC_O_HDRC_DEVCTL);
+-
+-	DBG(2, "<==\n");
+-
+-	/* REVISIT unclear what this should do, but this looks
+-	 * like the wrong thing ... the OTG machine should never
+-	 * shut down so long as both host and peripheral drivers
+-	 * are active. you'd think the docs would help...
+-	 */
+-	if (bSession) {
+-		devctl |= MGC_M_DEVCTL_SESSION;
+-		musb_writeb(pBase, MGC_O_HDRC_DEVCTL, devctl);
+-	} else {
+-		//devctl &= ~MGC_M_DEVCTL_SESSION;
+-		musb_root_disconnect(musb);
+-		//musb_writeb(pBase, MGC_O_HDRC_DEVCTL, devctl);
+-	}
+-}
+-
+-#if 0
+-static void otg_request_session(struct musb *musb)
+-{
+-	void __iomem *pBase = musb->pRegs;
+-	u8 devctl;
+-
+-	DBG(2, "<==\n");
+-	devctl = musb_readb(pBase, MGC_O_HDRC_DEVCTL);
+-	devctl |= MGC_M_DEVCTL_SESSION;
+-	musb_writeb(pBase, MGC_O_HDRC_DEVCTL, devctl);
+-}
+-#endif
+-
+-/* caller has irqlocked musb,
+- * and if host or peripheral needs to be shut down, already did that.
+- */
+-static void otg_state_changed(struct musb *musb, enum usb_otg_state state)
+-{
+-	/* caller should pass the timeout here */
+-	unsigned long	timer = 0;
+-
+-	if (state == musb->OtgMachine.bState)
+-		return;
+-
+-	DBG(1, "%d --> %d\n", musb->OtgMachine.bState, state);
+-	musb->OtgMachine.bState = state;
+-
+-	/* OTG timeouts the hardware doesn't handle:
+-	 *  - ...
+-	 */
+-
+-	switch (state) {
+-	case OTG_STATE_A_IDLE:
+-	case OTG_STATE_A_HOST:
+-	case OTG_STATE_B_HOST:
+-		MUSB_HST_MODE(musb);
+-		break;
+-
+-	case OTG_STATE_B_IDLE:
+-	case OTG_STATE_B_PERIPHERAL:
+-	case OTG_STATE_A_PERIPHERAL:
+-		MUSB_DEV_MODE(musb);
+-		break;
+-
+-	default:
+-		DBG(1, "state change to %d?\n", state);
+-		/* REVISIT this "otg" mode is goofy; just switch between
+-		 * default-A and default-B state machines, they already
+-		 * include disconnect-equivalent states (IDLE).
+-		 */
+-		MUSB_OTG_MODE(musb);
+-		break;
+-	}
+-
+-	if (timer)
+-		mod_timer(&musb->OtgMachine.Timer, jiffies + timer);
+-	else
+-		del_timer(&musb->OtgMachine.Timer);
+-
+-	/* FIXME  the otg state implies MUSB_MODE().  Properly track
+-	 * xceiv.state, then remove OtgMachine.bState and MUSB_MODE...
+-	 */
+-	DBG(2, "==> OTG state %d(%d), mode %s\n",
+-			state, musb->xceiv.state,
+-			MUSB_MODE(musb));
+-}
+-
+-
+-/**
+- * Timer expiration function to complete the interrupt URB on changes
+- * @param ptr standard expiration param (hub pointer)
+- */
+-static void otg_timeout(unsigned long ptr)
+-{
+-	struct otg_machine	*pMachine = (void *) ptr;
+-	void __iomem	*mregs;
+-	u8		devctl;
+-	struct musb	*musb = pMachine->musb;
+-	unsigned long	flags;
+-
+-	DBG(0, "** TIMEOUT ** state %d(%d)\n",
+-			pMachine->bState, pMachine->musb->xceiv.state);
+-
+-	/* REVISIT:  a few of these cases _require_ (per the OTG spec)
+-	 * some sort of user notification, such as turning on an LED
+-	 * or displaying a message on the screen; INFO() not enough.
+-	 */
+-
+-	spin_lock_irqsave(&musb->Lock, flags);
+-	switch (pMachine->bState) {
+-	case OTG_STATE_B_SRP_INIT:
+-		INFO("SRP failed\n");
+-		otg_set_session(pMachine->musb, FALSE);
+-		otg_state_changed(pMachine->musb, OTG_STATE_B_IDLE);
+-		break;
+-
+-	case OTG_STATE_B_WAIT_ACON:
+-		INFO("No response from A-device\n");
+-		mregs = pMachine->musb->pRegs;
+-		devctl = musb_readb(mregs, MGC_O_HDRC_DEVCTL);
+-		musb_writeb(mregs, MGC_O_HDRC_DEVCTL,
+-				devctl & ~MGC_M_DEVCTL_HR);
+-		otg_set_session(pMachine->musb, TRUE);
+-		otg_state_changed(pMachine->musb, OTG_STATE_B_PERIPHERAL);
+-		break;
+-
+-	case OTG_STATE_A_WAIT_BCON:
+-		/* REVISIT we'd like to force the VBUS-off path here... */
+-		INFO("No response from B-device\n");
+-		otg_set_session(pMachine->musb, FALSE);
+-		/* transition via OTG_STATE_A_WAIT_VFALL */
+-		otg_state_changed(pMachine->musb, OTG_STATE_A_IDLE);
+-		break;
+-
+-	case OTG_STATE_A_SUSPEND:
+-		/* FIXME b-dev HNP is _optional_ so this is no error */
+-		INFO("No B-device HNP response\n");
+-		otg_set_session(pMachine->musb, FALSE);
+-		/* transition via OTG_STATE_A_WAIT_VFALL */
+-		otg_state_changed(pMachine->musb, OTG_STATE_A_IDLE);
+-		break;
+-
+-	default:
+-		WARN("timeout in state %d, now what?\n", pMachine->bState);
+-	}
+-	musb_platform_try_idle(musb);
+-	spin_unlock_irqrestore(&musb->Lock, flags);
+-}
+-
+-void MGC_OtgMachineInit(struct otg_machine *pMachine, struct musb *musb)
+-{
+-	memset(pMachine, 0, sizeof *pMachine);
+-	spin_lock_init(&pMachine->Lock);
+-	pMachine->musb = musb;
+-
+-	init_timer(&pMachine->Timer);
+-	pMachine->Timer.function = otg_timeout;
+-	pMachine->Timer.data = (unsigned long)pMachine;
+-
+-	pMachine->bState = OTG_STATE_B_IDLE;
+-	pMachine->bRequest = MGC_OTG_REQUEST_UNKNOWN;
+-}
+-
+-void MGC_OtgMachineDestroy(struct otg_machine *pMachine)
+-{
+-	/* stop timer */
+-	del_timer_sync(&pMachine->Timer);
+-}
+-
+-/* caller has irqlocked musb */
+-void MGC_OtgMachineInputsChanged(struct otg_machine *pMachine,
+-				const MGC_OtgMachineInputs * pInputs)
+-{
+-
+-	DBG(2, "<== bState %d(%d)%s%s%s%s%s%s\n",
+-			pMachine->bState, pMachine->musb->xceiv.state,
+-			pInputs->bSession ? ", sess" : "",
+-			pInputs->bSuspend ? ", susp" : "",
+-			pInputs->bConnection ? ", bcon" : "",
+-			pInputs->bReset ? ", reset" : "",
+-			pInputs->bConnectorId ? ", B-Dev" : ", A-Dev",
+-			pInputs->bVbusError ? ", vbus_error" : "");
+-
+-	if (pInputs->bVbusError) {
+-		/* transition via OTG_STATE_VBUS_ERR and
+-		 * then OTG_STATE_A_WAIT_VFALL
+-		 */
+-		otg_state_changed(pMachine->musb, OTG_STATE_A_IDLE);
+-		return;
+-	}
+-
+-	switch (pMachine->bState) {
+-	case OTG_STATE_B_IDLE:
+-		if (pInputs->bSession && pInputs->bConnectorId) {
+-			/* WRONG:  if VBUS is below session threshold,
+-			 * it's still B_IDLE
+-			 */
+-			otg_state_changed(pMachine->musb,
+-					OTG_STATE_B_PERIPHERAL);
+-		}
+-		break;
+-	case OTG_STATE_A_IDLE:
+-		if (pInputs->bConnection) {
+-			/*
+-			 * SKIP a state because connect IRQ comes so quickly
+-			 * after setting session,
+-			 * and only happens in host mode
+-			 */
+-			otg_state_changed(pMachine->musb, OTG_STATE_A_HOST);
+-		} else if (pInputs->bSession) {
+-			otg_state_changed(pMachine->musb,
+-					OTG_STATE_A_WAIT_BCON);
+-			mod_timer(&pMachine->Timer, jiffies
+-				+ msecs_to_jiffies(MGC_OTG_T_A_WAIT_BCON));
+-		}
+-		break;
+-
+-	case OTG_STATE_B_SRP_INIT:
+-		if (pInputs->bReset) {
+-			otg_state_changed(pMachine->musb,
+-					OTG_STATE_B_PERIPHERAL);
+-		} else if (pInputs->bConnection) {
+-			/* FIXME bogus:  there is no such transition!!! */
+-			otg_state_changed(pMachine->musb,
+-					pInputs->bConnectorId
+-						? OTG_STATE_B_HOST
+-						: OTG_STATE_A_HOST);
+-		}
+-		break;
+-
+-	case OTG_STATE_B_PERIPHERAL:
+-		if (!pInputs->bSession) {
+-			otg_state_changed(pMachine->musb, OTG_STATE_B_IDLE);
+-		}
+-
+-		/* FIXME nothing ever sets bRequest ... */
+-		if ((MGC_OTG_REQUEST_START_BUS == pMachine->bRequest)
+-				&& pMachine->musb->g.b_hnp_enable) {
+-			otg_state_changed(pMachine->musb,
+-					OTG_STATE_B_WAIT_ACON);
+-			//mdelay(10);
+-			//otg_set_session(pMachine->musb, FALSE);
+-			mod_timer(&pMachine->Timer, jiffies
+-				+ msecs_to_jiffies(MGC_OTG_T_B_ASE0_BRST));
+-		}
+-		break;
+-
+-	case OTG_STATE_B_WAIT_ACON:
+-		if (pInputs->bConnection) {
+-			otg_state_changed(pMachine->musb, OTG_STATE_B_HOST);
+-		} else if (!pInputs->bSession) {
+-			otg_state_changed(pMachine->musb, OTG_STATE_B_IDLE);
+-		} else if (!pInputs->bSuspend) {
+-			otg_state_changed(pMachine->musb,
+-					OTG_STATE_B_PERIPHERAL);
+-		}
+-		break;
+-
+-	case OTG_STATE_B_HOST:
+-		if (!pInputs->bConnection) {
+-			otg_state_changed(pMachine->musb, OTG_STATE_B_IDLE);
+-		} else if (pInputs->bConnection && !pInputs->bReset) {
+-			/* REVISIT seems incomplete */
+-		}
+-		break;
+-
+-	case OTG_STATE_A_WAIT_BCON:
+-		if (pInputs->bConnection) {
+-			otg_state_changed(pMachine->musb, OTG_STATE_A_HOST);
+-		} else if (pInputs->bReset) {
+-			/* FIXME there is no such transition */
+-			otg_state_changed(pMachine->musb,
+-					OTG_STATE_A_PERIPHERAL);
+-		}
+-		break;
+-
+-	case OTG_STATE_A_HOST:
+-		if (!pInputs->bConnection) {
+-			otg_state_changed(pMachine->musb,
+-					OTG_STATE_A_WAIT_BCON);
+-			mod_timer(&pMachine->Timer, jiffies
+-				+ msecs_to_jiffies(MGC_OTG_T_A_WAIT_BCON));
+-		} else if (pInputs->bConnection && !pInputs->bReset) {
+-			/* REVISIT seems incomplete */
+-		}
+-		break;
+-
+-	case OTG_STATE_A_SUSPEND:
+-		if (!pInputs->bSuspend) {
+-			otg_state_changed(pMachine->musb, OTG_STATE_A_HOST);
+-		} else if (!pInputs->bConnection) {
+-			if (musb_to_hcd(pMachine->musb)->self.b_hnp_enable) {
+-				otg_state_changed(pMachine->musb,
+-						OTG_STATE_A_PERIPHERAL);
+-			} else {
+-				otg_state_changed(pMachine->musb,
+-						OTG_STATE_A_WAIT_BCON);
+-				mod_timer(&pMachine->Timer, jiffies
+-					+ msecs_to_jiffies(
+-						MGC_OTG_T_A_WAIT_BCON));
+-			}
+-		}
+-		break;
+-
+-	case OTG_STATE_A_PERIPHERAL:
+-		if (!pInputs->bSession) {
+-			/* transition via OTG_STATE_A_WAIT_VFALL */
+-			otg_state_changed(pMachine->musb, OTG_STATE_A_IDLE);
+-		} else if (pInputs->bSuspend) {
+-			otg_state_changed(pMachine->musb,
+-					OTG_STATE_A_WAIT_BCON);
+-			mod_timer(&pMachine->Timer, jiffies
+-				+ msecs_to_jiffies(MGC_OTG_T_A_WAIT_BCON));
+-		}
+-		break;
+-
+-	default:
+-		WARN("event in state %d, now what?\n", pMachine->bState);
+-	}
+-}
+Index: linux-2.6.18/drivers/usb/musb/otg.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/otg.h
++++ /dev/null
+@@ -1,179 +0,0 @@
+-/******************************************************************
+- * Copyright 2005 Mentor Graphics Corporation
+- * Copyright (C) 2005-2006 by Texas Instruments
+- *
+- * This file is part of the Inventra Controller Driver for Linux.
+- *
+- * The Inventra Controller Driver for Linux is free software; you
+- * can redistribute it and/or modify it under the terms of the GNU
+- * General Public License version 2 as published by the Free Software
+- * Foundation.
+- *
+- * The Inventra Controller Driver for Linux is distributed in
+- * the hope that it will be useful, but WITHOUT ANY WARRANTY;
+- * without even the implied warranty of MERCHANTABILITY or
+- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
+- * License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with The Inventra Controller Driver for Linux ; if not,
+- * write to the Free Software Foundation, Inc., 59 Temple Place,
+- * Suite 330, Boston, MA  02111-1307  USA
+- *
+- * ANY DOWNLOAD, USE, REPRODUCTION, MODIFICATION OR DISTRIBUTION
+- * OF THIS DRIVER INDICATES YOUR COMPLETE AND UNCONDITIONAL ACCEPTANCE
+- * OF THOSE TERMS.THIS DRIVER IS PROVIDED "AS IS" AND MENTOR GRAPHICS
+- * MAKES NO WARRANTIES, EXPRESS OR IMPLIED, RELATED TO THIS DRIVER.
+- * MENTOR GRAPHICS SPECIFICALLY DISCLAIMS ALL IMPLIED WARRANTIES
+- * OF MERCHANTABILITY; FITNESS FOR A PARTICULAR PURPOSE AND
+- * NON-INFRINGEMENT.  MENTOR GRAPHICS DOES NOT PROVIDE SUPPORT
+- * SERVICES OR UPDATES FOR THIS DRIVER, EVEN IF YOU ARE A MENTOR
+- * GRAPHICS SUPPORT CUSTOMER.
+- ******************************************************************/
+-
+-/*
+- * Interface to a generic OTG state machine for use by an OTG controller.
+- *
+- * FIXME most of this must vanish; usbcore handles some of it, and
+- * the OTG parts of a peripheral controller (and its driver) handle
+- * other things.  Package it as an "otg transceiver".
+- */
+-
+-#ifndef __MUSB_LINUX_OTG_H__
+-#define __MUSB_LINUX_OTG_H__
+-
+-#include <linux/spinlock.h>
+-#include <linux/timer.h>
+-
+-/**
+- * Introduction.
+- * An OTG state machine for use by a controller driver for an OTG controller
+- * that wishes to be OTG-aware.
+- * The state machine requires relevant inputs and a couple of services
+- * from the controller driver, and calls the controller driver to inform
+- * it of the current state and errors.
+- * Finally, it provides the necessary bus control service.
+- */
+-
+-/* sysfs flag to seletively force peripheral-only operation */
+-extern int musb_otg;
+-
+-/****************************** CONSTANTS ********************************/
+-
+-/*
+- * Define this (in milliseconds) to a target-specific value to override default.
+- * The OTG-spec minimum is 5000, and maximum is 6000 (see OTG spec errata).
+- */
+-#ifndef MGC_OTG_T_B_SRP_FAIL
+-#define MGC_OTG_T_B_SRP_FAIL	5000
+-#endif
+-
+-/*
+- * Define this (in milliseconds) to a target-specific value to override default.
+- * This is the time an A-device should wait for a B-device to connect.
+- * The OTG-spec minimum is 1000.
+- * As a special case, for normal host-like behavior, you can set this to 0.
+- */
+-#ifndef MGC_OTG_T_A_WAIT_BCON
+-#define MGC_OTG_T_A_WAIT_BCON	1000
+-#endif
+-
+-/*
+- * Define this (in milliseconds) to a target-specific value to override default.
+- * The OTG-spec minimum is 250.
+- */
+-#ifndef MGC_OTG_T_AIDL_BDIS
+-#define MGC_OTG_T_AIDL_BDIS	250
+-#endif
+-
+-//#define MGC_OTG_T_B_ASE0_BRST 4
+-#define MGC_OTG_T_B_ASE0_BRST	100
+-
+-/*
+- * MGC_OtgRequest.
+- * A software request for the OTG state machine
+- */
+-typedef enum {
+-	MGC_OTG_REQUEST_UNKNOWN,
+-    /** Request the bus */
+-	MGC_OTG_REQUEST_START_BUS,
+-    /** Drop the bus */
+-	MGC_OTG_REQUEST_DROP_BUS,
+-    /** Suspend the bus */
+-	MGC_OTG_REQUEST_SUSPEND_BUS,
+-    /** Reset the state machine */
+-	MGC_OTG_REQUEST_RESET
+-} MGC_OtgRequest;
+-
+-
+-/******************************** TYPES **********************************/
+-
+-/*
+- * MGC_OtgMachineInputs.
+- * The set of inputs which drives the state machine
+- * @field bSession TRUE when a session is in progress; FALSE when not
+- * @field bConnectorId TRUE for B-device; FALSE for A-device
+- * (assumed valid only when a bSession is TRUE)
+- * @field bReset TRUE when reset is detected (peripheral role only)
+- * @field bConnection TRUE when connection is detected (host role only)
+- * @field bSuspend TRUE when bus suspend is detected
+- * @field bVbusError TRUE when a Vbus error is detected
+- */
+-typedef struct {
+-	u8 bSession;
+-	u8 bConnectorId;
+-	u8 bReset;
+-	u8 bConnection;
+-	u8 bSuspend;
+-	u8 bVbusError;
+-} MGC_OtgMachineInputs;
+-
+-/*
+- * OTG state machine instance data.
+- * @field Lock spinlock
+- * @field bState current state (one of the OTG_STATE_* constants)
+- * @field pOtgServices pointer to OTG services
+- * @field Timer interval timer for status change interrupts
+- * @field bState current state
+- * @field bRequest current pending request
+- */
+-struct otg_machine {
+-	spinlock_t Lock;
+-	struct musb		*musb;
+-	enum usb_otg_state	bState;
+-	struct timer_list Timer;
+-	MGC_OtgRequest bRequest;
+-
+-	/* FIXME standard Linux-USB host and peripheral code includes
+-	 * OTG support ... most of this "otg machine" must vanish
+-	 */
+-
+-};
+-
+-/****************************** FUNCTIONS ********************************/
+-
+-/*
+- * Initialize an OTG state machine.
+- */
+-extern void MGC_OtgMachineInit(struct otg_machine * pMachine,
+-			     struct musb *musb);
+-
+-/*
+- * Destroy an OTG state machine
+- * @param pMachine machine pointer
+- * @see #MGC_OtgMachineInit
+- */
+-extern void MGC_OtgMachineDestroy(struct otg_machine * pMachine);
+-
+-/*
+- * OTG inputs have changed.
+- * A controller driver calls this when anything in the
+- * MGC_OtgMachineInputs has changed
+- * @param pMachine machine pointer
+- * @param pInputs current inputs
+- * @see #MGC_OtgMachineInit
+- */
+-extern void MGC_OtgMachineInputsChanged(struct otg_machine * pMachine,
+-					const MGC_OtgMachineInputs * pInputs);
+-
+-#endif				/* multiple inclusion protection */
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -77,10 +77,6 @@
+  *        At the other extreme, the bandwidth capabilities which do
+  *        exist tend to be severely undercommitted.  You can't yet hook
+  *        up both a keyboard and a mouse to an external USB hub.
+- *
+- *  - Provides its own OTG bits.  These are untested, and many of them
+- *    seem to be superfluous code bloat given what usbcore does.  (They
+- *    have now been partially removed.)
+  */
+ 
+ /*
+@@ -161,7 +157,7 @@ MODULE_LICENSE("GPL");
+  */
+ int musb_otg = 1;
+ 
+-module_param(musb_otg, bool, 0600);
++module_param(musb_otg, bool, 0);
+ MODULE_PARM_DESC(musb_otg, "enable/disable OTG capabilities");
+ #endif
+ 
+@@ -175,51 +171,6 @@ static inline struct musb *dev_to_musb(s
+ #endif
+ }
+ 
+-static void otg_input_changed(struct musb * pThis, u8 devctl, u8 reset,
+-			u8 connection, u8 suspend)
+-{
+-#ifdef CONFIG_USB_MUSB_OTG
+-	struct otg_machine	*otgm = &pThis->OtgMachine;
+-	MGC_OtgMachineInputs Inputs;
+-
+-	/* reading suspend state from Power register does NOT work */
+-	memset(&Inputs, 0, sizeof(Inputs));
+-
+-	Inputs.bSession = (devctl & MGC_M_DEVCTL_SESSION) ? TRUE : FALSE;
+-	Inputs.bSuspend = suspend;
+-	Inputs.bConnection = connection;
+-	Inputs.bReset = reset;
+-	Inputs.bConnectorId = (devctl & MGC_M_DEVCTL_BDEVICE) ? TRUE : FALSE;
+-
+-	MGC_OtgMachineInputsChanged(otgm, &Inputs);
+-#endif
+-}
+-
+-static void otg_input_changed_X(struct musb * pThis, u8 bVbusError, u8 bConnect)
+-{
+-#ifdef CONFIG_USB_MUSB_OTG
+-	MGC_OtgMachineInputs Inputs;
+-	void __iomem *pBase = pThis->pRegs;
+-	u8 devctl = musb_readb(pBase, MGC_O_HDRC_DEVCTL);
+-	u8 power = musb_readb(pBase, MGC_O_HDRC_POWER);
+-
+-	DBG(2, "<== power %02x, devctl %02x%s%s\n", power, devctl,
+-			bConnect ? ", bcon" : "",
+-			bVbusError ? ", vbus_error" : "");
+-
+-	/* speculative */
+-	memset(&Inputs, 0, sizeof(Inputs));
+-	Inputs.bSession = (devctl & MGC_M_DEVCTL_SESSION) ? TRUE : FALSE;
+-	Inputs.bConnectorId = (devctl & MGC_M_DEVCTL_BDEVICE) ? TRUE : FALSE;
+-	Inputs.bReset = (power & MGC_M_POWER_RESET) ? TRUE : FALSE;
+-	Inputs.bConnection = bConnect;
+-	Inputs.bVbusError = bVbusError;
+-	Inputs.bSuspend = (power & MGC_M_POWER_SUSPENDM) ? TRUE : FALSE;
+-	MGC_OtgMachineInputsChanged(&(pThis->OtgMachine), &Inputs);
+-#endif				/* CONFIG_USB_MUSB_OTG */
+-}
+-
+-
+ /*-------------------------------------------------------------------------*/
+ 
+ #ifndef CONFIG_USB_TUSB6010
+@@ -426,27 +377,10 @@ static irqreturn_t musb_stage0_irq(struc
+ 		musb_set_vbus(pThis, 1);
+ 
+ 		handled = IRQ_HANDLED;
+-
+-#ifdef CONFIG_USB_MUSB_OTG
+-		{
+-		MGC_OtgMachineInputs Inputs;
+-		memset(&Inputs, 0, sizeof(Inputs));
+-		Inputs.bSession = TRUE;
+-		Inputs.bConnectorId = FALSE;
+-		Inputs.bReset = FALSE;
+-		Inputs.bConnection = FALSE;
+-		Inputs.bSuspend = FALSE;
+-		MGC_OtgMachineInputsChanged(&(pThis->OtgMachine), &Inputs);
+-		}
+-#endif
+ 	}
+ 
+ 	if (bIntrUSB & MGC_M_INTR_VBUSERROR) {
+ 
+-		// MGC_OtgMachineInputsChanged(otgm, &Inputs);
+-		// otg_input_changed_X(pThis, TRUE, TRUE);
+-		// ... may need to abort otg timer ...
+-
+ 		DBG(1, "VBUS_ERROR (%02x, %s), retry #%d\n", devctl,
+ 				({ char *s;
+ 				switch (devctl & MGC_M_DEVCTL_VBUS) {
+@@ -507,7 +441,6 @@ static irqreturn_t musb_stage0_irq(struc
+ 			break;
+ 		}
+ 		DBG(1, "CONNECT (%s)\n", otg_state_string(pThis));
+-		otg_input_changed(pThis, devctl, FALSE, TRUE, FALSE);
+ 	}
+ #endif	/* CONFIG_USB_MUSB_HDRC_HCD */
+ 
+@@ -533,12 +466,6 @@ static irqreturn_t musb_stage0_irq(struc
+ 			DBG(1, "BUS RESET\n");
+ 
+ 			musb_g_reset(pThis);
+-
+-			/* reading state from Power register doesn't work */
+-			otg_input_changed(pThis, devctl, TRUE, FALSE,
+-						(power & MGC_M_POWER_SUSPENDM)
+-						? TRUE : FALSE);
+-
+ 			schedule_work(&pThis->irq_work);
+ 		}
+ 
+@@ -621,9 +548,6 @@ static irqreturn_t musb_stage2_irq(struc
+ 		else
+ 			musb_g_disconnect(pThis);
+ 
+-		/* REVISIT all OTG state machine transitions */
+-		otg_input_changed_X(pThis, FALSE, FALSE);
+-
+ 		schedule_work(&pThis->irq_work);
+ 	}
+ 
+@@ -636,7 +560,6 @@ static irqreturn_t musb_stage2_irq(struc
+ 			musb_g_suspend(pThis);
+ 			pThis->is_active = is_otg_enabled(pThis)
+ 					&& pThis->xceiv.gadget->b_hnp_enable;
+-			otg_input_changed(pThis, devctl, FALSE, FALSE, TRUE);
+ 		} else
+ 			pThis->is_active = 0;
+ 	}
+@@ -734,11 +657,6 @@ void musb_stop(struct musb * pThis)
+ 	musb_generic_disable(pThis);
+ 	DBG(3, "HDRC disabled\n");
+ 
+-#ifdef CONFIG_USB_MUSB_OTG
+-	if (is_otg_enabled(pThis))
+-		MGC_OtgMachineDestroy(&pThis->OtgMachine);
+-#endif
+-
+ 	/* FIXME
+ 	 *  - mark host and/or peripheral drivers unusable/inactive
+ 	 *  - disable DMA (and enable it in HdrcStart)
+@@ -1763,26 +1681,15 @@ musb_init_controller(struct device *dev,
+ #endif				/* CONFIG_USB_MUSB_HDRC_HCD */
+ 
+ #ifdef CONFIG_USB_MUSB_OTG
+-	/* if present, this gets used even on non-otg boards */
+-	MGC_OtgMachineInit(&pThis->OtgMachine, pThis);
++	if (!is_otg_enabled(pThis))
++		musb_otg = 0;
+ #endif
+ 
+ 	/* For the host-only role, we can activate right away.
+ 	 * (We expect the ID pin to be forcibly grounded!!)
+ 	 * Otherwise, wait till the gadget driver hooks up.
+ 	 */
+-	pThis->xceiv.state = OTG_STATE_B_IDLE;
+-	pThis->xceiv.default_a = 0;
+-
+-	if (is_otg_enabled(pThis)) {
+-		MUSB_OTG_MODE(pThis);
+-		status = musb_gadget_setup(pThis);
+-
+-		DBG(1, "%s mode, status %d, dev%02x\n",
+-			"OTG", status,
+-			musb_readb(pThis->pRegs, MGC_O_HDRC_DEVCTL));
+-
+-	} else if (is_host_enabled(pThis)) {
++	if (!is_otg_enabled(pThis) && is_host_enabled(pThis)) {
+ 		MUSB_HST_MODE(pThis);
+ 		pThis->xceiv.default_a = 1;
+ 		pThis->xceiv.state = OTG_STATE_A_IDLE;
+@@ -1798,10 +1705,14 @@ musb_init_controller(struct device *dev,
+ 
+ 	} else /* peripheral is enabled */ {
+ 		MUSB_DEV_MODE(pThis);
++		pThis->xceiv.default_a = 0;
++		pThis->xceiv.state = OTG_STATE_B_IDLE;
++
+ 		status = musb_gadget_setup(pThis);
+ 
+ 		DBG(1, "%s mode, status %d, dev%02x\n",
+-			"PERIPHERAL", status,
++			is_otg_enabled(pThis) ? "OTG" : "PERIPHERAL",
++			status,
+ 			musb_readb(pThis->pRegs, MGC_O_HDRC_DEVCTL));
+ 
+ 	}
+@@ -1866,7 +1777,6 @@ static int __devinit musb_probe(struct p
+ 
+ static int __devexit musb_remove(struct platform_device *pdev)
+ {
+-	struct device	*dev = &pdev->dev;
+ 	struct musb	*musb = dev_to_musb(&pdev->dev);
+ 	void __iomem	*ctrl_base = musb->ctrl_base;
+ 
+@@ -1885,7 +1795,7 @@ static int __devexit musb_remove(struct 
+ 	iounmap(ctrl_base);
+ 	device_init_wakeup(&pdev->dev, 0);
+ #ifndef CONFIG_USB_INVENTRA_FIFO
+-	dev->dma_mask = orig_dma_mask;
++	pdev->dev.dma_mask = orig_dma_mask;
+ #endif
+ 	return 0;
+ }
+Index: linux-2.6.18/mvl_patches/pro50-1608.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1608.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1608);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

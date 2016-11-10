@@ -1,0 +1,467 @@
+#! /usr/bin/env bash
+# Patch: -pro_mips_smtc_malta_irq_affinity
+# Date: Wed Oct 15 07:58:22 2008
+# Source: linux-mips
+# MR: 29825
+# Type: backport
+# Disposition: local
+# Signed-off-by: Maxim Uvarov <muvarov@ru.mvista.com>
+# Description:
+# 	From f571eff0a24ed97a919f2b61bb4afdeab4b43002 Mon Sep 17 00:00:00 2001
+# 	From: Kevin D. Kissell <kevink@mips.com>
+# 	Date: Fri, 3 Aug 2007 19:38:03 +0200
+# 	Subject: [PATCH] [MIPS] IRQ Affinity Support for SMTC on Malta Platform
+# 
+# 	Signed-off-by: Kevin D. Kissell <kevink@mips.com>
+# 	Signed-off-by: Ralf Baechle <ralf@linux-mips.org>
+# 
+
+PATCHNUM=1915
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: linux-mips
+MR: 29825
+Type: backport
+Disposition: local
+Signed-off-by: Maxim Uvarov <muvarov@ru.mvista.com>
+Description:
+	From f571eff0a24ed97a919f2b61bb4afdeab4b43002 Mon Sep 17 00:00:00 2001
+	From: Kevin D. Kissell <kevink@mips.com>
+	Date: Fri, 3 Aug 2007 19:38:03 +0200
+	Subject: [PATCH] [MIPS] IRQ Affinity Support for SMTC on Malta Platform
+
+	Signed-off-by: Kevin D. Kissell <kevink@mips.com>
+	Signed-off-by: Ralf Baechle <ralf@linux-mips.org>
+
+Index: linux-2.6.18/arch/mips/kernel/smtc.c
+===================================================================
+--- linux-2.6.18.orig/arch/mips/kernel/smtc.c
++++ linux-2.6.18/arch/mips/kernel/smtc.c
+@@ -627,6 +627,60 @@ int setup_irq_smtc(unsigned int irq, str
+ 	return setup_irq(irq, new);
+ }
+ 
++#ifdef CONFIG_MIPS_MT_SMTC_IRQAFF
++/*
++ * Support for IRQ affinity to TCs
++ */
++
++void smtc_set_irq_affinity(unsigned int irq, cpumask_t affinity)
++{
++	/*
++	 * If a "fast path" cache of quickly decodable affinity state
++	 * is maintained, this is where it gets done, on a call up
++	 * from the platform affinity code.
++	 */
++}
++
++void smtc_forward_irq(unsigned int irq, struct pt_regs *regs)
++{
++	int target;
++
++	/*
++	 * OK wise guy, now figure out how to get the IRQ
++	 * to be serviced on an authorized "CPU".
++	 *
++	 * Ideally, to handle the situation where an IRQ has multiple
++	 * eligible CPUS, we would maintain state per IRQ that would
++	 * allow a fair distribution of service requests.  Since the
++	 * expected use model is any-or-only-one, for simplicity
++	 * and efficiency, we just pick the easiest one to find.
++	 */
++
++	target = first_cpu(irq_desc[irq].affinity);
++
++	/*
++	 * We depend on the platform code to have correctly processed
++	 * IRQ affinity change requests to ensure that the IRQ affinity
++	 * mask has been purged of bits corresponding to nonexistent and
++	 * offline "CPUs", and to TCs bound to VPEs other than the VPE
++	 * connected to the physical interrupt input for the interrupt
++	 * in question.  Otherwise we have a nasty problem with interrupt
++	 * mask management.  This is best handled in non-performance-critical
++	 * platform IRQ affinity setting code,  to minimize interrupt-time
++	 * checks.
++	 */
++
++	/* If no one is eligible, service locally */
++	if (target >= NR_CPUS) {
++		do_IRQ_no_affinity(irq, regs);
++		return;
++	}
++
++	smtc_send_ipi(target, IRQ_AFFINITY_IPI, irq);
++}
++
++#endif /* CONFIG_MIPS_MT_SMTC_IRQAFF */
++
+ /*
+  * IPI model for SMTC is tricky, because interrupts aren't TC-specific.
+  * Within a VPE one TC can interrupt another by different approaches.
+@@ -870,6 +924,15 @@ void ipi_decode(struct pt_regs *regs, st
+ 			break;
+ 		}
+ 		break;
++#ifdef CONFIG_MIPS_MT_SMTC_IRQAFF
++	case IRQ_AFFINITY_IPI:
++		/*
++		 * Accept a "forwarded" interrupt that was initially
++		 * taken by a TC who doesn't have affinity for the IRQ.
++		 */
++		do_IRQ_no_affinity((int)arg_copy, regs);
++		break;
++#endif /* CONFIG_MIPS_MT_SMTC_IRQAFF */
+ 	default:
+ 		printk("Impossible SMTC IPI Type 0x%x\n", type_copy);
+ 		break;
+Index: linux-2.6.18/include/asm-mips/irq.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-mips/irq.h
++++ linux-2.6.18/include/asm-mips/irq.h
+@@ -35,15 +35,29 @@ extern asmlinkage unsigned int do_IRQ(un
+  * functions will take over re-enabling the low-level mask.
+  * Otherwise it will be done on return from exception.
+  */
+-#define __DO_IRQ_SMTC_HOOK(irq)						\
+-do {									\
+-	if (irq_hwmask[irq] & 0x0000ff00)				\
+-		write_c0_tccontext(read_c0_tccontext() &		\
+-		                   ~(irq_hwmask[irq] & 0x0000ff00));	\
++#define __DO_IRQ_SMTC_HOOK(irq, regs)					\
++do {								\
++	IRQ_AFFINITY_HOOK(irq, regs);					\
++	if (irq_hwmask[irq] & 0x0000ff00)			\
++		write_c0_tccontext(read_c0_tccontext() &	\
++			~(irq_hwmask[irq] & 0x0000ff00));	\
++} while (0)
++
++#define __NO_AFFINITY_IRQ_SMTC_HOOK(irq)			\
++do {								\
++	if (irq_hwmask[irq] & 0x0000ff00)			\
++		write_c0_tccontext(read_c0_tccontext() &	\
++			   ~(irq_hwmask[irq] & 0x0000ff00));	\
+ } while (0)
++
+ #else
+-#define __DO_IRQ_SMTC_HOOK(irq) do { } while (0)
+-#endif
++
++#define __DO_IRQ_SMTC_HOOK(irq, regs)						\
++do {									\
++	IRQ_AFFINITY_HOOK(irq, regs);						\
++} while (0)
++#define __NO_AFFINITY_IRQ_SMTC_HOOK(irq) do { } while (0)
++#endif /* CONFIG_MIPS_MT_SMTC */
+ 
+ /*
+  * do_IRQ handles all normal device IRQ's (the special
+@@ -56,11 +70,27 @@ do {									\
+ #define do_IRQ(irq, regs)						\
+ do {									\
+ 	irq_enter();							\
+-	__DO_IRQ_SMTC_HOOK(irq);					\
++	__DO_IRQ_SMTC_HOOK(irq, regs);					\
+ 	__do_IRQ((irq), (regs));					\
+ 	irq_exit();							\
+ } while (0)
+ 
++#ifdef CONFIG_MIPS_MT_SMTC_IRQAFF
++/*
++ * To avoid inefficient and in some cases pathological re-checking of
++ * IRQ affinity, we have this variant that skips the affinity check.
++ */
++
++#define do_IRQ_no_affinity(irq, regs)						\
++do {									\
++	irq_enter();							\
++	__NO_AFFINITY_IRQ_SMTC_HOOK(irq);				\
++	generic_handle_irq(irq, regs);					\
++	irq_exit();							\
++} while (0)
++
++#endif /* CONFIG_MIPS_MT_SMTC_IRQAFF */
++
+ extern void arch_init_irq(void);
+ extern void spurious_interrupt(struct pt_regs *regs);
+ 
+@@ -72,6 +102,38 @@ extern int setup_irq_smtc(unsigned int i
+                           unsigned long hwmask);
+ #endif /* CONFIG_MIPS_MT_SMTC */
+ 
++#ifdef CONFIG_MIPS_MT_SMTC_IRQAFF
++#include <linux/cpumask.h>
++
++extern void plat_set_irq_affinity(unsigned int irq, cpumask_t affinity);
++extern void smtc_forward_irq(unsigned int irq, struct pt_regs *regs);
++
++/*
++ * IRQ affinity hook invoked at the beginning of interrupt dispatch
++ * if option is enabled.
++ *
++ * Up through Linux 2.6.22 (at least) cpumask operations are very
++ * inefficient on MIPS.  Initial prototypes of SMTC IRQ affinity
++ * used a "fast path" per-IRQ-descriptor cache of affinity information
++ * to reduce latency.  As there is a project afoot to optimize the
++ * cpumask implementations, this version is optimistically assuming
++ * that cpumask.h macro overhead is reasonable during interrupt dispatch.
++ */
++#define IRQ_AFFINITY_HOOK(irq, regs)						\
++do {									\
++    if (!cpu_isset(smp_processor_id(), irq_desc[irq].affinity)) {	\
++	smtc_forward_irq(irq, regs);						\
++	irq_exit();							\
++	return;								\
++    }									\
++} while (0)
++
++#else /* Not doing SMTC affinity */
++
++#define IRQ_AFFINITY_HOOK(irq, regs) do { } while (0)
++
++#endif /* CONFIG_MIPS_MT_SMTC_IRQAFF */
++
+ #ifdef CONFIG_SMP
+ #define ARCH_HAS_IRQ_PER_CPU
+ #endif
+Index: linux-2.6.18/include/asm-mips/smtc_ipi.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-mips/smtc_ipi.h
++++ linux-2.6.18/include/asm-mips/smtc_ipi.h
+@@ -32,6 +32,7 @@ struct smtc_ipi {
+ 
+ #define LINUX_SMP_IPI 1
+ #define SMTC_CLOCK_TICK 2
++#define IRQ_AFFINITY_IPI 3
+ 
+ /*
+  * A queue of IPI messages
+Index: linux-2.6.18/arch/mips/Kconfig
+===================================================================
+--- linux-2.6.18.orig/arch/mips/Kconfig
++++ linux-2.6.18/arch/mips/Kconfig
+@@ -1569,6 +1569,19 @@ config MIPS_VPE_LOADER
+ 
+ endchoice
+ 
++config MIPS_MT_SMTC_IRQAFF
++       bool "Support IRQ affinity API"
++       depends on MIPS_MT_SMTC
++       default n
++       help
++        Enables SMP IRQ affinity API (/proc/irq/*/smp_affinity, etc.)
++         for SMTC Linux kernel. Requires platform support, of which
++         an example can be found in the MIPS kernel i8259 and Malta
++         platform code.  It is recommended that MIPS_MT_SMTC_INSTANT_REPLAY
++         be enabled if MIPS_MT_SMTC_IRQAFF is used. Adds overhead to
++         interrupt dispatch, and should be used only if you know what
++         you are doing.
++
+ config MIPS_MT
+ 	bool
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1915.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1915.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1915);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

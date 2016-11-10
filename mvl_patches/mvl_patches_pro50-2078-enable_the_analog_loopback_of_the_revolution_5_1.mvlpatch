@@ -1,0 +1,830 @@
+#! /usr/bin/env bash
+# Patch: -enable_the_analog_loopback_of_the_revolution_5_1
+# Date: Thu Feb 19 14:58:58 2009
+# Source: kernel.org
+# MR: 28687
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+# 
+# [ALSA] Enable the analog loopback of the Revolution 5.1
+# 
+# Enable the analog loopback of the Revolution 5.1 card.
+# This patch adds support for the PT2258 volume controller and modifies
+# the Revolution 5.1 driver to make use of this facility.  This allows
+# to control the analog loopback of the card.
+# 
+# Signed-off-by: Jochen Voss <voss@seehuhn.de>
+# Signed-off-by: Takashi Iwai <tiwai@suse.de>
+# Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+# 
+# commit feaa6a74d852be40c0e717471aa92eead012052c
+# tree 9ad326bb90037ebc10375e75f6b86c6ab74a0d2c
+# parent a58e7cb16dfae8a3c1c98a7ab7ca02a9e9b38921
+# author Jochen Voss <voss@seehuhn.de> Wed, 04 Oct 2006 18:08:43 +0200
+# committer Jaroslav Kysela <perex@suse.cz> Fri, 09 Feb 2007 09:00:05 +0100
+# 
+#  include/sound/pt2258.h      |   37 +++++++
+#  sound/i2c/Makefile          |    1 
+#  sound/i2c/other/Makefile    |    4 -
+#  sound/i2c/other/pt2258.c    |  233 +++++++++++++++++++++++++++++++++++++++++++
+#  sound/pci/ice1712/ice1712.h |   14 +++
+#  sound/pci/ice1712/revo.c    |  132 +++++++++++++++++++++++-
+#  sound/pci/ice1712/revo.h    |    6 +
+#  7 files changed, 413 insertions(+), 14 deletions(-)
+# 
+
+PATCHNUM=2078
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 28687
+Type: Enhancement
+Disposition: local
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+
+[ALSA] Enable the analog loopback of the Revolution 5.1
+
+Enable the analog loopback of the Revolution 5.1 card.
+This patch adds support for the PT2258 volume controller and modifies
+the Revolution 5.1 driver to make use of this facility.  This allows
+to control the analog loopback of the card.
+
+Signed-off-by: Jochen Voss <voss@seehuhn.de>
+Signed-off-by: Takashi Iwai <tiwai@suse.de>
+Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+
+commit feaa6a74d852be40c0e717471aa92eead012052c
+tree 9ad326bb90037ebc10375e75f6b86c6ab74a0d2c
+parent a58e7cb16dfae8a3c1c98a7ab7ca02a9e9b38921
+author Jochen Voss <voss@seehuhn.de> Wed, 04 Oct 2006 18:08:43 +0200
+committer Jaroslav Kysela <perex@suse.cz> Fri, 09 Feb 2007 09:00:05 +0100
+
+ include/sound/pt2258.h      |   37 ++++++
+ mvl_patches/pro50-2078.c    |   16 +++
+ sound/i2c/Makefile          |    1 
+ sound/i2c/other/Makefile    |    4 
+ sound/i2c/other/pt2258.c    |  233 ++++++++++++++++++++++++++++++++++++++++++++
+ sound/pci/ice1712/ice1712.h |   14 ++
+ sound/pci/ice1712/revo.c    |  132 +++++++++++++++++++++++-
+ sound/pci/ice1712/revo.h    |    6 -
+ 8 files changed, 429 insertions(+), 14 deletions(-)
+
+diff --git a/include/sound/pt2258.h b/include/sound/pt2258.h
+new file mode 100644
+index 0000000..160f812
+Index: linux-2.6.18/include/sound/pt2258.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/sound/pt2258.h
+@@ -0,0 +1,37 @@
++/*
++ *   ALSA Driver for the PT2258 volume controller.
++ *
++ *	Copyright (c) 2006  Jochen Voss <voss@seehuhn.de>
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 2 of the License, or
++ *   (at your option) any later version.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; if not, write to the Free Software
++ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
++ *
++ */      
++
++#ifndef __SOUND_PT2258_H
++#define __SOUND_PT2258_H
++
++struct snd_pt2258 {
++	struct snd_card *card;
++	struct snd_i2c_bus *i2c_bus;
++	struct snd_i2c_device *i2c_dev;
++
++	unsigned char volume[6];
++	int mute;
++};
++
++extern int snd_pt2258_reset(struct snd_pt2258 *pt);
++extern int snd_pt2258_build_controls(struct snd_pt2258 *pt);
++
++#endif /* __SOUND_PT2258_H */
+Index: linux-2.6.18/sound/i2c/Makefile
+===================================================================
+--- linux-2.6.18.orig/sound/i2c/Makefile
++++ linux-2.6.18/sound/i2c/Makefile
+@@ -16,3 +16,4 @@ obj-$(CONFIG_SND) += other/
+ # Toplevel Module Dependency
+ obj-$(CONFIG_SND_INTERWAVE_STB) += snd-tea6330t.o snd-i2c.o
+ obj-$(CONFIG_SND_ICE1712) += snd-cs8427.o snd-i2c.o
++obj-$(CONFIG_SND_ICE1724) += snd-i2c.o
+Index: linux-2.6.18/sound/i2c/other/Makefile
+===================================================================
+--- linux-2.6.18.orig/sound/i2c/other/Makefile
++++ linux-2.6.18/sound/i2c/other/Makefile
+@@ -6,11 +6,11 @@
+ snd-ak4114-objs := ak4114.o
+ snd-ak4117-objs := ak4117.o
+ snd-ak4xxx-adda-objs := ak4xxx-adda.o
++snd-pt2258-objs := pt2258.o
+ snd-tea575x-tuner-objs := tea575x-tuner.o
+ 
+ # Module Dependency
+ obj-$(CONFIG_SND_PDAUDIOCF) += snd-ak4117.o
+ obj-$(CONFIG_SND_ICE1712) += snd-ak4xxx-adda.o
+-obj-$(CONFIG_SND_ICE1724) += snd-ak4xxx-adda.o
+-obj-$(CONFIG_SND_ICE1724) += snd-ak4114.o
++obj-$(CONFIG_SND_ICE1724) += snd-ak4114.o snd-ak4xxx-adda.o snd-pt2258.o
+ obj-$(CONFIG_SND_FM801_TEA575X) += snd-tea575x-tuner.o
+Index: linux-2.6.18/sound/i2c/other/pt2258.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/i2c/other/pt2258.c
+@@ -0,0 +1,233 @@
++/*
++ *   ALSA Driver for the PT2258 volume controller.
++ *
++ *	Copyright (c) 2006  Jochen Voss <voss@seehuhn.de>
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 2 of the License, or
++ *   (at your option) any later version.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; if not, write to the Free Software
++ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
++ *
++ */      
++
++#include <sound/driver.h>
++#include <sound/core.h>
++#include <sound/control.h>
++#include <sound/tlv.h>
++#include <sound/i2c.h>
++#include <sound/pt2258.h>
++
++MODULE_AUTHOR("Jochen Voss <voss@seehuhn.de>");
++MODULE_DESCRIPTION("PT2258 volume controller (Princeton Technology Corp.)");
++MODULE_LICENSE("GPL");
++
++#define PT2258_CMD_RESET 0xc0
++#define PT2258_CMD_UNMUTE 0xf8
++#define PT2258_CMD_MUTE 0xf9
++
++static const unsigned char pt2258_channel_code[12] = {
++	0x80, 0x90,		/* channel 1: -10dB, -1dB */
++	0x40, 0x50,		/* channel 2: -10dB, -1dB */
++	0x00, 0x10,		/* channel 3: -10dB, -1dB */
++	0x20, 0x30,		/* channel 4: -10dB, -1dB */
++	0x60, 0x70,		/* channel 5: -10dB, -1dB */
++	0xa0, 0xb0		/* channel 6: -10dB, -1dB */
++};
++
++int snd_pt2258_reset(struct snd_pt2258 *pt)
++{
++	unsigned char bytes[2];
++	int i;
++
++	/* reset chip */
++	bytes[0] = PT2258_CMD_RESET;
++	snd_i2c_lock(pt->i2c_bus);
++	if (snd_i2c_sendbytes(pt->i2c_dev, bytes, 1) != 1)
++		goto __error;
++	snd_i2c_unlock(pt->i2c_bus);
++
++	/* mute all channels */
++	pt->mute = 1;
++	bytes[0] = PT2258_CMD_MUTE;
++	snd_i2c_lock(pt->i2c_bus);
++	if (snd_i2c_sendbytes(pt->i2c_dev, bytes, 1) != 1)
++		goto __error;
++	snd_i2c_unlock(pt->i2c_bus);
++
++	/* set all channels to 0dB */
++	for (i = 0; i < 6; ++i)
++		pt->volume[i] = 0;
++	bytes[0] = 0xd0;
++	bytes[1] = 0xe0;
++	snd_i2c_lock(pt->i2c_bus);
++	if (snd_i2c_sendbytes(pt->i2c_dev, bytes, 2) != 2)
++		goto __error;
++	snd_i2c_unlock(pt->i2c_bus);
++
++	return 0;
++
++      __error:
++	snd_i2c_unlock(pt->i2c_bus);
++	snd_printk(KERN_ERR "PT2258 reset failed\n");
++	return -EIO;
++}
++
++static int pt2258_stereo_volume_info(struct snd_kcontrol *kcontrol,
++				     struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++	uinfo->count = 2;
++	uinfo->value.integer.min = 0;
++	uinfo->value.integer.max = 79;
++	return 0;
++}
++
++static int pt2258_stereo_volume_get(struct snd_kcontrol *kcontrol,
++				    struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_pt2258 *pt = kcontrol->private_data;
++	int base = kcontrol->private_value;
++
++	/* chip does not support register reads */
++	ucontrol->value.integer.value[0] = 79 - pt->volume[base];
++	ucontrol->value.integer.value[1] = 79 - pt->volume[base + 1];
++	return 0;
++}
++
++static int pt2258_stereo_volume_put(struct snd_kcontrol *kcontrol,
++				    struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_pt2258 *pt = kcontrol->private_data;
++	int base = kcontrol->private_value;
++	unsigned char bytes[2];
++	int val0, val1;
++
++	val0 = 79 - ucontrol->value.integer.value[0];
++	val1 = 79 - ucontrol->value.integer.value[1];
++	if (val0 == pt->volume[base] && val1 == pt->volume[base + 1])
++		return 0;
++
++	pt->volume[base] = val0;
++	bytes[0] = pt2258_channel_code[2 * base] | (val0 / 10);
++	bytes[1] = pt2258_channel_code[2 * base + 1] | (val0 % 10);
++	snd_i2c_lock(pt->i2c_bus);
++	if (snd_i2c_sendbytes(pt->i2c_dev, bytes, 2) != 2)
++		goto __error;
++	snd_i2c_unlock(pt->i2c_bus);
++
++	pt->volume[base + 1] = val1;
++	bytes[0] = pt2258_channel_code[2 * base + 2] | (val1 / 10);
++	bytes[1] = pt2258_channel_code[2 * base + 3] | (val1 % 10);
++	snd_i2c_lock(pt->i2c_bus);
++	if (snd_i2c_sendbytes(pt->i2c_dev, bytes, 2) != 2)
++		goto __error;
++	snd_i2c_unlock(pt->i2c_bus);
++
++	return 1;
++
++      __error:
++	snd_i2c_unlock(pt->i2c_bus);
++	snd_printk(KERN_ERR "PT2258 access failed\n");
++	return -EIO;
++}
++
++static int pt2258_switch_info(struct snd_kcontrol *kcontrol,
++			      struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_BOOLEAN;
++	uinfo->count = 1;
++	uinfo->value.integer.min = 0;
++	uinfo->value.integer.max = 1;
++	return 0;
++}
++
++static int pt2258_switch_get(struct snd_kcontrol *kcontrol,
++			     struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_pt2258 *pt = kcontrol->private_data;
++
++	ucontrol->value.integer.value[0] = !pt->mute;
++	return 0;
++}
++
++static int pt2258_switch_put(struct snd_kcontrol *kcontrol,
++			     struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_pt2258 *pt = kcontrol->private_data;
++	unsigned char bytes[2];
++	int val;
++
++	val = !ucontrol->value.integer.value[0];
++	if (pt->mute == val)
++		return 0;
++
++	pt->mute = val;
++	bytes[0] = val ? PT2258_CMD_MUTE : PT2258_CMD_UNMUTE;
++	snd_i2c_lock(pt->i2c_bus);
++	if (snd_i2c_sendbytes(pt->i2c_dev, bytes, 1) != 1)
++		goto __error;
++	snd_i2c_unlock(pt->i2c_bus);
++
++	return 1;
++
++      __error:
++	snd_i2c_unlock(pt->i2c_bus);
++	snd_printk(KERN_ERR "PT2258 access failed 2\n");
++	return -EIO;
++}
++
++static DECLARE_TLV_DB_SCALE(pt2258_db_scale, -7900, 100, 0);
++
++int snd_pt2258_build_controls(struct snd_pt2258 *pt)
++{
++	struct snd_kcontrol_new knew;
++	char *names[3] = {
++		"Mic Loopback Playback Volume",
++		"Line Loopback Playback Volume",
++		"CD Loopback Playback Volume"
++	};
++	int i, err;
++
++	for (i = 0; i < 3; ++i) {
++		memset(&knew, 0, sizeof(knew));
++		knew.name = names[i];
++		knew.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
++		knew.count = 1;
++		knew.access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
++		    SNDRV_CTL_ELEM_ACCESS_TLV_READ;
++		knew.private_value = 2 * i;
++		knew.info = pt2258_stereo_volume_info;
++		knew.get = pt2258_stereo_volume_get;
++		knew.put = pt2258_stereo_volume_put;
++		knew.tlv.p = pt2258_db_scale;
++
++		err = snd_ctl_add(pt->card, snd_ctl_new1(&knew, pt));
++		if (err < 0)
++			return err;
++	}
++
++	memset(&knew, 0, sizeof(knew));
++	knew.name = "Loopback Switch";
++	knew.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
++	knew.info = pt2258_switch_info;
++	knew.get = pt2258_switch_get;
++	knew.put = pt2258_switch_put;
++	knew.access = 0;
++	err = snd_ctl_add(pt->card, snd_ctl_new1(&knew, pt));
++	if (err < 0)
++		return err;
++
++	return 0;
++}
++
++EXPORT_SYMBOL(snd_pt2258_reset);
++EXPORT_SYMBOL(snd_pt2258_build_controls);
+Index: linux-2.6.18/sound/pci/ice1712/ice1712.h
+===================================================================
+--- linux-2.6.18.orig/sound/pci/ice1712/ice1712.h
++++ linux-2.6.18/sound/pci/ice1712/ice1712.h
+@@ -28,6 +28,7 @@
+ #include <sound/i2c.h>
+ #include <sound/ak4xxx-adda.h>
+ #include <sound/ak4114.h>
++#include <sound/pt2258.h>
+ #include <sound/pcm.h>
+ #include <sound/mpu401.h>
+ 
+@@ -381,6 +382,11 @@ struct snd_ice1712 {
+ 			unsigned short master[2];
+ 			unsigned short vol[8];
+ 		} phase28;
++		/* a non-standard I2C device for revo51 */
++		struct revo51_spec {
++			struct snd_i2c_device *dev;
++			struct snd_pt2258 *pt2258;
++		} revo51;
+ 		/* Hoontech-specific setting */
+ 		struct hoontech_spec {
+ 			unsigned char boxbits[4];
+@@ -462,6 +468,14 @@ static inline void snd_ice1712_gpio_writ
+ 	snd_ice1712_gpio_write(ice, mask & bits);
+ }
+ 
++static inline int snd_ice1712_gpio_read_bits(struct snd_ice1712 *ice,
++					      unsigned int mask)
++{
++	ice->gpio.direction &= ~mask;
++	snd_ice1712_gpio_set_dir(ice, ice->gpio.direction);
++	return  (snd_ice1712_gpio_read(ice) & mask);
++}
++
+ int snd_ice1712_spdif_build_controls(struct snd_ice1712 *ice);
+ 
+ int snd_ice1712_akm4xxx_init(struct snd_akm4xxx *ak, const struct snd_akm4xxx *template,
+Index: linux-2.6.18/sound/pci/ice1712/revo.c
+===================================================================
+--- linux-2.6.18.orig/sound/pci/ice1712/revo.c
++++ linux-2.6.18/sound/pci/ice1712/revo.c
+@@ -84,6 +84,102 @@ static void revo_set_rate_val(struct snd
+ }
+ 
+ /*
++ * I2C access to the PT2258 volume controller on GPIO 6/7 (Revolution 5.1)
++ */
++
++static void revo_i2c_start(struct snd_i2c_bus *bus)
++{
++	struct snd_ice1712 *ice = bus->private_data;
++	snd_ice1712_save_gpio_status(ice);
++}
++
++static void revo_i2c_stop(struct snd_i2c_bus *bus)
++{
++	struct snd_ice1712 *ice = bus->private_data;
++	snd_ice1712_restore_gpio_status(ice);
++}
++
++static void revo_i2c_direction(struct snd_i2c_bus *bus, int clock, int data)
++{
++	struct snd_ice1712 *ice = bus->private_data;
++	unsigned int mask, val;
++
++	val = 0;
++	if (clock)
++		val |= VT1724_REVO_I2C_CLOCK;	/* write SCL */
++	if (data)
++		val |= VT1724_REVO_I2C_DATA;	/* write SDA */
++	mask = VT1724_REVO_I2C_CLOCK | VT1724_REVO_I2C_DATA;
++	ice->gpio.direction &= ~mask;
++	ice->gpio.direction |= val;
++	snd_ice1712_gpio_set_dir(ice, ice->gpio.direction);
++	snd_ice1712_gpio_set_mask(ice, ~mask);
++}
++
++static void revo_i2c_setlines(struct snd_i2c_bus *bus, int clk, int data)
++{
++	struct snd_ice1712 *ice = bus->private_data;
++	unsigned int val = 0;
++
++	if (clk)
++		val |= VT1724_REVO_I2C_CLOCK;
++	if (data)
++		val |= VT1724_REVO_I2C_DATA;
++	snd_ice1712_gpio_write_bits(ice,
++				    VT1724_REVO_I2C_DATA |
++				    VT1724_REVO_I2C_CLOCK, val);
++	udelay(5);
++}
++
++static int revo_i2c_getdata(struct snd_i2c_bus *bus, int ack)
++{
++	struct snd_ice1712 *ice = bus->private_data;
++	int bit;
++
++	if (ack)
++		udelay(5);
++	bit = snd_ice1712_gpio_read_bits(ice, VT1724_REVO_I2C_DATA) ? 1 : 0;
++	return bit;
++}
++
++static struct snd_i2c_bit_ops revo51_bit_ops = {
++	.start = revo_i2c_start,
++	.stop = revo_i2c_stop,
++	.direction = revo_i2c_direction,
++	.setlines = revo_i2c_setlines,
++	.getdata = revo_i2c_getdata,
++};
++
++static int revo51_i2c_init(struct snd_ice1712 *ice,
++			   struct snd_pt2258 *pt)
++{
++	int err;
++
++	/* create the I2C bus */
++	err = snd_i2c_bus_create(ice->card, "ICE1724 GPIO6", NULL, &ice->i2c);
++	if (err < 0)
++		return err;
++
++	ice->i2c->private_data = ice;
++	ice->i2c->hw_ops.bit = &revo51_bit_ops;
++
++	/* create the I2C device */
++	err = snd_i2c_device_create(ice->i2c, "PT2258", 0x40,
++				    &ice->spec.revo51.dev);
++	if (err < 0)
++		return err;
++
++	pt->card = ice->card;
++	pt->i2c_bus = ice->i2c;
++	pt->i2c_dev = ice->spec.revo51.dev;
++	ice->spec.revo51.pt2258 = pt;
++
++	snd_pt2258_reset(pt);
++
++	return 0;
++}
++
++/*
+  * initialize the chips on M-Audio Revolution cards
+  */
+ 
+@@ -180,9 +276,9 @@ static struct snd_ak4xxx_private akm_rev
+ 	.cif = 0,
+ 	.data_mask = VT1724_REVO_CDOUT,
+ 	.clk_mask = VT1724_REVO_CCLK,
+-	.cs_mask = VT1724_REVO_CS0 | VT1724_REVO_CS1 | VT1724_REVO_CS2,
+-	.cs_addr = VT1724_REVO_CS1 | VT1724_REVO_CS2,
+-	.cs_none = VT1724_REVO_CS0 | VT1724_REVO_CS1 | VT1724_REVO_CS2,
++	.cs_mask = VT1724_REVO_CS0 | VT1724_REVO_CS1,
++	.cs_addr = VT1724_REVO_CS1,
++	.cs_none = VT1724_REVO_CS0 | VT1724_REVO_CS1,
+ 	.add_flags = VT1724_REVO_CCLK, /* high at init */
+ 	.mask_flags = 0,
+ };
+@@ -198,13 +294,15 @@ static struct snd_ak4xxx_private akm_rev
+ 	.cif = 0,
+ 	.data_mask = VT1724_REVO_CDOUT,
+ 	.clk_mask = VT1724_REVO_CCLK,
+-	.cs_mask = VT1724_REVO_CS0 | VT1724_REVO_CS1 | VT1724_REVO_CS2,
+-	.cs_addr = VT1724_REVO_CS0 | VT1724_REVO_CS2,
+-	.cs_none = VT1724_REVO_CS0 | VT1724_REVO_CS1 | VT1724_REVO_CS2,
++	.cs_mask = VT1724_REVO_CS0 | VT1724_REVO_CS1,
++	.cs_addr = VT1724_REVO_CS0,
++	.cs_none = VT1724_REVO_CS0 | VT1724_REVO_CS1,
+ 	.add_flags = VT1724_REVO_CCLK, /* high at init */
+ 	.mask_flags = 0,
+ };
+ 
++static struct snd_pt2258 ptc_revo51_volume;
++
+ static int __devinit revo_init(struct snd_ice1712 *ice)
+ {
+ 	struct snd_akm4xxx *ak;
+@@ -243,14 +341,20 @@ static int __devinit revo_init(struct sn
+ 		break;
+ 	case VT1724_SUBDEVICE_REVOLUTION51:
+ 		ice->akm_codecs = 2;
+-		if ((err = snd_ice1712_akm4xxx_init(ak, &akm_revo51, &akm_revo51_priv, ice)) < 0)
++		err = snd_ice1712_akm4xxx_init(ak, &akm_revo51,
++					       &akm_revo51_priv, ice);
++		if (err < 0)
+ 			return err;
+-		err = snd_ice1712_akm4xxx_init(ak + 1, &akm_revo51_adc,
++		err = snd_ice1712_akm4xxx_init(ak+1, &akm_revo51_adc,
+ 					       &akm_revo51_adc_priv, ice);
+ 		if (err < 0)
+ 			return err;
+-		/* unmute all codecs - needed! */
+-		snd_ice1712_gpio_write_bits(ice, VT1724_REVO_MUTE, VT1724_REVO_MUTE);
++		err = revo51_i2c_init(ice, &ptc_revo51_volume);
++		if (err < 0)
++			return err;
++		/* unmute all codecs */
++		snd_ice1712_gpio_write_bits(ice, VT1724_REVO_MUTE,
++					    VT1724_REVO_MUTE);
+ 		break;
+ 	}
+ 
+@@ -264,10 +368,18 @@ static int __devinit revo_add_controls(s
+ 
+ 	switch (ice->eeprom.subvendor) {
+ 	case VT1724_SUBDEVICE_REVOLUTION71:
++		err = snd_ice1712_akm4xxx_build_controls(ice);
++		if (err < 0)
++			return err;
++		break;
+ 	case VT1724_SUBDEVICE_REVOLUTION51:
+ 		err = snd_ice1712_akm4xxx_build_controls(ice);
+ 		if (err < 0)
+ 			return err;
++		err = snd_pt2258_build_controls(ice->spec.revo51.pt2258);
++		if (err < 0)
++			return err;
++		break;
+ 	}
+ 	return 0;
+ }
+Index: linux-2.6.18/sound/pci/ice1712/revo.h
+===================================================================
+--- linux-2.6.18.orig/sound/pci/ice1712/revo.h
++++ linux-2.6.18/sound/pci/ice1712/revo.h
+@@ -42,9 +42,11 @@ extern struct snd_ice1712_card_info snd_
+ #define VT1724_REVO_CCLK	0x02
+ #define VT1724_REVO_CDIN	0x04	/* not used */
+ #define VT1724_REVO_CDOUT	0x08
+-#define VT1724_REVO_CS0		0x10	/* AK5365 chipselect for Rev. 5.1 */
++#define VT1724_REVO_CS0		0x10	/* AK5365 chipselect for (revo51) */
+ #define VT1724_REVO_CS1		0x20	/* front AKM4381 chipselect */
+-#define VT1724_REVO_CS2		0x40	/* surround AKM4355 chipselect */
++#define VT1724_REVO_CS2		0x40	/* surround AKM4355 CS (revo71) */
++#define VT1724_REVO_I2C_DATA    0x40    /* I2C: PT 2258 SDA (on revo51) */
++#define VT1724_REVO_I2C_CLOCK   0x80    /* I2C: PT 2258 SCL (on revo51) */
+ #define VT1724_REVO_MUTE	(1<<22)	/* 0 = all mute, 1 = normal operation */
+ 
+ #endif /* __SOUND_REVO_H */
+Index: linux-2.6.18/mvl_patches/pro50-2078.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2078.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2078);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

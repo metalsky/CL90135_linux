@@ -1,0 +1,609 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_aLocalEnd_with_endpoin
+# Date: Fri Sep 19 14:07:23 2008
+# From f34fb4d594d1030078ee08c0d70e0db639f2343d Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Mon, 13 Aug 2007 03:21:18 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace aLocalEnd with endpoints
+# 
+# Search and replace aLocalEnd with endpoints
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 8e66bb233d4d03628f1b46a2baaba6a7f4308dfa)
+
+PATCHNUM=1670
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From f34fb4d594d1030078ee08c0d70e0db639f2343d Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Mon, 13 Aug 2007 03:21:18 -0700
+Subject: [PATCH] musb_hdrc: Search and replace aLocalEnd with endpoints
+
+Search and replace aLocalEnd with endpoints
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 8e66bb233d4d03628f1b46a2baaba6a7f4308dfa)
+Index: linux-2.6.18/drivers/usb/musb/g_ep0.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/g_ep0.c
++++ linux-2.6.18/drivers/usb/musb/g_ep0.c
+@@ -41,8 +41,8 @@
+ 
+ #include "musbdefs.h"
+ 
+-/* ep0 is always musb->aLocalEnd[0].ep_in */
+-#define	next_ep0_request(musb)	next_in_request(&(musb)->aLocalEnd[0])
++/* ep0 is always musb->endpoints[0].ep_in */
++#define	next_ep0_request(musb)	next_in_request(&(musb)->endpoints[0])
+ 
+ /*
+  * Locking note:  we use only the controller lock, for simpler correctness.
+@@ -116,11 +116,11 @@ static int service_tx_status_request(
+ 		is_in = bEnd & USB_DIR_IN;
+ 		if (is_in) {
+ 			bEnd &= 0x0f;
+-			ep = &musb->aLocalEnd[bEnd].ep_in;
++			ep = &musb->endpoints[bEnd].ep_in;
+ 		} else {
+-			ep = &musb->aLocalEnd[bEnd].ep_out;
++			ep = &musb->endpoints[bEnd].ep_out;
+ 		}
+-		regs = musb->aLocalEnd[bEnd].regs;
++		regs = musb->endpoints[bEnd].regs;
+ 
+ 		if (bEnd >= MUSB_C_NUM_EPS || !ep->desc) {
+ 			handled = -EINVAL;
+@@ -151,7 +151,7 @@ static int service_tx_status_request(
+ 
+ 		if (len > 2)
+ 			len = 2;
+-		musb_write_fifo(&musb->aLocalEnd[0], len, bResult);
++		musb_write_fifo(&musb->endpoints[0], len, bResult);
+ 	}
+ 
+ 	return handled;
+@@ -197,7 +197,7 @@ service_in_request(struct musb *musb,
+ static void musb_g_ep0_giveback(struct musb *musb, struct usb_request *req)
+ {
+ 	musb->ep0_state = MGC_END0_STAGE_SETUP;
+-	musb_g_giveback(&musb->aLocalEnd[0].ep_in, req, 0);
++	musb_g_giveback(&musb->endpoints[0].ep_in, req, 0);
+ }
+ 
+ /*
+@@ -266,9 +266,9 @@ __acquires(musb->Lock)
+ 					break;
+ 
+ 				if (pControlRequest->wIndex & USB_DIR_IN)
+-					musb_ep = &musb->aLocalEnd[bEnd].ep_in;
++					musb_ep = &musb->endpoints[bEnd].ep_in;
+ 				else
+-					musb_ep = &musb->aLocalEnd[bEnd].ep_out;
++					musb_ep = &musb->endpoints[bEnd].ep_out;
+ 				if (!musb_ep->desc)
+ 					break;
+ 
+@@ -378,7 +378,7 @@ stall:
+ 							!= USB_ENDPOINT_HALT)
+ 					break;
+ 
+-				ep = musb->aLocalEnd + bEnd;
++				ep = musb->endpoints + bEnd;
+ 				regs = ep->regs;
+ 				is_in = pControlRequest->wIndex & USB_DIR_IN;
+ 				if (is_in)
+@@ -454,7 +454,7 @@ static void ep0_rxstate(struct musb *thi
+ 			req->status = -EOVERFLOW;
+ 			tmp = len;
+ 		}
+-		musb_read_fifo(&this->aLocalEnd[0], tmp, buf);
++		musb_read_fifo(&this->endpoints[0], tmp, buf);
+ 		req->actual += tmp;
+ 		tmp = MGC_M_CSR0_P_SVDRXPKTRDY;
+ 		if (tmp < 64 || req->actual == req->length) {
+@@ -499,7 +499,7 @@ static void ep0_txstate(struct musb *mus
+ 	pFifoSource = (u8 *) pRequest->buf + pRequest->actual;
+ 	fifo_count = min((unsigned) MGC_END0_FIFOSIZE,
+ 		pRequest->length - pRequest->actual);
+-	musb_write_fifo(&musb->aLocalEnd[0], fifo_count, pFifoSource);
++	musb_write_fifo(&musb->endpoints[0], fifo_count, pFifoSource);
+ 	pRequest->actual += fifo_count;
+ 
+ 	/* update the flags */
+@@ -534,7 +534,7 @@ musb_read_setup(struct musb *musb, struc
+ 	struct usb_request	*r;
+ 	void __iomem		*regs = musb->control_ep->regs;
+ 
+-	musb_read_fifo(&musb->aLocalEnd[0], sizeof *req, (u8 *)req);
++	musb_read_fifo(&musb->endpoints[0], sizeof *req, (u8 *)req);
+ 
+ 	/* NOTE:  earlier 2.6 versions changed setup packets to host
+ 	 * order, but now USB packets always stay in USB byte order.
+@@ -601,7 +601,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *
+ 	u16		wCsrVal;
+ 	u16		len;
+ 	void __iomem	*mbase = musb->mregs;
+-	void __iomem	*regs = musb->aLocalEnd[0].regs;
++	void __iomem	*regs = musb->endpoints[0].regs;
+ 	irqreturn_t	retval = IRQ_NONE;
+ 
+ 	MGC_SelectEnd(mbase, 0);	/* select ep0 */
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -159,7 +159,7 @@ __acquires(ep->musb->Lock)
+ static void nuke(struct musb_ep *ep, const int status)
+ {
+ 	struct musb_request	*req = NULL;
+-	void __iomem *epio = ep->musb->aLocalEnd[ep->bEndNumber].regs;
++	void __iomem *epio = ep->musb->endpoints[ep->bEndNumber].regs;
+ 
+ 	ep->busy = 1;
+ 
+@@ -254,7 +254,7 @@ static void txstate(struct musb *musb, s
+ {
+ 	u8			bEnd = req->bEnd;
+ 	struct musb_ep		*musb_ep;
+-	void __iomem		*epio = musb->aLocalEnd[bEnd].regs;
++	void __iomem		*epio = musb->endpoints[bEnd].regs;
+ 	struct usb_request	*pRequest;
+ 	u16			fifo_count = 0, wCsrVal;
+ 	int			use_dma = 0;
+@@ -407,8 +407,8 @@ void musb_g_tx(struct musb *musb, u8 bEn
+ 	u16			wCsrVal;
+ 	struct usb_request	*pRequest;
+ 	u8 __iomem		*mbase = musb->mregs;
+-	struct musb_ep		*musb_ep = &musb->aLocalEnd[bEnd].ep_in;
+-	void __iomem		*epio = musb->aLocalEnd[bEnd].regs;
++	struct musb_ep		*musb_ep = &musb->endpoints[bEnd].ep_in;
++	void __iomem		*epio = musb->endpoints[bEnd].regs;
+ 	struct dma_channel	*dma;
+ 
+ 	MGC_SelectEnd(mbase, bEnd);
+@@ -575,8 +575,8 @@ static void rxstate(struct musb *musb, s
+ 	u16			wCsrVal = 0;
+ 	const u8		bEnd = req->bEnd;
+ 	struct usb_request	*pRequest = &req->request;
+-	struct musb_ep		*musb_ep = &musb->aLocalEnd[bEnd].ep_out;
+-	void __iomem		*epio = musb->aLocalEnd[bEnd].regs;
++	struct musb_ep		*musb_ep = &musb->endpoints[bEnd].ep_out;
++	void __iomem		*epio = musb->endpoints[bEnd].regs;
+ 	u16			fifo_count = 0;
+ 	u16			len = musb_ep->wPacketSize;
+ 
+@@ -737,8 +737,8 @@ void musb_g_rx(struct musb *musb, u8 bEn
+ 	u16			wCsrVal;
+ 	struct usb_request	*pRequest;
+ 	void __iomem		*mbase = musb->mregs;
+-	struct musb_ep		*musb_ep = &musb->aLocalEnd[bEnd].ep_out;
+-	void __iomem		*epio = musb->aLocalEnd[bEnd].regs;
++	struct musb_ep		*musb_ep = &musb->endpoints[bEnd].ep_out;
++	void __iomem		*epio = musb->endpoints[bEnd].regs;
+ 	struct dma_channel	*dma;
+ 
+ 	MGC_SelectEnd(mbase, bEnd);
+@@ -1007,7 +1007,7 @@ static int musb_gadget_disable(struct us
+ 	musb_ep = to_musb_ep(ep);
+ 	musb = musb_ep->musb;
+ 	bEnd = musb_ep->bEndNumber;
+-	epio = musb->aLocalEnd[bEnd].regs;
++	epio = musb->endpoints[bEnd].regs;
+ 
+ 	spin_lock_irqsave(&musb->Lock, flags);
+ 	MGC_SelectEnd(musb->mregs, bEnd);
+@@ -1284,7 +1284,7 @@ int musb_gadget_set_halt(struct usb_ep *
+ 	struct musb_ep		*musb_ep = to_musb_ep(ep);
+ 	u8			bEnd = musb_ep->bEndNumber;
+ 	struct musb		*musb = musb_ep->musb;
+-	void __iomem		*epio = musb->aLocalEnd[bEnd].regs;
++	void __iomem		*epio = musb->endpoints[bEnd].regs;
+ 	void __iomem		*mbase;
+ 	unsigned long		flags;
+ 	u16			wCsr;
+@@ -1384,7 +1384,7 @@ static void musb_gadget_fifo_flush(struc
+ 	struct musb_ep	*musb_ep = to_musb_ep(ep);
+ 	struct musb	*musb = musb_ep->musb;
+ 	u8		nEnd = musb_ep->bEndNumber;
+-	void __iomem	*epio = musb->aLocalEnd[nEnd].regs;
++	void __iomem	*epio = musb->endpoints[nEnd].regs;
+ 	void __iomem	*mbase;
+ 	unsigned long	flags;
+ 	u16		wCsr, wIntrTxE;
+@@ -1612,7 +1612,7 @@ static void musb_gadget_release(struct d
+ static void __init
+ init_peripheral_ep(struct musb *musb, struct musb_ep *ep, u8 bEnd, int is_in)
+ {
+-	struct musb_hw_ep	*hw_ep = musb->aLocalEnd + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
+ 
+ 	memset(ep, 0, sizeof *ep);
+ 
+@@ -1655,7 +1655,7 @@ static inline void __init musb_g_init_en
+ 	/* intialize endpoint list just once */
+ 	INIT_LIST_HEAD(&(musb->g.ep_list));
+ 
+-	for (bEnd = 0, hw_ep = musb->aLocalEnd;
++	for (bEnd = 0, hw_ep = musb->endpoints;
+ 			bEnd < musb->bEndCount;
+ 			bEnd++, hw_ep++) {
+ 		if (hw_ep->bIsSharedFifo /* || !bEnd */) {
+@@ -1851,7 +1851,7 @@ stop_activity(struct musb *musb, struct 
+ 	 * then report disconnect
+ 	 */
+ 	if (driver) {
+-		for (i = 0, hw_ep = musb->aLocalEnd;
++		for (i = 0, hw_ep = musb->endpoints;
+ 				i < musb->bEndCount;
+ 				i++, hw_ep++) {
+ 			MGC_SelectEnd(musb->mregs, i);
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -475,7 +475,7 @@ static u8 musb_host_packet_rx(struct mus
+ 	u8 bDone = FALSE;
+ 	u32			length;
+ 	int			do_flush = 0;
+-	struct musb_hw_ep	*hw_ep = musb->aLocalEnd + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
+ 	void __iomem		*epio = hw_ep->regs;
+ 	struct musb_qh		*qh = hw_ep->in_qh;
+ 	int			nPipe = pUrb->pipe;
+@@ -631,7 +631,7 @@ static void musb_ep_program(struct musb 
+ 	struct dma_channel	*pDmaChannel;
+ 	u8			bDmaOk;
+ 	void __iomem		*mbase = musb->mregs;
+-	struct musb_hw_ep	*hw_ep = musb->aLocalEnd + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
+ 	void __iomem		*epio = hw_ep->regs;
+ 	struct musb_qh		*qh;
+ 	u16			wPacketSize;
+@@ -1170,7 +1170,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 	size_t			wLength = 0;
+ 	u8			*pBuffer = NULL;
+ 	struct urb		*pUrb;
+-	struct musb_hw_ep	*hw_ep = musb->aLocalEnd + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
+ 	void __iomem		*epio = hw_ep->regs;
+ 	struct musb_qh		*qh = hw_ep->out_qh;
+ 	u32			status = 0;
+@@ -1380,7 +1380,7 @@ finish:
+ void musb_host_rx(struct musb *musb, u8 bEnd)
+ {
+ 	struct urb		*pUrb;
+-	struct musb_hw_ep	*hw_ep = musb->aLocalEnd + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
+ 	void __iomem		*epio = hw_ep->regs;
+ 	struct musb_qh		*qh = hw_ep->in_qh;
+ 	size_t			xfer_len;
+@@ -1711,7 +1711,7 @@ static int musb_schedule(
+ 
+ 		if (musb->periodic[nEnd])
+ 			continue;
+-		hw_ep = &musb->aLocalEnd[nEnd];
++		hw_ep = &musb->endpoints[nEnd];
+ 		if (hw_ep == musb->bulk_ep)
+ 			continue;
+ 
+@@ -1729,7 +1729,7 @@ static int musb_schedule(
+ 		return -ENOSPC;
+ 
+ 	idle = 1;
+-	hw_ep = musb->aLocalEnd + nBestEnd;
++	hw_ep = musb->endpoints + nBestEnd;
+ 	musb->periodic[nBestEnd] = qh;
+ 	DBG(4, "qh %p periodic slot %d\n", qh, nBestEnd);
+ success:
+Index: linux-2.6.18/drivers/usb/musb/musb_procfs.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_procfs.c
++++ linux-2.6.18/drivers/usb/musb/musb_procfs.c
+@@ -237,7 +237,7 @@ dump_end_info(struct musb *musb, u8 bEnd
+ {
+ 	int			code = 0;
+ 	char			*buf = aBuffer;
+-	struct musb_hw_ep	*hw_ep = &musb->aLocalEnd[bEnd];
++	struct musb_hw_ep	*hw_ep = &musb->endpoints[bEnd];
+ 
+ 	do {
+ 		MGC_SelectEnd(musb->mregs, bEnd);
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -282,7 +282,7 @@ struct musb_hw_ep {
+ 	void __iomem		*conf;
+ #endif
+ 
+-	/* index in musb->aLocalEnd[]  */
++	/* index in musb->endpoints[]  */
+ 	u8			epnum;
+ 
+ 	/* hardware configuration, possibly dynamic */
+@@ -397,8 +397,8 @@ struct musb {
+ 
+ 	int nIrq;
+ 
+-	struct musb_hw_ep	 aLocalEnd[MUSB_C_NUM_EPS];
+-#define control_ep		aLocalEnd
++	struct musb_hw_ep	 endpoints[MUSB_C_NUM_EPS];
++#define control_ep		endpoints
+ 
+ #define VBUSERR_RETRY_COUNT	3
+ 	u16			vbuserr_retry;
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -271,7 +271,7 @@ static const u8 musb_test_packet[53] = {
+ 
+ void musb_load_testpacket(struct musb *musb)
+ {
+-	void __iomem	*regs = musb->aLocalEnd[0].regs;
++	void __iomem	*regs = musb->endpoints[0].regs;
+ 
+ 	MGC_SelectEnd(musb->mregs, 0);
+ 	musb_write_fifo(musb->control_ep,
+@@ -670,7 +670,7 @@ static irqreturn_t musb_stage2_irq(struc
+ 
+ 		/* start any periodic Tx transfers waiting for current frame */
+ 		wFrame = musb_readw(mbase, MGC_O_HDRC_FRAME);
+-		ep = musb->aLocalEnd;
++		ep = musb->endpoints;
+ 		for (bEnd = 1; (bEnd < musb->bEndCount)
+ 					&& (musb->wEndMask >= (1 << bEnd));
+ 				bEnd++, ep++) {
+@@ -1099,7 +1099,7 @@ static int __init ep_config_from_table(s
+ 	const struct fifo_cfg	*cfg;
+ 	unsigned		i, n;
+ 	int			offset;
+-	struct musb_hw_ep	*hw_ep = musb->aLocalEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints;
+ 
+ 	switch (fifo_mode) {
+ 	default:
+@@ -1188,7 +1188,7 @@ static int __init ep_config_from_hw(stru
+ 
+ 	for (bEnd = 1; bEnd < MUSB_C_NUM_EPS; bEnd++) {
+ 		MGC_SelectEnd(mbase, bEnd);
+-		hw_ep = musb->aLocalEnd + bEnd;
++		hw_ep = musb->endpoints + bEnd;
+ 
+ 		/* read from core using indexed model */
+ 		reg = musb_readb(hw_ep->regs, 0x10 + MGC_O_HDRC_FIFOSIZE);
+@@ -1334,8 +1334,8 @@ static int __init musb_core_init(u16 wTy
+ 			musb_driver_name, type, aRevision, aDate);
+ 
+ 	/* configure ep0 */
+-	musb->aLocalEnd[0].wMaxPacketSizeTx = MGC_END0_FIFOSIZE;
+-	musb->aLocalEnd[0].wMaxPacketSizeRx = MGC_END0_FIFOSIZE;
++	musb->endpoints[0].wMaxPacketSizeTx = MGC_END0_FIFOSIZE;
++	musb->endpoints[0].wMaxPacketSizeRx = MGC_END0_FIFOSIZE;
+ 
+ 	/* discover endpoint configuration */
+ 	musb->bEndCount = 1;
+@@ -1362,7 +1362,7 @@ static int __init musb_core_init(u16 wTy
+ 
+ 	/* finish init, and print endpoint config */
+ 	for (i = 0; i < musb->bEndCount; i++) {
+-		struct musb_hw_ep	*hw_ep = musb->aLocalEnd + i;
++		struct musb_hw_ep	*hw_ep = musb->endpoints + i;
+ 
+ 		hw_ep->fifo = MUSB_FIFO_OFFSET(i) + mbase;
+ #ifdef CONFIG_USB_TUSB6010
+@@ -1771,7 +1771,7 @@ allocate_instance(struct device *dev, vo
+ 	musb->mregs = mbase;
+ 	musb->ctrl_base = mbase;
+ 	musb->nIrq = -ENODEV;
+-	for (epnum = 0, ep = musb->aLocalEnd;
++	for (epnum = 0, ep = musb->endpoints;
+ 			epnum < MUSB_C_NUM_EPS;
+ 			epnum++, ep++) {
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1670.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1670.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1670);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

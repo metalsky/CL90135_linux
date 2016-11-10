@@ -1,0 +1,5 @@
+#define LSP_BUILD_ID   "0900309"
+#define LSP_REVISION   "1"
+#define LSP_NAME       "ti-da830_omapl137_evm-arm_v5t_le"
+#define LSP_BOARD_NAME "TI DA830/OMAP-L137 Processor (little endian)"
+#define LSP_MVL_ARCH   "arm_v5t_le"

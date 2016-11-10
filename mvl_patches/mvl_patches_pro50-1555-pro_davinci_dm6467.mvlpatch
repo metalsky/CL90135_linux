@@ -1,0 +1,859 @@
+#! /usr/bin/env bash
+# Patch: -pro_davinci_dm6467
+# Date: Fri Sep 19 13:59:18 2008
+# Source: MontaVista Software, Inc. 
+# MR: 27583
+# Type: Enhancement
+# Disposition: needs submitting to linux-arm-kernel
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description: TI DaVinci dm6467 board support.
+# 
+#  arch/arm/mach-davinci/Kconfig            |    9 
+#  arch/arm/mach-davinci/Makefile           |    1 
+#  arch/arm/mach-davinci/board-dm6467-evm.c |  333 +++++++++++++++++++++++++++++++
+#  arch/arm/mach-davinci/id.c               |    7 
+#  arch/arm/mach-davinci/irq.c              |    1 
+#  arch/arm/tools/mach-types                |    1 
+#  include/asm-arm/arch-davinci/hardware.h  |   71 ++++++
+#  include/asm-arm/arch-davinci/irqs.h      |   50 ++++
+#  include/asm-arm/arch-davinci/mux.h       |   33 +++
+#  9 files changed, 506 insertions(+)
+# 
+
+PATCHNUM=1555
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc. 
+MR: 27583
+Type: Enhancement
+Disposition: needs submitting to linux-arm-kernel
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description: TI DaVinci dm6467 board support.
+
+ arch/arm/mach-davinci/Kconfig            |    9 
+ arch/arm/mach-davinci/Makefile           |    1 
+ arch/arm/mach-davinci/board-dm6467-evm.c |  333 +++++++++++++++++++++++++++++++
+ arch/arm/mach-davinci/id.c               |    7 
+ arch/arm/mach-davinci/irq.c              |    1 
+ arch/arm/tools/mach-types                |    1 
+ include/asm-arm/arch-davinci/hardware.h  |   71 ++++++
+ include/asm-arm/arch-davinci/irqs.h      |   50 ++++
+ include/asm-arm/arch-davinci/mux.h       |   33 +++
+ mvl_patches/pro50-1555.c                 |   16 +
+ 10 files changed, 522 insertions(+)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/Kconfig
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Kconfig
++++ linux-2.6.18/arch/arm/mach-davinci/Kconfig
+@@ -14,6 +14,8 @@ config ARCH_DAVINCI644x
+ config ARCH_DAVINCI_DM355
+ 	bool "DaVinci DM355 based system"
+ 
++config ARCH_DAVINCI_DM646x
++        bool "DaVinci 646x based system"
+ endchoice
+ 
+ comment "DaVinci Board Type"
+@@ -41,6 +43,13 @@ config MACH_DAVINCI_DM355_EVM
+ 	  Configure this option to specify the whether the board used
+ 	  for development is a DM355 EVM
+ 
++config MACH_DAVINCI_DM6467_EVM
++        bool "TI DM646x EVM"
++        default n
++        depends on ARCH_DAVINCI_DM646x && !ARCH_DAVINCI_DM644x
++        help
++          Configure this option to specify the whether the board used
++          for development is a DM646x EVM
+ 
+ config DAVINCI_MUX
+ 	bool "DAVINCI multiplexing support"
+Index: linux-2.6.18/arch/arm/mach-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Makefile
++++ linux-2.6.18/arch/arm/mach-davinci/Makefile
+@@ -9,5 +9,6 @@ obj-y 			:= time.o irq.o clock.o serial.
+ 
+ # Board specific
+ obj-$(CONFIG_MACH_DAVINCI_EVM)  += board-evm.o i2c-emac.o
++obj-$(CONFIG_MACH_DAVINCI_DM6467_EVM)  += board-dm6467-evm.o
+ obj-$(CONFIG_MACH_DAVINCI_DM355_EVM)  += board-dm355-evm.o
+ obj-$(CONFIG_DAVINCI_I2C_EXPANDER)      += i2c-client.o
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+@@ -0,0 +1,333 @@
++/*
++ * TI DaVinci DM6467 EVM board
++ *
++ * Derived from: arch/arm/mach-davinci/board-evm.c
++ * Copyright (C) 2006 Texas Instruments.
++ *
++ * 2007 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ *
++ */
++
++/**************************************************************************
++ * Included Files
++ **************************************************************************/
++
++#include <linux/config.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/fs.h>
++#include <linux/major.h>
++#include <linux/root_dev.h>
++#include <linux/dma-mapping.h>
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/partitions.h>
++#include <linux/serial.h>
++#include <linux/mtd/nand.h>
++#include <linux/serial_8250.h>
++
++#include <asm/setup.h>
++#include <asm/io.h>
++#include <asm/mach-types.h>
++
++#include <asm/mach/arch.h>
++#include <asm/mach/map.h>
++#include <asm/mach/flash.h>
++#include <asm/arch/irqs.h>
++#include <asm/arch/hardware.h>
++#include <asm/arch/edma.h>
++#include <linux/kgdb.h>
++#include <asm/arch/cpu.h>
++#include <asm/arch/mux.h>
++#include "clock.h"
++
++/**************************************************************************
++ * Definitions
++ **************************************************************************/
++#define DAVINCI_DM646X_UART_CLK		24000000
++
++static struct plat_serial8250_port serial_platform_data[] = {
++	{
++		.membase	= (char *)IO_ADDRESS(DAVINCI_UART0_BASE),
++		.mapbase	= (unsigned long)DAVINCI_UART0_BASE,
++		.irq		= IRQ_UARTINT0,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM32,
++		.regshift	= 2,
++		.uartclk	= DAVINCI_DM646X_UART_CLK,
++	},
++	{
++		.membase	= (char *)IO_ADDRESS(DAVINCI_UART1_BASE),
++		.mapbase	= (unsigned long)DAVINCI_UART1_BASE,
++		.irq		= IRQ_UARTINT1,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM32,
++		.regshift	= 2,
++		.uartclk	= DAVINCI_DM646X_UART_CLK,
++	},
++	{
++		.membase	= (char *)IO_ADDRESS(DM644X_UART2_BASE),
++		.mapbase	= (unsigned long)DM644X_UART2_BASE,
++		.irq		= IRQ_UARTINT2,
++		.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
++		.iotype		= UPIO_MEM32,
++		.regshift	= 2,
++		.uartclk	= DAVINCI_DM646X_UART_CLK,
++	},
++	{
++		.flags	= 0,
++	},
++};
++
++static struct platform_device serial_device	= {
++	.name			= "serial8250",
++	.id			= 0,
++	.dev			= {
++		.platform_data	= serial_platform_data,
++	},
++};
++
++/**************************************************************************
++ * Public Functions
++ **************************************************************************/
++//extern void davinci_serial_init(struct platform_device *pdev);
++
++#if defined (CONFIG_MTD_NAND_DAVINCI) || defined(CONFIG_MTD_NAND_DAVINCI_MODULE)
++static struct mtd_partition dm646x_nand_partitions[] = {
++	/* bootloader (U-Boot, etc) in first sector */
++	{
++		.name		= "bootloader",
++		.offset		= 0,
++		.size		= SZ_512K,
++		.mask_flags	= MTD_WRITEABLE,	/* force read-only */
++	},
++	/* bootloader params in the next sector */
++	{
++		.name		= "params",
++		.offset		= MTDPART_OFS_APPEND,
++		.size		= SZ_128K,
++		.mask_flags	= MTD_WRITEABLE,	/* force read-only */
++	},
++	/* kernel */
++	{
++		.name		= "kernel",
++		.offset		= MTDPART_OFS_APPEND,
++		.size		= SZ_4M,
++		.mask_flags		= 0,
++	},
++	/* file system */
++	{
++		.name		= "filesystem",
++		.offset		= MTDPART_OFS_APPEND,
++		.size		= MTDPART_SIZ_FULL,
++		.mask_flags		= 0,
++	}
++};
++
++static struct nand_davinci_platform_data dm646x_nand_data = {
++	.options		= 0,
++	.eccmode		= NAND_ECC_HW3_512,
++	.cle_mask		= 0x80000,
++	.ale_mask		= 0x40000,
++	.parts			= dm646x_nand_partitions,
++	.nr_parts		= ARRAY_SIZE(dm646x_nand_partitions),
++};
++
++static struct resource dm646x_nand_resources[] = {
++	[0] = {		/* First memory resource is AEMIF control registers */
++		.start		= DAVINCI_DM646X_ASYNC_EMIF_CNTRL_BASE,
++		.end		= DAVINCI_DM646X_ASYNC_EMIF_CNTRL_BASE +
++					SZ_16K - 1,
++		.flags		= IORESOURCE_MEM,
++	},
++	[1] = {		/* Second memory resource is NAND I/O window */
++		.start		= DAVINCI_DM646X_ASYNC_EMIF_DATA_CE0_BASE,
++		.end		= DAVINCI_DM646X_ASYNC_EMIF_DATA_CE0_BASE +
++					SZ_512K + 2 * SZ_1K - 1,
++		.flags		= IORESOURCE_MEM,
++	},
++};
++
++static struct platform_device nand_device = {
++	.name			= "nand_davinci",
++	.id			= 0,
++	.dev			= {
++		.platform_data	= &dm646x_nand_data,
++	},
++
++	.num_resources		= ARRAY_SIZE(dm646x_nand_resources),
++	.resource		= dm646x_nand_resources,
++};
++#endif
++
++static struct platform_device *davinci_evm_devices[] __initdata = {
++	&serial_device,
++/*
++	&usb_dev,
++*/
++#if defined (CONFIG_MTD_NAND_DAVINCI) || defined(CONFIG_MTD_NAND_DAVINCI_MODULE)
++	&nand_device,
++#endif
++
++};
++
++/* FIQ are pri 0-1; otherwise 2-7, with 7 lowest priority */
++static const u8 dm646x_default_priorities[DAVINCI_N_AINTC_IRQ] = {
++	[IRQ_DM646X_VP_VERTINT0]	= 7,
++	[IRQ_DM646X_VP_VERTINT1]	= 7,
++	[IRQ_DM646X_VP_VERTINT2]	= 7,
++	[IRQ_DM646X_VP_VERTINT3]	= 7,
++	[IRQ_DM646X_VP_ERRINT]		= 7,
++	[IRQ_DM646X_RESERVED_1]		= 7,
++	[IRQ_DM646X_RESERVED_2]		= 7,
++	[IRQ_DM646X_WDINT]		= 7,
++	[IRQ_DM646X_CRGENINT0]		= 7,
++	[IRQ_DM646X_CRGENINT1]		= 7,
++	[IRQ_DM646X_TSIFINT0]		= 7,
++	[IRQ_DM646X_TSIFINT1]		= 7,
++	[IRQ_DM646X_VDCEINT]		= 7,
++	[IRQ_DM646X_USBINT]		= 7,
++	[IRQ_DM646X_USBDMAINT]		= 7,
++	[IRQ_DM646X_PCIINT]		= 7,
++	[IRQ_CCINT0]			= 7,	/* dma */
++	[IRQ_CCERRINT]			= 7,	/* dma */
++	[IRQ_TCERRINT0]			= 7,	/* dma */
++	[IRQ_TCERRINT]			= 7,	/* dma */
++	[IRQ_DM646X_TCERRINT2]		= 7,
++	[IRQ_DM646X_TCERRINT3]		= 7,
++	[IRQ_DM646X_IDE]		= 7,
++	[IRQ_DM646X_HPIINT]		= 7,
++	[IRQ_DM646X_EMACRXTHINT]	= 7,
++	[IRQ_DM646X_EMACRXINT]		= 7,
++	[IRQ_DM646X_EMACTXINT]		= 7,
++	[IRQ_DM646X_EMACMISCINT]	= 7,
++	[IRQ_DM646X_MCASP0TXINT]	= 7,
++	[IRQ_DM646X_MCASP0RXINT]	= 7,
++	[IRQ_AEMIFINT]			= 7,
++	[IRQ_DM646X_RESERVED_3]		= 7,
++	[IRQ_DM646X_MCASP1TXINT]	= 7,	/* clockevent */
++	[IRQ_TINT0_TINT34]		= 7,	/* clocksource */
++	[IRQ_TINT1_TINT12]		= 7,	/* DSP timer */
++	[IRQ_TINT1_TINT34]		= 7,	/* system tick */
++	[IRQ_PWMINT0]			= 7,
++	[IRQ_PWMINT1]			= 7,
++	[IRQ_DM646X_VLQINT]		= 7,
++	[IRQ_I2C]			= 7,
++	[IRQ_UARTINT0]			= 7,
++	[IRQ_UARTINT1]			= 7,
++	[IRQ_DM646X_UARTINT2]		= 7,
++	[IRQ_DM646X_SPINT0]		= 7,
++	[IRQ_DM646X_SPINT1]		= 7,
++	[IRQ_DM646X_DSP2ARMINT]		= 7,
++	[IRQ_DM646X_RESERVED_4]		= 7,
++	[IRQ_DM646X_PSCINT]		= 7,
++	[IRQ_DM646X_GPIO0]		= 7,
++	[IRQ_DM646X_GPIO1]		= 7,
++	[IRQ_DM646X_GPIO2]		= 7,
++	[IRQ_DM646X_GPIO3]		= 7,
++	[IRQ_DM646X_GPIO4]		= 7,
++	[IRQ_DM646X_GPIO5]		= 7,
++	[IRQ_DM646X_GPIO6]		= 7,
++	[IRQ_DM646X_GPIO7]		= 7,
++	[IRQ_DM646X_GPIOBNK0]		= 7,
++	[IRQ_DM646X_GPIOBNK1]		= 7,
++	[IRQ_DM646X_GPIOBNK2]		= 7,
++	[IRQ_DM646X_DDRINT]		= 7,
++	[IRQ_DM646X_AEMIFINT]		= 7,
++	[IRQ_COMMTX]			= 7,
++	[IRQ_COMMRX]			= 7,
++	[IRQ_EMUINT]			= 7,
++};
++extern void (*davinci_pinmux_setup)(unsigned int id);
++extern void davinci_psc_config(unsigned int domain, unsigned int id, char enable);
++#define board_setup_psc davinci_psc_config
++static void board_init(void)
++{
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_VLYNQ, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_HDVICP0, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_HDVICP1, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_SPI, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_TPCC, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_TPTC0, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_TPTC1, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_TPTC2, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_TPTC3, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_AEMIF, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_GPIO, 1);
++/*
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_TSIF0, 1);
++	board_setup_psc(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_DM646X_LPSC_TSIF1, 1);
++*/
++}
++
++static void dm646x_setup_pinmux(unsigned int id)
++{
++	switch (id) {
++	case DAVINCI_LPSC_ATA:
++		davinci_cfg_reg(DM646X_ATAEN);
++		break;
++	case DAVINCI_LPSC_USB:
++		davinci_cfg_reg(DM646X_VBUSDIS);
++		DAVINCI_VDD3P3V_PWDN &= 0xEFFFFFFF;
++		break;
++	case DAVINCI_DM646X_LPSC_I2C:
++		break;
++	case DAVINCI_DM646X_LPSC_PWM0:
++		break;
++	case DAVINCI_DM646X_LPSC_PWM1:
++		break;
++	default:
++		break;
++	}
++}
++
++extern const u8 *davinci_def_priorities;
++
++void __init davinci_map_common_io(void);
++
++static void __init davinci_map_io(void)
++{
++	davinci_pinmux_setup = dm646x_setup_pinmux;
++	davinci_def_priorities = dm646x_default_priorities;
++	davinci_map_common_io();
++
++#ifdef CONFIG_KGDB_8250
++	early_serial_setup((struct uart_port *)
++			   &serial_platform_data[kgdb8250_ttyS]);
++	kgdb8250_add_platform_port(kgdb8250_ttyS,
++				   &serial_platform_data[kgdb8250_ttyS]);
++#endif
++	/* Initialize the DaVinci EVM board settigs */
++	board_init();
++}
++
++static __init void evm_init(void)
++{
++	davinci_gpio_init();
++
++	platform_add_devices(davinci_evm_devices,
++		ARRAY_SIZE(davinci_evm_devices));
++}
++
++extern void davinci_irq_init(void);
++extern struct sys_timer davinci_timer;
++extern void __init davinci_init_common_hw(void);
++
++static __init void davinci_dm6467_evm_irq_init(void)
++{
++        davinci_init_common_hw();
++        davinci_irq_init();
++}
++
++MACHINE_START(DAVINCI_DM6467_EVM, "DaVinci DM6467 EVM")
++        .phys_io      = IO_PHYS,
++        .io_pg_offst  = (io_p2v(IO_PHYS) >> 18) & 0xfffc,
++        .boot_params  = (0x80000100),
++        .map_io       = davinci_map_io,
++        .init_irq     = davinci_dm6467_evm_irq_init,
++        .timer        = &davinci_timer,
++        .init_machine = evm_init,
++MACHINE_END
+Index: linux-2.6.18/arch/arm/mach-davinci/irq.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/irq.c
++++ linux-2.6.18/arch/arm/mach-davinci/irq.c
+@@ -40,6 +40,7 @@
+ #define IRQ_INTPRI0_REG_OFFSET	0x0030
+ #define IRQ_INTPRI7_REG_OFFSET	0x004C
+ 
++const u8 *davinci_def_priorities;
+ static inline unsigned int davinci_irq_readl(int offset)
+ {
+ 	return davinci_readl(DAVINCI_ARM_INTC_BASE + offset);
+Index: linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/hardware.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+@@ -52,12 +52,83 @@
+ #define DAVINCI_ASYNC_EMIF_DATA_CE3_BASE	(0x08000000)
+ #define DAVINCI_VLYNQ_REMOTE_BASE		(0x0C000000)
+ 
++#define DM644X_UART2_BASE                       (0x01C20800)
++
+ #define DM355_MMC1_BASE				(0x01E00000)
+ #define DM355_UART2_BASE			(0x01E06000)
+ #define DM355_ASYNC_EMIF_CNTRL_BASE		(0x01E10000)
+ #define DM355_MMC0_BASE				(0x01E11000)
+ 
+ /*
++ * DM6467 base register addresses different from origina DaVinci
++ */
++#define DAVINCI_DM646X_DMA_3PTC2_BASE             (0x01C10800)
++#define DAVINCI_DM646X_DMA_3PTC3_BASE             (0x01C10C00)
++#define DAVINCI_DM646X_VIDEO_PORT_BASE            (0x01C12000)
++#define DAVINCI_DM646X_VDCE_BASE                  (0x01C12800)
++#define DAVINCI_DM646X_TSIF0_BASE                 (0x01C13000)
++#define DAVINCI_DM646X_TSIF1_BASE                 (0x01C13400)
++#define DAVINCI_DM646X_PCI_CTL_BASE               (0x01C1A000)
++#define DAVINCI_DM646X_CRGEN0_BASE                (0x01C26000)
++#define DAVINCI_DM646X_CRGEN1_BASE                (0x01C26400)
++#define DAVINCI_DM646X_SEC_CONTROLLER_BASE        (0x01C40400)
++#define DAVINCI_DM646X_MCASP0_REG_BASE            (0x01D01000)
++#define DAVINCI_DM646X_MCASP0_DATA_PORT_BASE      (0x01D01400)
++#define DAVINCI_DM646X_MCASP1_REG_BASE            (0x01D01800)
++#define DAVINCI_DM646X_MCASP1_DATA_PORT_BASE      (0x01D01C00)
++#define DAVINCI_DM646X_HDVICP0_BASE               (0x02000000)
++#define DAVINCI_DM646X_HDVICP1_BASE               (0x02200000)
++#define DAVINCI_DM646X_ASYNC_EMIF_CNTRL_BASE      (0x20008000)
++#define DAVINCI_DM646X_VLYNQ_BASE                 (0x20010000)
++#define DAVINCI_DM646X_ASYNC_EMIF_DATA_CE0_BASE   (0x42000000)
++#define DAVINCI_DM646X_ASYNC_EMIF_DATA_CE1_BASE   (0x44000000)
++#define DAVINCI_DM646X_ASYNC_EMIF_DATA_CE2_BASE   (0x46000000)
++#define DAVINCI_DM646X_ASYNC_EMIF_DATA_CE3_BASE   (0x48000000)
++#define DAVINCI_DM646X_VLYNQ_REMOTE_BASE          (0x4C000000)
++
++/*
++ * LPSC Assignments
++ */
++#define DAVINCI_DM646X_LPSC_RESERVED       0       /* Reserved */
++#define DAVINCI_DM646X_LPSC_C64X_CPU       1       /* C64x + CPU */
++#define DAVINCI_DM646X_LPSC_HDVICP0        2       /* HDVICP0 */
++#define DAVINCI_DM646X_LPSC_HDVICP1        3       /* HDVICP1 */
++#define DAVINCI_DM646X_LPSC_TPCC           4       /* TPCC LPSC */
++#define DAVINCI_DM646X_LPSC_TPTC0          5       /* TPTC0 LPSC */
++#define DAVINCI_DM646X_LPSC_TPTC1          6       /* TPTC1 LPSC */
++#define DAVINCI_DM646X_LPSC_TPTC2          7       /* TPTC2 LPSC */
++#define DAVINCI_DM646X_LPSC_TPTC3          8       /* TPTC3 LPSC */
++#define DAVINCI_DM646X_LPSC_PCI            13      /* PCI LPSC */
++#define DAVINCI_DM646X_LPSC_EMAC           14      /* EMAC LPSC */
++#define DAVINCI_DM646X_LPSC_VDCE           15      /* VDCE LPSC */
++#define DAVINCI_DM646X_LPSC_VPSSMSTR       16      /* VPSS Master LPSC */
++#define DAVINCI_DM646X_LPSC_VPSSSLV        17      /* VPSS Slave LPSC */
++#define DAVINCI_DM646X_LPSC_TSIF0          18      /* TSIF0 LPSC */
++#define DAVINCI_DM646X_LPSC_TSIF1          19      /* TSIF1 LPSC */
++#define DAVINCI_DM646X_LPSC_DDR_EMIF       20      /* DDR_EMIF LPSC */
++#define DAVINCI_DM646X_LPSC_AEMIF          21      /* AEMIF LPSC */
++#define DAVINCI_DM646X_LPSC_McASP0         22      /* McASP0 LPSC */
++#define DAVINCI_DM646X_LPSC_McASP1         23      /* McASP1 LPSC */
++#define DAVINCI_DM646X_LPSC_CRGEN0         24      /* CRGEN0 LPSC */
++#define DAVINCI_DM646X_LPSC_CRGEN1         25      /* CRGEN1 LPSC */
++#define DAVINCI_DM646X_LPSC_UART0          26      /* UART0 LPSC */
++#define DAVINCI_DM646X_LPSC_UART1          27      /* UART1 LPSC */
++#define DAVINCI_DM646X_LPSC_UART2          28      /* UART2 LPSC */
++#define DAVINCI_DM646X_LPSC_PWM0           29      /* PWM0 LPSC */
++#define DAVINCI_DM646X_LPSC_PWM1           30      /* PWM1 LPSC */
++#define DAVINCI_DM646X_LPSC_I2C            31      /* I2C LPSC */
++#define DAVINCI_DM646X_LPSC_SPI            32      /* SPI LPSC */
++#define DAVINCI_DM646X_LPSC_GPIO           33      /* GPIO LPSC */
++#define DAVINCI_DM646X_LPSC_TIMER0         34      /* TIMER0 LPSC */
++#define DAVINCI_DM646X_LPSC_TIMER1         35      /* TIMER1 LPSC */
++#define DAVINCI_DM646X_LPSC_ARM_INTC       45      /* ARM INTC LPSC */
++
++/*
++ * Macro to access device power control
++ */
++#define DAVINCI_VDD3P3V_PWDN            __REG(DAVINCI_SYSTEM_MODULE_BASE + 0x48)
++
++/*
+  * System module registers
+  */
+ #define PINMUX0		(DAVINCI_SYSTEM_MODULE_BASE + 0x00)
+Index: linux-2.6.18/include/asm-arm/arch-davinci/mux.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/mux.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/mux.h
+@@ -97,6 +97,39 @@ enum davinci_dm644x_index {
+ 	DM644X_LFLDEN,
+ };
+ 
++enum davinci_dm646x_index {
++        /* ATA function */
++        DM646X_ATAEN,
++
++        /* USB */
++        DM646X_VBUSDIS,
++        DM646X_VBUSDIS_GPIO22,
++
++        /* STC source clock input */
++        DM646X_STCCK,
++
++        /* AUDIO Clock */
++        DM646X_AUDCK1,
++        DM646X_AUDCK0,
++
++        /* CRGEN Control */
++        DM646X_CRGMUX,
++
++        /* VPIF Control */
++        DM646X_STSOMUX_DISABLE,
++        DM646X_STSIMUX_DISABLE,
++        DM646X_PTSOMUX_DISABLE,
++        DM646X_PTSIMUX_DISABLE,
++
++        /* TSIF Control */
++        DM646X_STSOMUX,
++        DM646X_STSIMUX,
++        DM646X_PTSOMUX_PARALLEL,
++        DM646X_PTSIMUX_PARALLEL,
++        DM646X_PTSOMUX_SERIAL,
++        DM646X_PTSIMUX_SERIAL,
++};
++
+ enum davinci_dm355_index {
+ 	/* MMC/SD 0 */
+ 	DM355_MMCSD0,
+Index: linux-2.6.18/arch/arm/mach-davinci/id.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/id.c
++++ linux-2.6.18/arch/arm/mach-davinci/id.c
+@@ -34,6 +34,13 @@ static struct davinci_id davinci_ids[] _
+ 		.manufacturer = 0x017,
+ 		.type	      = 0x64460000,
+ 	},
++        {
++                /* DM6467 */
++                .part_no      = 0xb770,
++                .variant      = 0x0,
++                .manufacturer = 0x017,
++                .type         = 0x64670000,
++        },
+ 	{
+ 		/* DM355 */
+ 		.part_no      = 0xb73b,
+Index: linux-2.6.18/arch/arm/tools/mach-types
+===================================================================
+--- linux-2.6.18.orig/arch/arm/tools/mach-types
++++ linux-2.6.18/arch/arm/tools/mach-types
+@@ -1158,4 +1158,5 @@ oti4110			MACH_OTI4110		OTI4110			1144
+ hme_pxa			MACH_HME_PXA		HME_PXA			1145
+ deisterdca		MACH_DEISTERDCA		DEISTERDCA		1146
+ realview_pb1176		MACH_REALVIEW_PB1176	REALVIEW_PB1176		1504
++davinci_dm6467_evm      MACH_DAVINCI_DM6467_EVM DAVINCI_DM6467_EVM      1380
+ davinci_dm355_evm	MACH_DAVINCI_DM355_EVM	DAVINCI_DM355_EVM	1381
+Index: linux-2.6.18/include/asm-arm/arch-davinci/irqs.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/irqs.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/irqs.h
+@@ -181,6 +181,56 @@
+ #define IRQ_DM355_GPIOBNK5	59
+ #define IRQ_DM355_GPIOBNK6	60
+ 
++/* DaVinci DM6467-specific Interrupts */
++#define IRQ_DM646X_VP_VERTINT0  0
++#define IRQ_DM646X_VP_VERTINT1  1
++#define IRQ_DM646X_VP_VERTINT2  2
++#define IRQ_DM646X_VP_VERTINT3  3
++#define IRQ_DM646X_VP_ERRINT    4
++#define IRQ_DM646X_RESERVED_1   5
++#define IRQ_DM646X_RESERVED_2   6
++#define IRQ_DM646X_WDINT        7
++#define IRQ_DM646X_CRGENINT0    8
++#define IRQ_DM646X_CRGENINT1    9
++#define IRQ_DM646X_TSIFINT0     10
++#define IRQ_DM646X_TSIFINT1     11
++#define IRQ_DM646X_VDCEINT      12
++#define IRQ_DM646X_USBINT       13
++#define IRQ_DM646X_USBDMAINT    14
++#define IRQ_DM646X_PCIINT       15
++#define IRQ_DM646X_TCERRINT2    20
++#define IRQ_DM646X_TCERRINT3    21
++#define IRQ_DM646X_IDE          22
++#define IRQ_DM646X_HPIINT       23
++#define IRQ_DM646X_EMACRXTHINT  24
++#define IRQ_DM646X_EMACRXINT    25
++#define IRQ_DM646X_EMACTXINT    26
++#define IRQ_DM646X_EMACMISCINT  27
++#define IRQ_DM646X_MCASP0TXINT  28
++#define IRQ_DM646X_MCASP0RXINT  29
++#define IRQ_DM646X_RESERVED_3   31
++#define IRQ_DM646X_MCASP1TXINT  32
++#define IRQ_DM646X_VLQINT       38
++#define IRQ_DM646X_UARTINT2     42
++#define IRQ_DM646X_SPINT0       43
++#define IRQ_DM646X_SPINT1       44
++#define IRQ_DM646X_DSP2ARMINT   45
++#define IRQ_DM646X_RESERVED_4   46
++#define IRQ_DM646X_PSCINT       47
++#define IRQ_DM646X_GPIO0        48
++#define IRQ_DM646X_GPIO1        49
++#define IRQ_DM646X_GPIO2        50
++#define IRQ_DM646X_GPIO3        51
++#define IRQ_DM646X_GPIO4        52
++#define IRQ_DM646X_GPIO5        53
++#define IRQ_DM646X_GPIO6        54
++#define IRQ_DM646X_GPIO7        55
++#define IRQ_DM646X_GPIOBNK0     56
++#define IRQ_DM646X_GPIOBNK1     57
++#define IRQ_DM646X_GPIOBNK2     58
++#define IRQ_DM646X_DDRINT       59
++#define IRQ_DM646X_AEMIFINT     60
++
+ #define ARCH_TIMER_IRQ IRQ_TINT1_TINT34
+ 
+ #endif /* __ASM_ARCH_IRQS_H */
+Index: linux-2.6.18/mvl_patches/pro50-1555.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1555.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1555);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,3366 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_aew_af
+# Date: Fri Sep 19 14:01:23 2008
+# Source: MontaVista Software, Inc.
+# MR: 28149
+# Type: Integration
+# Disposition: merged from pro_40
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description: DaVinci EVM auto focus and auto white balance support.
+# 
+#  drivers/media/video/Kconfig                   |   14 
+#  drivers/media/video/davinci/Makefile          |    6 
+#  drivers/media/video/davinci/davinci_aew.c     |  846 ++++++++++++++++++++++++++
+#  drivers/media/video/davinci/davinci_aew_hw.c  |  140 ++++
+#  drivers/media/video/davinci/davinci_af.c      |  806 ++++++++++++++++++++++++
+#  drivers/media/video/davinci/davinci_af_hw.c   |  178 +++++
+#  include/asm-arm/arch-davinci/davinci_aew.h    |  158 ++++
+#  include/asm-arm/arch-davinci/davinci_aew_hw.h |  106 +++
+#  include/asm-arm/arch-davinci/davinci_af.h     |  171 +++++
+#  include/asm-arm/arch-davinci/davinci_af_hw.h  |  139 ++++
+#  include/media/davinci/ccdc_davinci.h          |  484 ++++++++++++++
+#  11 files changed, 3048 insertions(+)
+# 
+
+PATCHNUM=1584
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28149
+Type: Integration
+Disposition: merged from pro_40
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description: DaVinci EVM auto focus and auto white balance support.
+
+ drivers/media/video/Kconfig                   |   14 
+ drivers/media/video/davinci/Makefile          |    6 
+ drivers/media/video/davinci/davinci_aew.c     |  846 ++++++++++++++++++++++++++
+ drivers/media/video/davinci/davinci_aew_hw.c  |  140 ++++
+ drivers/media/video/davinci/davinci_af.c      |  806 ++++++++++++++++++++++++
+ drivers/media/video/davinci/davinci_af_hw.c   |  178 +++++
+ include/asm-arm/arch-davinci/davinci_aew.h    |  158 ++++
+ include/asm-arm/arch-davinci/davinci_aew_hw.h |  106 +++
+ include/asm-arm/arch-davinci/davinci_af.h     |  171 +++++
+ include/asm-arm/arch-davinci/davinci_af_hw.h  |  139 ++++
+ include/media/davinci/ccdc_davinci.h          |  484 ++++++++++++++
+ mvl_patches/pro50-1584.c                      |   16 
+ 12 files changed, 3064 insertions(+)
+
+Index: linux-2.6.18/drivers/media/video/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/Kconfig
++++ linux-2.6.18/drivers/media/video/Kconfig
+@@ -89,6 +89,20 @@ config VIDEO_TVP7002
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called tvp7002.
+ 
++config AF
++	tristate "DaVinci Auto Focus Driver"
++	depends on VIDEO_DEV && VIDEO_DAVINCI_CAPTURE && ARCH_DAVINCI_DM644x
++	default n
++	help
++		DaVinci Auto Focus Driver
++
++config AEW
++	tristate "DaVinci Auto Exposure/White Balancing Driver"
++	depends on VIDEO_DEV && VIDEO_DAVINCI_CAPTURE && ARCH_DAVINCI_DM644x
++	default n
++        help
++		DaVinci Auto Exposure/White Balancing Driver
++
+ source "drivers/media/video/bt8xx/Kconfig"
+ 
+ config VIDEO_SAA6588
+Index: linux-2.6.18/drivers/media/video/davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/Makefile
++++ linux-2.6.18/drivers/media/video/davinci/Makefile
+@@ -28,3 +28,9 @@ obj-$(CONFIG_VIDEO_TVP7002) += tvp7002.o
+ 
+ obj-$(CONFIG_DISPLAY_DAVINCIHD) += davincihd_display.o
+ obj-$(CONFIG_VIDEO_ADV7343) += adv7343.o
++
++# H3A and IPIPE
++davinci_aew_driver-objs := davinci_aew_hw.o davinci_aew.o
++obj-$(CONFIG_AEW) += davinci_aew_driver.o
++davinci_af_driver-objs := davinci_af_hw.o davinci_af.o
++obj-$(CONFIG_AF) += davinci_af_driver.o
+Index: linux-2.6.18/drivers/media/video/davinci/davinci_aew.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/davinci_aew.c
+@@ -0,0 +1,846 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_aew.c file */
++
++/* Kernel specific header files */
++#include <linux/config.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/kernel.h>	/* printk */
++#include <linux/slab.h>		/* kmalloc() */
++#include <linux/fs.h>		/* File Structure fops... */
++#include <linux/errno.h>	/* error codes */
++#include <linux/types.h>	/* Types like size_t */
++#include <linux/cdev.h>
++#include <linux/interrupt.h>	/* For interrupt */
++#include <linux/dma-mapping.h>
++#include <asm/uaccess.h>
++#include <linux/wait.h>		/* FILES FOR WAIT QUEUE */
++#include <asm/semaphore.h>
++#include <linux/platform_device.h>
++/* Driver Header Files */
++#include <asm/arch/davinci_aew.h>	/* Local Definitions */
++#include <asm/arch/davinci_aew_hw.h>	/* Local Definitions */
++
++/*Global structure*/
++struct aew_device *aew_dev_configptr;
++struct device *aewdev;
++/* device structure to make entry in device*/
++static dev_t dev;
++static struct class *aew_class;
++
++/* For registeration of charatcer device*/
++static struct cdev c_dev;
++
++/* Module License*/
++MODULE_LICENSE("GPL");
++
++/* inline function to free reserver pages  */
++void inline aew_free_pages(unsigned long addr, unsigned long bufsize)
++{
++	unsigned long tempaddr;
++	unsigned long size;
++	tempaddr = addr;
++	if (!addr)
++		return;
++	size = PAGE_SIZE << (get_order(bufsize));
++	while (size > 0) {
++		ClearPageReserved(virt_to_page(addr));
++		addr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++	free_pages(tempaddr, get_order(bufsize));
++}
++
++/* Function to check Window Parmeters */
++int aew_check_window(void)
++{
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Check Window Horizontal Count */
++	if ((aew_dev_configptr->config->window_config.hz_cnt
++	     < AEW_WINDOW_HORIZONTAL_COUNT_MIN)
++	    || (aew_dev_configptr->config->window_config.hz_cnt
++		> AEW_WINDOW_HORIZONTAL_COUNT_MAX)) {
++		dev_err(aewdev, "Error :  Horizontal Count is incorrect\n");
++		return -AEW_ERR_HZ_COUNT;
++	}
++
++	/* Check Window Vertical Count */
++	if ((aew_dev_configptr->config->window_config.vt_cnt
++	     < AEW_WINDOW_VERTICAL_COUNT_MIN)
++	    || (aew_dev_configptr->config->window_config.vt_cnt
++		> AEW_WINDOW_VERTICAL_COUNT_MAX)) {
++		dev_err(aewdev, "Error :  Vertical Count is incorrect\n");
++		return -AEW_ERR_VT_COUNT;
++	}
++
++	/* Check Window Vertical Start */
++	if ((aew_dev_configptr->config->window_config.vt_start
++	     < AEW_WINDOW_START_MIN)
++	    || (aew_dev_configptr->config->window_config.vt_start
++		> AEW_WINDOW_START_MAX)) {
++		dev_err(aewdev, "Error : Vertical Start is incorrect\n");
++		return -AEW_ERR_VT_START;
++	}
++
++	/* Check Window Horizontal Start */
++	if ((aew_dev_configptr->config->window_config.hz_start
++	     < AEW_WINDOW_START_MIN)
++	    || (aew_dev_configptr->config->window_config.hz_start
++		> AEW_WINDOW_START_MAX)) {
++		dev_err(aewdev, "Error :  Horizontal Start is incorrect\n");
++		return -AEW_ERR_HZ_START;
++	}
++
++	/*Check Horizontal Line Increment */
++	if ((aew_dev_configptr->config->window_config.hz_line_incr
++	     < AEW_WINDOW_LINE_INCREMENT_MIN)
++	    || (aew_dev_configptr->config->window_config.hz_line_incr
++		> AEW_WINDOW_LINE_INCREMENT_MAX)) {
++		dev_err(aewdev,
++			"Error :  Horizontal Line Increment value is incorrect\n");
++		return -AEW_ERR_HZ_INCR;
++	}
++
++	/* Check Vertical Line Increment */
++	if ((aew_dev_configptr->config->window_config.vt_line_incr
++	     < AEW_WINDOW_LINE_INCREMENT_MIN)
++	    || (aew_dev_configptr->config->window_config.vt_line_incr
++		> AEW_WINDOW_LINE_INCREMENT_MAX)) {
++		dev_err(aewdev,
++			"Error :  Vertical Line Increment is  incorrect\n");
++		return -AEW_ERR_VT_INCR;
++	}
++
++	/* Check Window Height */
++	if ((aew_dev_configptr->config->window_config.height
++	     < AEW_WINDOW_HEIGHT_MIN)
++	    || (aew_dev_configptr->config->window_config.height
++		> AEW_WINDOW_HEIGHT_MAX)) {
++
++		dev_err(aewdev, "Error :  Height is incorrect\n");
++		return -AEW_ERR_HEIGHT;
++	}
++
++	/* Check Window Width */
++	if ((aew_dev_configptr->config->window_config.width
++	     < AEW_WINDOW_WIDTH_MIN)
++	    || (aew_dev_configptr->config->window_config.width
++		> AEW_WINDOW_WIDTH_MAX)) {
++		dev_err(aewdev, "Error :  Width is incorrect\n");
++		return -AEW_ERR_WIDTH;
++	}
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;		/*Success */
++}
++
++/* Function to check Black Window Parmeters */
++int aew_check_black_window(void)
++{
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Check Black Window Height */
++	if ((aew_dev_configptr->config->blackwindow_config.height
++	     < AEW_WINDOW_HEIGHT_MIN)
++	    || (aew_dev_configptr->config->blackwindow_config.height
++		> AEW_WINDOW_HEIGHT_MAX)) {
++		dev_err(aewdev, "Error :  Height is incorrect\n");
++		return -AEW_ERR_BLKWIN_HEIGHT;
++	}
++
++	/* Check Black Window Vertical Start */
++	if ((aew_dev_configptr->config->blackwindow_config.vt_start
++	     < AEW_WINDOW_START_MIN)
++	    || (aew_dev_configptr->config->blackwindow_config.vt_start
++		> AEW_WINDOW_START_MAX)) {
++		dev_err(aewdev, "Error :  Vertical Start is incorrect\n");
++		return -AEW_ERR_BLKWIN_VT_START;
++	}
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;		/*Success */
++}
++
++/* Function to perform hardware Configuration */
++int aew_hardware_setup(void)
++{
++	int result;
++	/*Size for buffer in bytes */
++	int buff_size = 0;
++	unsigned long adr;
++	unsigned long size;
++	unsigned int busyaew;
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Get the value of PCR register */
++	busyaew = AEW_GET_PCR;
++
++	/* Mask with BUSYAF bit */
++	busyaew = busyaew & AEW_BUSYAEWB;
++
++	/* Shift it 18 times to get value of 1 or 0 */
++	busyaew = busyaew >> AEW_BUSYAEWB_SHIFT;
++
++	/* If H3A Engine is busy then return */
++	if (busyaew == 1) {
++		dev_err(aewdev, "\n Error : AEW Engine is busy");
++		return -AEW_ERR_ENGINE_BUSY;
++	}
++
++	/*Check Window Parameters */
++	result = aew_check_window();
++	dev_dbg(aewdev, "Result =  %d\n", result);
++	if (result < 0) {
++		dev_err(aewdev, "Error : Window Parameter are incorrect \n");
++		return result;
++	}
++
++	/*Check Black Window Parameters */
++	result = aew_check_black_window();
++	if (result < 0) {
++		dev_err(aewdev,
++			"Error : Black Window Parameters are incorrect \n");
++		return result;
++	}
++
++	/*Check Saturuation limit */
++	if (aew_dev_configptr->config->saturation_limit > AEW_SAT_LIMIT_MAX) {
++		dev_err(aewdev, "Error : Saturation limit is incorrect\n");
++		return -AEW_ERR_LIMIT;
++	}
++
++	/* Deallocate the previously allocated buffers */
++	if (aew_dev_configptr->buff_old)
++		aew_free_pages((unsigned long)aew_dev_configptr->buff_old,
++			       aew_dev_configptr->size_window);
++
++	if (aew_dev_configptr->buff_curr)
++		aew_free_pages((unsigned long)aew_dev_configptr->
++			       buff_curr, aew_dev_configptr->size_window);
++
++	if (aew_dev_configptr->buff_app)
++		aew_free_pages((unsigned long)aew_dev_configptr->
++			       buff_app, aew_dev_configptr->size_window);
++
++	/*Allocat the buffers as per the new buffer size */
++	/*Allocate memory for old buffer */
++	buff_size = (aew_dev_configptr->config->window_config.hz_cnt + 1)
++	    * (aew_dev_configptr->config->window_config.vt_cnt +
++	       1) * AEW_WINDOW_SIZE;
++
++	aew_dev_configptr->buff_old =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (aew_dev_configptr->buff_old == NULL)
++		return -ENOMEM;
++
++	/*Make pges reserved so that they will be swapped out */
++	adr = (unsigned long)aew_dev_configptr->buff_old;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/*Allocate memory for current buffer */
++	aew_dev_configptr->buff_curr =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (aew_dev_configptr->buff_curr == NULL) {
++
++		/*Free all  buffer that are allocated */
++		if (aew_dev_configptr->buff_old)
++			aew_free_pages((unsigned long)aew_dev_configptr->
++				       buff_old, buff_size);
++		return -ENOMEM;
++	}
++
++	/*Make pges reserved so that they will be swapped out */
++	adr = (unsigned long)aew_dev_configptr->buff_curr;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/*Allocate memory for application buffer */
++	aew_dev_configptr->buff_app =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (aew_dev_configptr->buff_app == NULL) {
++		/*Free all  buffer that were allocated previously */
++		if (aew_dev_configptr->buff_old)
++			aew_free_pages((unsigned long)aew_dev_configptr->
++				       buff_old, buff_size);
++		if (aew_dev_configptr->buff_curr)
++			aew_free_pages((unsigned long)aew_dev_configptr->
++				       buff_curr, buff_size);
++		return -ENOMEM;
++	}
++
++	/*Make pges reserved so that they will be swapped out */
++	adr = (unsigned long)aew_dev_configptr->buff_app;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/* Set the registers */
++	aew_set_register(aew_dev_configptr);
++	aew_dev_configptr->size_window = buff_size;
++	aew_dev_configptr->config->aew_config = H3A_AEW_ENABLE;
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;		/*Success */
++}
++
++/* This Function is called when driver is opened */
++static int aew_open(struct inode *inode, struct file *filp)
++{
++
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/*Return if Device is in use (Single Channel Support is provided) */
++	if (aew_dev_configptr->in_use == AEW_IN_USE)
++		return -EBUSY;
++
++	/* Set the aew_dev_configptr structure */
++	aew_dev_configptr->config = NULL;
++
++	/* Allocate memory for configuration  structure of this channel */
++	aew_dev_configptr->config = (struct aew_configuration *)
++	    kmalloc(sizeof(struct aew_configuration), GFP_KERNEL);
++
++	if (aew_dev_configptr->config == NULL) {
++		dev_err(aewdev, "Error : Kmalloc fail\n");
++		return -ENOMEM;
++	}
++
++	/* Initiaze the wait queue */
++	init_waitqueue_head(&(aew_dev_configptr->aew_wait_queue));
++
++	/*Device is in use */
++	aew_dev_configptr->in_use = AEW_IN_USE;
++
++	/* No Hardware Set up done */
++	aew_dev_configptr->config->aew_config = H3A_AEW_DISABLE;
++
++	/* No statistics are available */
++	aew_dev_configptr->buffer_filled = 0;
++
++	/* Set Window Size to 0 */
++	aew_dev_configptr->size_window = 0;
++
++	/* Initialize the semaphore */
++	init_MUTEX(&(aew_dev_configptr->read_blocked));
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;
++}
++static void aew_platform_release(struct device *device)
++{
++	/* This is called when the reference count goes to zero */
++}
++static int __init aew_probe(struct device *device)
++{
++	aewdev = device;
++	return 0;
++}
++
++static int aew_remove(struct device *device)
++{
++	return 0;
++}
++
++/* This Function is called when driver is closed */
++static int aew_release(struct inode *inode, struct file *filp)
++{
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* The Application has closed device so device is not in use */
++	aew_dev_configptr->in_use = AEW_NOT_IN_USE;
++
++	/*Release memory for configuration structure of this channel */
++	if (aew_dev_configptr->config)
++		kfree(aew_dev_configptr->config);
++
++	/* Free Old Buffer */
++	if (aew_dev_configptr->buff_old)
++		aew_free_pages((unsigned long)aew_dev_configptr->buff_old,
++			       aew_dev_configptr->size_window);
++
++	/* Free Current Buffer */
++	if (aew_dev_configptr->buff_curr)
++		aew_free_pages((unsigned long)aew_dev_configptr->
++			       buff_curr, aew_dev_configptr->size_window);
++
++	/* Free Application Buffer */
++	if (aew_dev_configptr->buff_app)
++		aew_free_pages((unsigned long)aew_dev_configptr->buff_app,
++			       aew_dev_configptr->size_window);
++
++	aew_dev_configptr->buff_old = NULL;
++	aew_dev_configptr->buff_curr = NULL;
++	aew_dev_configptr->config = NULL;
++	aew_dev_configptr->buff_app = NULL;
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;
++}
++
++/* This function will process IOCTL commands sent by the application and
++ * control the devices IO operations.
++ */
++static int aew_ioctl(struct inode *inode, struct file *filep,
++		     unsigned int cmd, unsigned long arg)
++{
++	/* Stores Previous Configurations */
++	struct aew_configuration aewconfig = *(aew_dev_configptr->config);
++	int result = 0;
++
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Decrement the semaphore */
++	down_interruptible(&aew_dev_configptr->read_blocked);
++
++	/*Extract the type and number bitfields, and don't decode wrong cmds: */
++	/*verify the magic number */
++	if (_IOC_TYPE(cmd) != AEW_MAGIC_NO) {
++		up(&aew_dev_configptr->read_blocked);
++		return -ENOTTY;
++	}
++
++	/*verify the command number */
++	if (_IOC_NR(cmd) > AEW_IOC_MAXNR) {
++		/* Release semaphore  in case of fault */
++		up(&aew_dev_configptr->read_blocked);
++		return -ENOTTY;
++	}
++
++	/* check for the permission of the operation */
++	if (_IOC_DIR(cmd) & _IOC_READ)
++		result =
++		    !access_ok(VERIFY_WRITE, (void __user *)arg,
++			       _IOC_SIZE(cmd));
++	else if (_IOC_DIR(cmd) & _IOC_WRITE)
++		result =
++		    !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
++
++	if (result) {
++		/* Release semaphore in case of fault */
++		up(&aew_dev_configptr->read_blocked);
++		return -EFAULT;
++	}
++
++	/* Switch according to IOCTL command */
++	switch (cmd) {
++		/* This ioctl is used to perform hardware set up
++		   and will set all the regiseters */
++		/*for AF engine */
++	case AEW_S_PARAM:
++
++		/*Copy config structure passed by user */
++		if (copy_from_user(aew_dev_configptr->config,
++				   (struct aew_configuration *)arg,
++				   sizeof(struct aew_configuration))) {
++			*(aew_dev_configptr->config) = aewconfig;
++			up(&aew_dev_configptr->read_blocked);
++			return -EFAULT;
++		}
++
++		/*Call aew_hardware_setup to perform register configuration */
++		result = aew_hardware_setup();
++		if (!result) {	/* Hardware Set up is successful */
++			/*Return the no of bytes required for buffer */
++			result = aew_dev_configptr->size_window;
++		} else {
++			/*Change Configuration Structure to original */
++			*(aew_dev_configptr->config) = aewconfig;
++			dev_err(aewdev, "Error : AEW_S_PARAM  failed\n");
++		}
++
++		break;
++
++		/* This ioctl is used to return parameters in user space */
++	case AEW_G_PARAM:
++		if (aew_dev_configptr->config->aew_config == H3A_AEW_ENABLE) {
++			if (copy_to_user
++			    ((struct aew_configuration *)arg,
++			     aew_dev_configptr->config,
++			     sizeof(struct aew_configuration))) {
++				up(&aew_dev_configptr->read_blocked);
++				return -EFAULT;
++			} else
++				result = aew_dev_configptr->size_window;
++		} else {
++			dev_err(aewdev,
++				"Error : AEW Hardware is not configured.\n");
++			result = -AEW_ERR_SETUP;
++		}
++		break;
++
++		/* This ioctl is used to enable AEW Engine */
++	case AEW_ENABLE:
++		/*Enable AEW Engine if Hardware set up is done */
++		if (aew_dev_configptr->config->aew_config == H3A_AEW_DISABLE) {
++			dev_err(aewdev,
++				"Error : AEW Hardware is not configured.\n");
++			result = -AEW_ERR_SETUP;
++		} else
++			/* Enable AF Engine */
++			aew_engine_setup(1);
++		break;
++
++		/* This ioctl is used to disable AEW Engine */
++	case AEW_DISABLE:
++		/* Disable AEW Engine */
++		aew_engine_setup(0);
++		break;
++
++		/* Invalid Command */
++	default:
++		dev_err(aewdev, "Error: It should not come here!!\n");
++		result = -ENOTTY;
++		break;
++	}
++
++	/*Release the semaphore */
++	up(&aew_dev_configptr->read_blocked);
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return result;
++}
++
++/* This function will return statistics to user */
++static ssize_t aew_read(struct file *filep, char *kbuff,
++			size_t size, loff_t * offset)
++{
++	void *buffer_temp;
++	int result = 0;
++	int ret;
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Semaphore will return immediately if read call is busy */
++	ret = down_trylock(&(aew_dev_configptr->read_blocked));
++	if (ret != 0) {
++		dev_dbg(aewdev, "Read Call : busy  : %d\n", ret);
++		return -EBUSY;
++	}
++
++	/* First Check the size given by user */
++	if (size < aew_dev_configptr->size_window) {
++		/* Return Failure to applicaiton */
++		/*if size is less than required size */
++		dev_dbg(aewdev, "Error : Invalid size of buffer\n");
++		up(&(aew_dev_configptr->read_blocked));
++		return -1;
++	}
++
++	/* The value of buffer_filled flag determines
++	   the status of statistics */
++	if (aew_dev_configptr->buffer_filled == 0) {
++		/* Decrement the semaphore */
++		dev_dbg(aewdev, "READ CALL IS BLOCKED............\n");
++		/* Block the read call */
++		wait_event_interruptible_timeout(aew_dev_configptr->
++						 aew_wait_queue,
++						 aew_dev_configptr->
++						 buffer_filled, AEW_TIMEOUT);
++		dev_dbg(aewdev, "Read Call is unbloked and waking up.......\n");
++		dev_dbg(aewdev, "Buffer Filled.... %d\n",
++			aew_dev_configptr->buffer_filled);
++	}
++
++	if (aew_dev_configptr->buffer_filled == 1) {
++		/* Disable the interrupts and then swap the buffers */
++		disable_irq(IRQ_H3AINT);
++		dev_dbg(aewdev, "READING............\n");
++
++		/* New Statistics are availaible */
++		aew_dev_configptr->buffer_filled = 0;
++
++		/*Swap application buffer and old buffer */
++		buffer_temp = aew_dev_configptr->buff_old;
++		aew_dev_configptr->buff_old = aew_dev_configptr->buff_app;
++		aew_dev_configptr->buff_app = buffer_temp;
++
++		/* Interrupts are enabled */
++		enable_irq(IRQ_H3AINT);
++
++		/* Copy the entire statistics located in application
++		   buffer to user space */
++		if (copy_to_user(kbuff, aew_dev_configptr->buff_app,
++				 aew_dev_configptr->size_window)) {
++			dev_err(aewdev, "Error : Read Fault\n");
++			up(&(aew_dev_configptr->read_blocked));
++			return -EFAULT;
++		} else
++			result = aew_dev_configptr->size_window;
++
++		dev_dbg(aewdev, "Reading Done........................\n");
++	}
++
++	dev_dbg(aewdev, "APP BUFF VALUE %x\n",
++		(*((unsigned int *)(aew_dev_configptr->buff_app))));
++
++	/*Increment the semaphore */
++	up(&(aew_dev_configptr->read_blocked));
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return result;
++}
++
++/* This function will handle interrupt generated by H3A Engine. */
++static irqreturn_t aew_isr(int irq, void *dev_id, struct pt_regs *regs)
++{
++	/* Busy AF Bit */
++	unsigned int busyaew;
++	/* Temporary Buffer for Swapping */
++	void *buffer_temp;
++
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Get the value of PCR register */
++	busyaew = AEW_GET_PCR;
++
++	/* If AEW engine is not enabled, interrupt is not for AEW */
++	if (((busyaew & 0x10000) >> 16) == 0) {
++		/*printk("busyaf\n"); */
++		return -1;
++	}
++
++	/*Interrupt is generated by AEW, so Service the Interrupt */
++	/*Swap current buffer and old buffer */
++	buffer_temp = aew_dev_configptr->buff_curr;
++	aew_dev_configptr->buff_curr = aew_dev_configptr->buff_old;
++	aew_dev_configptr->buff_old = buffer_temp;
++
++	/* Set the AEWBUFSTAT REgister to current buffer Address */
++	aew_set_address((unsigned
++			 long)(virt_to_phys(aew_dev_configptr->buff_curr)));
++
++	/*Set buffer filled flag to indicate statistics are available */
++	aew_dev_configptr->buffer_filled = 1;
++
++	/*new statistics are available */
++	/* Wake up the read call */
++	wake_up(&(aew_dev_configptr->aew_wait_queue));
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return IRQ_HANDLED;
++}
++
++/* file Operation Structure*/
++static struct file_operations aew_fops = {
++	.owner = THIS_MODULE,
++	.open = aew_open,
++	.read = aew_read,
++	.ioctl = aew_ioctl,
++	.release = aew_release,
++};
++static struct platform_device aewdevice = {
++	.name = "davinci_aew",
++	.id = 2,
++	.dev = {
++		.release = aew_platform_release,
++		}
++};
++
++static struct device_driver aew_driver = {
++	.name = "davinci_aew",
++	.bus = &platform_bus_type,
++	.probe = aew_probe,
++	.remove = aew_remove,
++};
++
++/* Function to register Character Device driver */
++int __init aew_init(void)
++{
++	int err;
++	int result;
++
++	/* Checking CCDC Registers */
++	/* Module cannot be inserted if data flow path for
++	   h3a is not enabled */
++	result = AEW_GET_CCDC_FMTCFG;
++	/* Mask with VPEN Bit to check path */
++	result = result & AEW_VPEN_MASK;
++	result = result >> AEW_FMTCG_VPEN;
++	if (!(result)) {
++		printk
++		    ("\n Davici AEW Driver cannot be loaded\n VIDEO PORT is not enabled");
++		printk("Data Flow path from CCDC is disabled\n");
++		return -1;
++	}
++
++	/*Register the driver in the kernel.
++	   Get major number dynamically */
++	result = alloc_chrdev_region(&dev, AEW_MAJOR_NUMBER,
++				     AEW_NR_DEVS, DEVICE_NAME);
++	if (result < 0) {
++		printk("Error : Could not register character device\n");
++		return -ENODEV;
++
++	}
++
++	/*allocate memory for device structure and initialize it with 0 */
++	aew_dev_configptr =
++	    (struct aew_device *)kmalloc(sizeof(struct aew_device), GFP_KERNEL);
++	if (!aew_dev_configptr) {
++		printk("Error : kmalloc fail\n");
++		unregister_chrdev_region(dev, AEW_NR_DEVS);
++		return -ENOMEM;
++	}
++
++	/* Initialize of character device */
++	cdev_init(&c_dev, &aew_fops);
++	c_dev.owner = THIS_MODULE;
++	c_dev.ops = &aew_fops;
++
++	/* Add character device */
++	err = cdev_add(&c_dev, dev, 1);
++	if (err) {
++		printk("Error : Adding DavinciAEW DeviceFailed\n");
++
++		unregister_chrdev_region(dev, AEW_NR_DEVS);
++
++		if (aew_dev_configptr)
++			kfree(aew_dev_configptr);
++
++		return -err;
++	}
++
++	/* Register the character device driver */
++	register_chrdev(MAJOR(dev), DEVICE_NAME, &aew_fops);
++	/* register driver as a platform driver */
++	if (driver_register(&aew_driver) != 0) {
++		unregister_chrdev_region(dev, 1);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++
++	/* Register the drive as a platform device */
++	if (platform_device_register(&aewdevice) != 0) {
++		driver_unregister(&aew_driver);
++		unregister_chrdev_region(dev, 1);
++		unregister_chrdev(MAJOR(dev), DEVICE_NAME);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++	aew_class = class_create(THIS_MODULE, "davinci_aew");
++
++	if (!aew_class) {
++
++		printk("aew_init: error in creating device class\n");
++
++		unregister_chrdev_region(dev, AEW_NR_DEVS);
++		platform_device_unregister(&aewdevice);
++		if (aew_dev_configptr)
++			kfree(aew_dev_configptr);
++		cdev_del(&c_dev);
++		unregister_chrdev(MAJOR(dev), DEVICE_NAME);
++
++		return -EIO;
++	}
++
++	class_device_create(aew_class, NULL, dev, NULL, "davinci_aew");
++
++	/* Set up the Interrupt handler for H3AINT interrupt */
++	result =
++	    request_irq(IRQ_H3AINT, aew_isr, SA_SHIRQ, "dm644xh3a_aew",
++			(void *)aew_dev_configptr);
++
++	if (result < 0) {
++		unregister_chrdev_region(dev, AEW_NR_DEVS);
++
++		if (aew_dev_configptr)
++			kfree(aew_dev_configptr);
++		class_device_destroy(aew_class, dev);
++		class_destroy(aew_class);
++		cdev_del(&c_dev);
++		driver_unregister(&aew_driver);
++		platform_device_unregister(&aewdevice);
++		unregister_chrdev(MAJOR(dev), DEVICE_NAME);
++
++		printk("\n Error : Request IRQ Failed\n");
++		return result;
++	}
++
++	/* Initialize the device structure */
++	memset(aew_dev_configptr, 0, sizeof(struct aew_device));
++
++	/* Device is not in use */
++	aew_dev_configptr->in_use = AEW_NOT_IN_USE;
++
++	/* No statistics available */
++	aew_dev_configptr->buffer_filled = 0;
++
++	return 0;		/*Sucess */
++}
++
++/*
++=====================aew_cleanup===========================
++*/
++/* This Function is called by the kernel while unloading the driver
++This will unregister the
++ Character Device Driver
++*/
++void __exit aew_cleanup(void)
++{
++	/* Device is in use */
++	if (aew_dev_configptr->in_use == AEW_IN_USE) {
++		printk("Error : Driver in use");
++		return;
++	}
++
++	/*Free device structure */
++	if (aew_dev_configptr)
++		kfree(aew_dev_configptr);
++	aew_dev_configptr = NULL;
++	unregister_chrdev_region(dev, AEW_NR_DEVS);
++
++	class_device_destroy(aew_class, dev);
++
++	class_destroy(aew_class);
++
++	driver_unregister(&aew_driver);
++	platform_device_unregister(&aewdevice);
++	/* Free the interrupt Handler */
++	free_irq(IRQ_H3AINT, aew_dev_configptr);
++	cdev_del(&c_dev);
++
++	/*unregistering the driver from the kernel */
++	unregister_chrdev(MAJOR(dev), DEVICE_NAME);
++}
++
++module_init(aew_init)
++    module_exit(aew_cleanup)
+Index: linux-2.6.18/drivers/media/video/davinci/davinci_aew_hw.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/davinci_aew_hw.c
+@@ -0,0 +1,140 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_aew_hw.c file */
++
++/* include driver header files */
++#include <asm/arch/davinci_aew.h>
++#include <asm/arch/davinci_aew_hw.h>
++#include <linux/device.h>
++extern struct device *aewdev;
++/* Function to set hardware configuration registers */
++int aew_set_register(struct aew_device *aew_dev)
++{
++	unsigned int pcr = 0, win1 = 0, winstart = 0, blkwin = 0, subwin = 0;
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Set up the registers */
++	pcr = regr(AEWPCR);
++
++	/* Enable A Law */
++	if (aew_dev->config->alaw_enable == H3A_AEW_ENABLE) {
++		pcr |= AEW_ALAW_EN;
++	} else
++		pcr &= ~AEW_ALAW_EN;
++
++	/*Configure Saturation limit */
++	pcr &= ~AVE2LMT;
++	pcr |= aew_dev->config->saturation_limit << AEW_AVE2LMT_SHIFT;
++	regw(pcr, AEWPCR);
++
++	/*Window parameter configuration */
++
++	/* Configure Window Width in AEWWIN1 register */
++	win1 = 0;
++	win1 |= (aew_dev->config->window_config).height << AEW_WINH_SHIFT;
++
++	/* Configure Window height  in AEWWIN1 register */
++	win1 |= (aew_dev->config->window_config).width << AEW_WINW_SHIFT;
++
++	/* Configure Window vertical count  in AEWWIN2 register */
++	win1 |= (aew_dev->config->window_config).vt_cnt << AEW_VT_COUNT_SHIFT;
++
++	/* Configure Window horizontal count  in AEWWIN1 register */
++	win1 |= (aew_dev->config->window_config).hz_cnt;
++
++	/* Configure Window vertical start  in AEWWIN1 register */
++	regw(win1, AEWWIN1);
++
++	/*Window Start parameter configuration */
++
++	winstart &= ~WINSV;
++	winstart |=
++	    (aew_dev->config->window_config).vt_start << AEW_VT_START_SHIFT;
++
++	/* Configure Window horizontal start  in AEWWIN2 register */
++	winstart &= ~WINSH;
++	winstart |= (aew_dev->config->window_config).hz_start;
++	regw(winstart, AEWINSTART);
++
++	/*Window Line Increment configuration */
++	/*Configure vertical line increment in AEWSUBWIN */
++	subwin &= ~AEWINCV;
++	subwin |=
++	    (aew_dev->config->window_config).
++	    vt_line_incr << AEW_LINE_INCR_SHIFT;
++
++	/* Configuring Horizontal Line increment in AEWSUBWIN */
++	subwin &= ~AEWINCH;
++	subwin |= (aew_dev->config->window_config).hz_line_incr;
++
++	regw(subwin, AEWSUBWIN);
++
++	/* Black Window Configuration */
++	/* Configure vertical start and height in AEWWINBLK */
++	blkwin &= ~BLKWINSV;
++	blkwin |=
++	    (aew_dev->config->blackwindow_config).
++	    vt_start << AEW_BLKWIN_VT_START_SHIFT;
++
++	/* Configure height in Black window */
++	blkwin &= ~BLKWINH;
++	blkwin |= (aew_dev->config->blackwindow_config).height;
++	regw(blkwin, AEWINBLK);
++
++	/* Configure AEWBUFST Register to Current Buffer Address */
++	regw((unsigned int)(virt_to_phys(aew_dev->buff_curr)), AEWBUFST);
++
++	dev_dbg(aewdev, "\n PCR is %x", regr(AEWPCR));
++	dev_dbg(aewdev, "\n SUBWIN is %x", regr(AEWSUBWIN));
++	dev_dbg(aewdev, "\n WINSTART is %x", regr(AEWINSTART));
++	dev_dbg(aewdev, "\n WINBLK is %x", regr(AEWINBLK));
++	dev_dbg(aewdev, "\n WIN1  is %x", regr(AEWWIN1));
++	dev_dbg(aewdev, "\n AEWBUST %x", regr(AEWBUFST));
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;
++}
++
++/* Function to enable/ disable AEW Engine */
++inline void aew_engine_setup(int value)
++{
++	unsigned int pcr;
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++	dev_dbg(aewdev, "\nAEW_REG(PCR) Before Setting %x", regr(AEWPCR));
++
++	/* Read Pcr Register */
++	pcr = regr(AEWPCR);
++	pcr &= ~AEW_EN;
++	pcr |= (value << AEW_EN_SHIFT);
++
++	/*Set AF_EN bit in PCR Register */
++	regw(pcr, AEWPCR);
++
++	dev_dbg(aewdev, "\nAfter Setting %d : PCR VALUE %x", value,
++		regr(AEWPCR));
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++
++}
++
++/* Function used to set adddress */
++inline void aew_set_address(unsigned long address)
++{
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++	regw(address, AEWBUFST);
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++}
+Index: linux-2.6.18/include/asm-arm/arch-davinci/davinci_aew.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/davinci_aew.h
+@@ -0,0 +1,158 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_aew.h file */
++#ifndef DAVINCI_AEW_DRIVER_H
++#define DAVINCI_AEW_DRIVER_H
++
++/* Include Files */
++#include <linux/ioctl.h>
++
++#ifdef __KERNEL__
++#include <asm/semaphore.h>	/* For sempaphores */
++#include <asm/fcntl.h>
++#endif				/* end of #ifdef __KERNEL__ */
++
++/* Driver Range Constants*/
++#define AEW_WINDOW_VERTICAL_COUNT_MIN       0
++#define AEW_WINDOW_VERTICAL_COUNT_MAX       127
++#define AEW_WINDOW_HORIZONTAL_COUNT_MIN     1
++#define AEW_WINDOW_HORIZONTAL_COUNT_MAX     35
++#define AEW_WINDOW_LINE_INCREMENT_MIN       0
++#define AEW_WINDOW_LINE_INCREMENT_MAX       15
++#define AEW_WINDOW_START_MIN                0
++#define AEW_WINDOW_START_MAX                4095
++#define AEW_WINDOW_HEIGHT_MIN               0
++#define AEW_WINDOW_HEIGHT_MAX               127
++#define AEW_WINDOW_WIDTH_MIN                0
++#define AEW_WINDOW_WIDTH_MAX                127
++#define AEW_SAT_LIMIT_MAX                   1023
++#define AEW_WINDOW_SIZE                     18
++
++#ifdef __KERNEL__
++
++/* Device Constants*/
++#define AEW_NR_DEVS                         1
++#define DEVICE_NAME                         "Davinci_AEW"
++#define AEW_MAJOR_NUMBER                    0
++#define AEW_IOC_MAXNR                       4
++#define AEW_TIMEOUT                         (300 * HZ/1000)
++#endif
++/*list of error codes*/
++#define AEW_ERR_HZ_COUNT        820	/*User has passed invalid */
++					/*horizontal count */
++#define AEW_ERR_VT_COUNT        821	/*User has passed invalid */
++					/*vertical count */
++#define AEW_ERR_HEIGHT          822	/*User has passed invalid height */
++#define AEW_ERR_HZ_INCR         823	/*User has passed invalid */
++					/*horizontal lineincrement */
++#define AEW_ERR_VT_INCR         824	/*User has passed invalid */
++					/*vertical line increment */
++#define AEW_ERR_HZ_START        825	/*User has passed invalid
++					   horizontal start */
++#define AEW_ERR_VT_START        826	/*User has passed invalid */
++					/*vertical start */
++#define AEW_ERR_BLKWIN_HEIGHT   827	/*User has passed */
++					/*invalid Black Window height */
++#define AEW_ERR_BLKWIN_VT_START 828	/*User has passed invalid */
++					/*Black Window vertical start */
++#define AEW_ERR_SETUP           829	/*This error is returned when */
++					 /*user tries to */
++					/* set engine */
++					/*without setting required registers */
++#define AEW_ERR_LIMIT           830	/* Error when saturation limit */
++					/* exceeded */
++#define AEW_ERR_ENGINE_BUSY     831	/* Error user cannot configure */
++					/*if the engine is busy */
++#define AEW_ERR_WIDTH           832	/* User enteres invalid width */
++
++/* List of ioctls */
++#pragma pack(1)
++#define AEW_MAGIC_NO    'e'
++#define AEW_S_PARAM     _IOWR(AEW_MAGIC_NO,1,struct aew_configuration *)
++#define AEW_G_PARAM     _IOWR(AEW_MAGIC_NO,2,struct aew_configuration *)
++#define AEW_ENABLE      _IO(AEW_MAGIC_NO,3)
++#define AEW_DISABLE     _IO(AEW_MAGIC_NO,4)
++#pragma  pack()
++
++/*Enum for device usage*/
++typedef enum {
++	AEW_NOT_IN_USE = 0,	/* Device is not in use */
++	AEW_IN_USE = 1		/* Device in use */
++} aew_In_use;
++
++/*Enum for Enable/Disable specific feature*/
++typedef enum {
++	H3A_AEW_ENABLE = 1,
++	H3A_AEW_DISABLE = 0
++} aew_alaw_enable, aew_config_flag;
++
++/* Contains the information regarding Window Structure in AEW Engine*/
++struct aew_window {
++	unsigned int width;	/* Width of the window */
++	unsigned int height;	/* Height of the window */
++	unsigned int hz_start;	/* Horizontal Start of the window */
++	unsigned int vt_start;	/* Vertical Start of the window */
++	unsigned int hz_cnt;	/* Horizontal Count */
++	unsigned int vt_cnt;	/* Vertical Count */
++	unsigned int hz_line_incr;	/* Horizontal Line Increment */
++	unsigned int vt_line_incr;	/* Vertical Line Increment */
++};
++
++/* Contains the information regarding the AEW Black Window Structure*/
++struct aew_black_window {
++	unsigned int height;	/* Height of the Black Window */
++	unsigned int vt_start;	/* Vertical Start of the black Window */
++};
++
++/* Contains configuration required for setup of AEW engine*/
++struct aew_configuration {
++	aew_alaw_enable alaw_enable;	/* A-law status */
++	int saturation_limit;	/* Saturation Limit */
++	struct aew_window window_config;	/* Window for AEW Engine */
++	struct aew_black_window blackwindow_config;	/* Black Window */
++	aew_config_flag aew_config;	/* Flag indicates whether */
++	/*Engine is configured or not */
++};
++
++#ifdef __KERNEL__
++
++/* Contains information about device structure of AEW*/
++struct aew_device {
++	aew_In_use in_use;	/* Driver usage flag */
++	struct aew_configuration *config;	/* Device configuration */
++	void *buff_old;		/* Contains latest statistics */
++	void *buff_curr;	/* Buffer in which HW will */
++	/*fill the statistics */
++	/*or HW is already filling */
++	/*statistics */
++	void *buff_app;		/* Buffer which will be passed */
++	/*to user on read call */
++	int buffer_filled;	/* Flag indicates statistics */
++	/*are available */
++	unsigned int size_window;	/* Window size in bytes */
++	wait_queue_head_t aew_wait_queue;	/*Wait queue for the driver */
++	struct semaphore read_blocked;	/* Semaphore for driver */
++};
++
++int aew_check_window(void);
++int aew_check_black_window(void);
++int aew_hardware_setup(void);
++
++#endif				/* End of #ifdef __KERNEL__ */
++
++#endif				/*End of DAVINCI_AEW_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/davinci_aew_hw.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/davinci_aew_hw.h
+@@ -0,0 +1,106 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_aew_hw.h file */
++
++#ifndef DAVINCI_AEW_DRIVER_HW_H
++#define DAVINCI_AEW_DRIVER_HW_H
++
++/* Include Files */
++#include <asm/io.h>
++#include <asm/arch/hardware.h>
++
++#ifdef __KERNEL__
++
++/* Register Offsets */
++#define AEWPID          0x0000000	/*Peripheral Revision */
++					/*and Class Information */
++#define AEWPCR          0x00000004	/*Peripheral Control Register */
++#define AEWWIN1         0x0000004c	/*Configuration for AE/AWB Windows */
++#define AEWINSTART      0x00000050	/*Start position for AE/AWB Windows */
++#define AEWINBLK        0x00000054	/*Start position and */
++					 /*height for black linr */
++					/*of AE/AWB Windows */
++#define AEWSUBWIN       0x00000058	/*Configuration for subsampled data */
++					/* in AE/AWB windows */
++#define AEWBUFST        0x0000005c	/*SDRAM/DDRAM Start address */
++					/*for AEW Engine */
++
++/* PID fields */
++#define AEW_TID         (0xFF<<16)
++#define AEW_CID         (0xFF<<8)
++#define AEW_PREV        0xFF
++
++/* PCR FIELDS */
++#define AVE2LMT             (0x3ff<<22)	/*Saturation Limit */
++#define AEW_ALAW_EN         (1<<17)	/*Alaw Enable/Disable Bit */
++#define AEW_BUSYAF          (1<<15)	/* Busy Bit for AF */
++#define AEW_BUSYAEWB        (1<<18)	/*Busy bit for AEW */
++#define AEW_EN              (1<<16)	/*AEW Engine Enable/Disable bit */
++
++/* AEWWIN1 fields */
++#define WINH                (0x7F<<24)	/*Window Height */
++#define WINW                (0x7f<<13)	/*Window Width */
++#define WINVC               (0x7f<<6)	/*Window vertical Count */
++#define WINHC               0x3f	/*Window Horizontal Count */
++
++/* AEWWINSTART fields */
++#define WINSV               (0xfff<<16)	/*Window Vertical Start */
++#define WINSH               0xfff	/*Window Horizontal start */
++
++/* AEWWINBLK fields */
++#define BLKWINSV            (0xfff<<16)	/*Black Window Vertical Start */
++#define BLKWINH             0x7f	/* Black Window height */
++
++/* AEWSUBWIN fields */
++#define AEWINCV             (0xf<<8)	/*Vertical Lime Increment */
++#define AEWINCH             0xf	/*Horizontal Line Increment */
++
++/* BIT POSITIONS */
++#define AEW_AVE2LMT_SHIFT           22
++#define AEW_WINH_SHIFT              24
++#define AEW_WINW_SHIFT              13
++#define AEW_VT_COUNT_SHIFT          6
++#define AEW_VT_START_SHIFT          16
++#define AEW_LINE_INCR_SHIFT         8
++#define AEW_BLKWIN_VT_START_SHIFT   16
++#define AEW_EN_SHIFT                16
++#define AEW_VPEN_MASK               0x8000
++#define AEW_FMTCG_VPEN              15
++#define AEW_GET_CCDC_FMTCFG         inl(IO_ADDRESS(AEW_CCDC_FMTCFG_ADDR))
++#define AEW_BUSYAEWB_SHIFT          18
++
++/* For register Read and write */
++#define AEW_CCDC_FMTCFG_ADDR        0x01c70458
++
++#define AEW_IOBASE_VADDR            (IO_ADDRESS(0x01c71400))	/*Base Address */
++
++#define regw(val,reg)               outl(val,(reg+AEW_IOBASE_VADDR))
++#define regr(reg)                   inl(reg+AEW_IOBASE_VADDR)
++
++#define AEW_GET_PCR                 inl(AEW_IOBASE_VADDR + AEWPCR);
++
++#define isbusy()		    (regr(AEWPCR) & 0x40000)
++
++/* Function Declaration */
++int aew_set_register(struct aew_device *);
++void aew_engine_setup(int);
++void aew_set_address(unsigned long);
++
++#endif				/*end of #ifdef __KERNEL__ */
++
++#endif				/*end of #ifdef __DAVINCI_AEW_HW_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/davinci_af.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/davinci_af.h
+@@ -0,0 +1,171 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_af.h file */
++#ifndef AF_DAVINCI_DRIVER_H
++#define AF_DAVINCI_DRIVER_H
++
++/* Kernel Header files */
++#include <linux/ioctl.h>
++
++#ifdef __KERNEL__
++#include <linux/kernel.h>	/* printk  */
++#include <linux/wait.h>		/* Wait queue */
++#include <asm/semaphore.h>	/* Semphores */
++#include <asm/io.h>
++#endif				/*End of __KERNEL_ */
++
++#ifdef __KERNEL__
++/* Device Constants */
++#define AF_MAJOR_NUMBER                 0
++#define DEVICE_NAME                     "Davinci_AF"
++#define AF_NR_DEVS                      1
++#define AF_TIMEOUT                      (300*HZ)/1000
++#endif				/*enf of #ifdef __KERNEL__ */
++
++/* Range Constants */
++#define AF_IIRSH_MIN                        0
++#define AF_IIRSH_MAX                        4094
++#define AF_PAXEL_HORIZONTAL_COUNT_MIN       0
++#define AF_PAXEL_HORIZONTAL_COUNT_MAX       35
++#define AF_PAXEL_VERTICAL_COUNT_MIN         0
++#define AF_PAXEL_VERTICAL_COUNT_MAX         127
++#define AF_PAXEL_INCREMENT_MIN              0
++#define AF_PAXEL_INCREMENT_MAX              14
++#define AF_PAXEL_HEIGHT_MIN                 0
++#define AF_PAXEL_HEIGHT_MAX                 127
++#define AF_PAXEL_WIDTH_MIN                  0
++#define AF_PAXEL_WIDTH_MAX                  127
++#define AF_PAXEL_HZSTART_MIN                2
++#define AF_PAXEL_HZSTART_MAX                4094
++
++#define AF_PAXEL_VTSTART_MIN                0
++#define AF_PAXEL_VTSTART_MAX                4095
++#define AF_THRESHOLD_MAX                    255
++#define AF_COEF_MAX                         4095
++#define AF_PAXEL_SIZE                       48
++
++/* Print Macros */
++/*list of error code */
++#define AF_ERR_HZ_COUNT         800	/* Invalid Horizontal Count */
++#define AF_ERR_VT_COUNT         801	/* Invalid Vertical Count */
++#define AF_ERR_HEIGHT           802	/* Invalid Height */
++#define AF_ERR_WIDTH            803	/* Invalid width */
++#define AF_ERR_INCR             804	/* Invalid Increment */
++#define AF_ERR_HZ_START         805	/* Invalid horizontal Start */
++#define AF_ERR_VT_START         806	/* Invalud vertical Start */
++#define AF_ERR_IIRSH            807	/* Invalid IIRSH value */
++#define AF_ERR_IIR_COEF         808	/* Invalid Coefficient */
++#define AF_ERR_SETUP            809	/* Setup not done */
++#define AF_ERR_THRESHOLD        810	/* Invalid Threshold */
++#define AF_ERR_ENGINE_BUSY      811	/* Engine is busy */
++#define  AF_NUMBER_OF_COEF      11
++/* list of ioctls */
++#pragma pack(1)
++#define  AF_IOC_MAXNR       4
++#define  AF_MAGIC_NO        'a'
++#define  AF_S_PARAM         _IOWR(AF_MAGIC_NO,1,struct af_configuration *)
++#define  AF_G_PARAM         _IOWR(AF_MAGIC_NO,2,struct af_configuration *)
++#define  AF_ENABLE          _IO(AF_MAGIC_NO,3)
++#define  AF_DISABLE         _IO(AF_MAGIC_NO,4)
++#pragma  pack()
++
++/* enum used for status of specific feature */
++typedef enum {
++	H3A_AF_DISABLE = 0,
++	H3A_AF_ENABLE = 1
++} af_alaw_enable, af_hmf_enable, af_config_flag;
++
++/* enum used for keep track of whether hardware is used */
++typedef enum {
++	AF_NOT_IN_USE = 0,
++	AF_IN_USE = 1
++} af_In_use;
++
++typedef enum {
++	ACCUMULATOR_SUMMED = 0,
++	ACCUMULATOR_PEAK = 1
++} af_mode;
++
++/* Red, Green, and blue pixel location in the AF windows */
++typedef enum {
++	GR_GB_BAYER = 0,	/* GR and GB as Bayer pattern */
++	RG_GB_BAYER = 1,	/* RG and GB as Bayer pattern */
++	GR_BG_BAYER = 2,	/* GR and BG as Bayer pattern */
++	RG_BG_BAYER = 3,	/* RG and BG as Bayer pattern */
++	GG_RB_CUSTOM = 4,	/* GG and RB as custom pattern */
++	RB_GG_CUSTOM = 5	/* RB and GG as custom pattern */
++} rgbpos;
++
++/* Contains the information regarding the Horizontal Median Filter */
++struct af_hmf {
++	af_hmf_enable enable;	/* Status of Horizontal Median Filter */
++	unsigned int threshold;	/* Threshhold Value for */
++	/*Horizontal Median Filter */
++};
++
++/* Contains the information regarding the IIR Filters */
++struct af_iir {
++	unsigned int hz_start_pos;	/* IIR Start Register Value */
++	int coeff_set0[AF_NUMBER_OF_COEF];	/* IIR Filter Coefficient for Set 0 */
++	int coeff_set1[AF_NUMBER_OF_COEF];	/* IIR Filter Coefficient for Set 1 */
++};
++
++/* Contains the information regarding the Paxels Structure in AF Engine */
++struct af_paxel {
++	unsigned int width;	/* Width of the Paxel */
++	unsigned int height;	/* Height of the Paxel */
++	unsigned int hz_start;	/* Horizontal Start Position */
++	unsigned int vt_start;	/* Vertical Start Position */
++	unsigned int hz_cnt;	/* Horizontal Count */
++	unsigned int vt_cnt;	/* vertical Count */
++	unsigned int line_incr;	/* Line Increment */
++};
++
++/*Contains the parameters required for hardware set up of AF Engine */
++struct af_configuration {
++	af_alaw_enable alaw_enable;	/*ALWAW status */
++	struct af_hmf hmf_config;	/*HMF configurations */
++	rgbpos rgb_pos;		/*RGB Positions */
++	struct af_iir iir_config;	/*IIR filter configurations */
++	struct af_paxel paxel_config;	/*Paxel parameters */
++	af_mode mode;		/*Accumulator mode */
++	af_config_flag af_config;	/*Flag indicates Engine is configured */
++};
++
++#ifdef __KERNEL__
++/* Structure for device of AF Engine */
++struct af_device {
++	af_In_use in_use;	/*Driver usage counter */
++	struct af_configuration *config;	/*Device configuration structure */
++	void *buff_old;		/*Contains the latest statistics */
++	void *buff_curr;	/*Buffer in which HW will */
++	/*fill the statistics */
++	/*or HW is already filling statistics */
++	void *buff_app;		/*Buffer which will be passed to */
++	/* user space on read call */
++	int buffer_filled;	/*Flag indicates */
++	/*statistics are available */
++	int size_paxel;		/*Paxel size in bytes */
++	wait_queue_head_t af_wait_queue;	/*Wait queue for driver */
++	struct semaphore read_blocked;	/* Semaphore for driver */
++};
++int af_check_paxel(void);
++int af_check_iir(void);
++#endif				/* End of #ifdef __KERNEL__ */
++
++#endif
+Index: linux-2.6.18/include/asm-arm/arch-davinci/davinci_af_hw.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/davinci_af_hw.h
+@@ -0,0 +1,139 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_af.h file */
++
++#ifndef DAVINCI_AF_DRIVER_HW_H
++#define DAVINCI_AF_DRIVER_HW_H
++
++/* Include driver header file */
++#include <asm/arch/davinci_af.h>
++
++#ifdef __KERNEL__
++
++/* Register Offsets */
++#define AFPID               0x0	/*Peripheral Revision */
++					/*and Class Information */
++#define AFPCR               0x00000004	/*Peripheral Control Register */
++#define AFPAX1              0x00000008	/*Setup for the Paxel Configuration */
++#define AFPAX2              0x0000000c	/*Setup for the Paxel Configuration */
++#define AFPAXSTART          0x00000010	/*Start Position for AF Engine Paxels */
++#define AFIIRSH             0x00000014	/*Start Position for IIRSH */
++#define AFBUFST             0x00000018	/*SDRAM/DDRAM Start address */
++#define AFCOEF010           0x0000001c	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF032           0x00000020	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF054           0x00000024	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF076           0x00000028	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF098           0x0000002c	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF0010          0x00000030	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF110           0x00000034	/*IIR filter coefficient data
++					   for SET 1 */
++#define AFCOEF132           0x00000038	/*IIR filter coefficient
++					   data for SET 1 */
++#define AFCOEF154           0x0000003c	/*IIR filter coefficient data
++					   for SET 1 */
++#define AFCOEF176           0x00000040	/*IIR filter coefficient data
++					   for SET 1 */
++#define AFCOEF198           0x00000044	/*IIR filter coefficient data
++					   for SET 1 */
++#define AFCOEF1010          0x00000048	/*IIR filter coefficient data
++					   for SET 1 */
++#define AFCOEF_OFFSET       0x00000004	/* COEFFICIENT BASE ADDRESS */
++#define AF_CCDC_FMTCFG_ADDR 0x01c70458	/* CCDC FMT ADDRESS */
++
++/* Register Fields */
++/*
++ *    PID fields
++ */
++#define AF_TID                          (0xFF<<16)
++#define AF_CID                          (0xFF<<8)
++#define AF_PREV                         0xFF
++
++/*
++ *    PCR fields
++ */
++#define AVE2LMT                         (0x3FF<<22)
++#define AF_BUSYAEWB                     (1<<18)
++#define AEW_ALAW_EN                     (1<<17)
++#define AEW_EN                          (1<<16)
++#define AF_BUSYAF                       (1<<15)
++#define FVMODE                          (1<<14)
++#define RGBPOS                          (0x7<<11)
++#define MED_TH                          (0xFF<<3)
++#define AF_MED_EN                       (1<<2)
++#define AF_ALAW_EN                      (1<<1)
++#define AF_EN                           (1<<0)
++
++/*
++ * AFPAX1 fields
++ */
++#define PAXW                            (0x7F<<16)
++#define PAXH                            0x7F
++
++/*
++ * AFPAX2 fields
++ */
++#define  AFINCV                         (0xF<<13)
++#define  PAXVC                          (0x7F<<6)
++#define  PAXHC                          0x3F
++
++/*
++ * AFPAXSTART fields
++ */
++#define  PAXSH                          (0xFFF<<16)
++#define  PAXSV                          0xFFF
++
++/*
++ * COEFFICIENT MASK
++ */
++
++#define COEF_MASK0                      0xFFF
++#define COEF_MASK1                      (0xFFF<<16)
++
++/* CCDC BITS */
++#define AF_VPEN_MASK                    0x8000
++#define AF_FMTCG_VPEN                   15
++
++/* BIT SHIFTS */
++#define AF_RGBPOS_SHIFT                 11
++#define AF_MED_TH_SHIFT                 3
++#define AF_PAXW_SHIFT                   16
++#define AF_LINE_INCR_SHIFT              13
++#define AF_VT_COUNT_SHIFT               6
++#define AF_HZ_START_SHIFT               16
++#define AF_COEF_SHIFT                   16
++
++/* Macros for register read and write */
++#define AF_IOBASE_VADDR                 IO_ADDRESS(0x01c71400)
++#define regr(reg)                       inl((reg)+AF_IOBASE_VADDR)
++#define regw(val,reg)                   outl(val,(reg)+AF_IOBASE_VADDR)
++#define AF_GET_PCR                      inl(AF_IOBASE_VADDR + AFPCR);
++#define AF_GET_CCDC_FMTCFG              inl(IO_ADDRESS(AF_CCDC_FMTCFG_ADDR))
++
++/* Function declaration */
++int af_register_setup(struct af_device *);
++void af_engine_setup(int);
++void af_set_address(unsigned long);
++
++#endif				/*enf of #ifdef __KERNEL__  */
++#endif
+Index: linux-2.6.18/drivers/media/video/davinci/davinci_af.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/davinci_af.c
+@@ -0,0 +1,806 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_af.c file */
++
++/* Linux specific include files */
++#include <linux/config.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/kernel.h>	/* printk  */
++#include <linux/slab.h>		/* kmalloc() */
++#include <linux/fs.h>		/* File Structure... */
++#include <linux/errno.h>	/* error codes */
++#include <linux/types.h>	/* size_t */
++#include <linux/cdev.h>
++#include <linux/interrupt.h>	/* For interrupt */
++#include <linux/dma-mapping.h>
++#include <asm/uaccess.h>
++#include <linux/wait.h>		/* FILES FOR WAIT QUEUE */
++#include <asm/semaphore.h>	/* Semaphore */
++#include <linux/platform_device.h>
++/* Driver include files */
++#include <asm/arch/davinci_af.h>	/*Local Definitions */
++#include <asm/arch/davinci_af_hw.h>	/* Local Definitions */
++
++/* Module License */
++MODULE_LICENSE("GPL");
++
++/*Global structure for device */
++struct af_device *af_dev_configptr;
++static struct class *af_class;
++
++/* For registeration of charatcer device */
++static struct cdev c_dev;
++
++/* device structure to make entry in device */
++static dev_t dev;
++struct device *afdev;
++/* inline function to free reserver pages  */
++void inline af_free_pages(unsigned long addr, unsigned long bufsize)
++{
++	unsigned long tempaddr;
++	unsigned long size;
++	tempaddr = addr;
++	if (!addr)
++		return;
++	size = PAGE_SIZE << (get_order(bufsize));
++	while (size > 0) {
++		ClearPageReserved(virt_to_page(addr));
++		addr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++	free_pages(tempaddr, get_order(bufsize));
++}
++
++/* Function to check paxel parameters */
++int af_check_paxel(void)
++{
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/* Check horizontal Count */
++	if ((af_dev_configptr->config->paxel_config.hz_cnt
++	     < AF_PAXEL_HORIZONTAL_COUNT_MIN)
++	    || (af_dev_configptr->config->paxel_config.hz_cnt
++		> AF_PAXEL_HORIZONTAL_COUNT_MAX)) {
++		dev_err(afdev, "Error : Horizontal Count is incorrect");
++		return -AF_ERR_HZ_COUNT;
++	}
++
++	/*Check Vertical Count */
++	if ((af_dev_configptr->config->paxel_config.vt_cnt
++	     < AF_PAXEL_VERTICAL_COUNT_MIN)
++	    || (af_dev_configptr->config->paxel_config.vt_cnt
++		> AF_PAXEL_VERTICAL_COUNT_MAX)) {
++		dev_err(afdev, "Error : Vertical Count is incorrect");
++		return -AF_ERR_VT_COUNT;
++	}
++
++	/*Check Height */
++	if ((af_dev_configptr->config->paxel_config.height
++	     < AF_PAXEL_HEIGHT_MIN)
++	    || (af_dev_configptr->config->paxel_config.height
++		> AF_PAXEL_HEIGHT_MAX)) {
++		dev_err(afdev, "Error : Height is incorrect");
++		return -AF_ERR_HEIGHT;
++	}
++
++	/*Check width */
++	if ((af_dev_configptr->config->paxel_config.width < AF_PAXEL_WIDTH_MIN)
++	    || (af_dev_configptr->config->paxel_config.width
++		> AF_PAXEL_WIDTH_MAX)) {
++		dev_err(afdev, "Error : Width is incorrect");
++		return -AF_ERR_WIDTH;
++	}
++
++	/*Check Line Increment */
++	if ((af_dev_configptr->config->paxel_config.line_incr
++	     < AF_PAXEL_INCREMENT_MIN)
++	    || (af_dev_configptr->config->paxel_config.line_incr
++		> AF_PAXEL_INCREMENT_MAX)) {
++		dev_err(afdev, "Error : Line Increment is incorrect");
++		return -AF_ERR_INCR;
++	}
++
++	/*Check Horizontal Start */
++	if ((af_dev_configptr->config->paxel_config.hz_start % 2 != 0)
++	    || (af_dev_configptr->config->paxel_config.hz_start
++		< (af_dev_configptr->config->iir_config.hz_start_pos + 2))
++	    || (af_dev_configptr->config->paxel_config.hz_start
++		> AF_PAXEL_HZSTART_MAX)
++	    || (af_dev_configptr->config->paxel_config.hz_start
++		< AF_PAXEL_HZSTART_MIN)) {
++		dev_err(afdev, "Error : Horizontal Start is incorrect");
++		return -AF_ERR_HZ_START;
++	}
++
++	/*Check Vertical Start */
++	if ((af_dev_configptr->config->paxel_config.vt_start
++	     < AF_PAXEL_VTSTART_MIN)
++	    || (af_dev_configptr->config->paxel_config.vt_start
++		> AF_PAXEL_VTSTART_MAX)) {
++		dev_err(afdev, "Error : Vertical Start is incorrect");
++		return -AF_ERR_VT_START;
++	}
++
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++
++	return 0;		/*Success */
++}
++
++/* Function to check IIR Coefficient */
++int af_check_iir(void)
++{
++	int index;
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/* Check for valid values of IIR coefficients */
++	for (index = 0; index < AF_NUMBER_OF_COEF; index++) {
++		/*Check Coefficient of set 0 */
++		if ((af_dev_configptr->config->iir_config.coeff_set0[index])
++		    > AF_COEF_MAX) {
++			dev_err(afdev,
++				"Error : Coefficient for set 0 is incorrect");
++			return -AF_ERR_IIR_COEF;
++		}
++
++		/*Check coefficient of set 1 */
++		if ((af_dev_configptr->config->iir_config.coeff_set1[index])
++		    > AF_COEF_MAX) {
++			dev_err(afdev,
++				"Error : Coefficient for set 1 is incorrect");
++			return -AF_ERR_IIR_COEF;
++		}
++	}
++
++	/* Check IIRSH Value */
++	if ((af_dev_configptr->config->iir_config.hz_start_pos < AF_IIRSH_MIN)
++	    || (af_dev_configptr->config->iir_config.hz_start_pos >
++		AF_IIRSH_MAX)) {
++		dev_err(afdev, "Error : IIRSH is incorrect");
++		return -AF_ERR_IIRSH;
++	}
++
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++	return 0;		/*Success */
++}
++
++/* Function to perform hardware set up */
++int af_hardware_setup(void)
++{
++	int result;
++
++	/*Size for buffer in bytes */
++	int buff_size;
++	unsigned long adr, size;
++	unsigned int busyaf;
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/* Get the value of PCR register */
++	busyaf = AF_GET_PCR;
++
++	/* Mask with BUSYAF bit */
++	busyaf = busyaf & AF_BUSYAF;
++
++	/* Shift it 15 times to get value of 1 or 0 */
++	busyaf = busyaf >> 15;
++
++	/*If busy bit is 1 then busy lock registers caanot be configured */
++	if (busyaf == 1) {
++		/* Hardware cannot be configure while engine is busy */
++		dev_err(afdev, "AF_register_setup_ERROR : Engine Bus");
++		dev_err(afdev, "\n Configuration cannot be done ");
++		return -AF_ERR_ENGINE_BUSY;
++	}
++
++	/*Check IIR Coefficient and start Values */
++	result = af_check_iir();
++	if (result < 0)
++		return result;
++
++	/*Check Paxel Values */
++	result = af_check_paxel();
++	if (result < 0)
++		return result;
++
++	/*Check HMF Threshold Values */
++	if (af_dev_configptr->config->hmf_config.threshold > AF_THRESHOLD_MAX) {
++		dev_err(afdev, "Error : HMF Threshold is incorrect");
++		return -AF_ERR_THRESHOLD;
++	}
++
++	/* Compute buffer size */
++	buff_size =
++	    (af_dev_configptr->config->paxel_config.hz_cnt + 1) *
++	    (af_dev_configptr->config->paxel_config.vt_cnt + 1) * AF_PAXEL_SIZE;
++
++	/*Deallocate the previosu buffers */
++	/* free old buffers */
++	if (af_dev_configptr->buff_old)
++		af_free_pages((unsigned long)af_dev_configptr->buff_old,
++			      af_dev_configptr->size_paxel);
++
++	/* Free current buffer */
++	if (af_dev_configptr->buff_curr)
++		af_free_pages((unsigned long)af_dev_configptr->buff_curr,
++			      af_dev_configptr->size_paxel);
++
++	/* Free application buffers */
++	if (af_dev_configptr->buff_app)
++		af_free_pages((unsigned long)af_dev_configptr->buff_app,
++			      af_dev_configptr->size_paxel);
++
++	/* Reallocate the buffer as per new paxel configurations */
++	/*Allocate memory for old buffer */
++	af_dev_configptr->buff_old =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (af_dev_configptr->buff_old == NULL)
++		return -ENOMEM;
++
++	/* allocate the memory for storing old statistics */
++	adr = (unsigned long)af_dev_configptr->buff_old;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/*Allocate memory for current buffer */
++	af_dev_configptr->buff_curr =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	/* Free the previously allocated buffer */
++	if (af_dev_configptr->buff_curr == NULL) {
++		if (af_dev_configptr->buff_old)
++			af_free_pages((unsigned long)af_dev_configptr->
++				      buff_old, buff_size);
++		return -ENOMEM;
++	}
++
++	adr = (unsigned long)af_dev_configptr->buff_curr;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/*Allocate memory for old buffer */
++	af_dev_configptr->buff_app =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (af_dev_configptr->buff_app == NULL) {
++
++		/*Free the previously allocated buffer */
++		if (af_dev_configptr->buff_curr)
++			af_free_pages((unsigned long)af_dev_configptr->
++				      buff_curr, buff_size);
++		/*Free the previously allocated buffer */
++		if (af_dev_configptr->buff_old)
++			af_free_pages((unsigned long)af_dev_configptr->
++				      buff_old, buff_size);
++		return -ENOMEM;
++	}
++
++	adr = (unsigned long)af_dev_configptr->buff_app;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	result = af_register_setup(af_dev_configptr);
++	if (result < 0)
++		return result;
++	af_dev_configptr->size_paxel = buff_size;
++
++	/*Set configuration flag to indicate HW setup done */
++	af_dev_configptr->config->af_config = H3A_AF_ENABLE;
++
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++	/*Success */
++	return 0;
++}
++
++/* This function called when driver is opened.It creates Channel
++ * Configuration Structure
++ */
++static int af_open(struct inode *inode, struct file *filp)
++{
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/*Return if device is in use */
++	if (af_dev_configptr->in_use == AF_IN_USE)
++		return -EBUSY;
++	af_dev_configptr->config = NULL;
++
++	/* Allocate memory for Device Structure */
++	af_dev_configptr->config = (struct af_configuration *)
++	    kmalloc(sizeof(struct af_configuration)
++		    , GFP_KERNEL);
++	if (af_dev_configptr->config == NULL) {
++		dev_err(afdev, "Error : Kmalloc fail\n");
++		return -ENOMEM;
++	}
++
++	/* Initialize the wait queue */
++	init_waitqueue_head(&(af_dev_configptr->af_wait_queue));
++
++	/* Driver is in use */
++	af_dev_configptr->in_use = AF_IN_USE;
++
++	/* Hardware is not set up */
++	af_dev_configptr->config->af_config = H3A_AF_DISABLE;
++	af_dev_configptr->buffer_filled = 0;
++
++	/* Initialize the semaphore */
++	init_MUTEX(&(af_dev_configptr->read_blocked));
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++	return 0;
++}
++
++/* This function called when driver is closed.
++ * It will deallocate all the buffers.
++ */
++static int af_release(struct inode *inode, struct file *filp)
++{
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/* Free all the buffers */
++	/* free current buffer */
++	if (af_dev_configptr->buff_curr)
++		af_free_pages((unsigned long)af_dev_configptr->buff_curr,
++			      af_dev_configptr->size_paxel);
++
++	/*Free old buffer */
++	if (af_dev_configptr->buff_old)
++		af_free_pages((unsigned long)af_dev_configptr->buff_old,
++			      af_dev_configptr->size_paxel);
++
++	/* Free application buffer */
++	if (af_dev_configptr->buff_app)
++		af_free_pages((unsigned long)af_dev_configptr->buff_app,
++			      af_dev_configptr->size_paxel);
++
++	/*Release memory for configuration structure of this channel */
++	af_dev_configptr->buff_curr = NULL;
++	af_dev_configptr->buff_old = NULL;
++	af_dev_configptr->buff_app = NULL;
++	if (af_dev_configptr->config)
++		kfree(af_dev_configptr->config);
++	af_dev_configptr->config = NULL;
++
++	/*Device is not in use */
++	af_dev_configptr->in_use = AF_NOT_IN_USE;
++
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++
++	return 0;
++}
++static void af_platform_release(struct device *device)
++{
++	/* This is called when the reference count goes to zero */
++}
++static int __init af_probe(struct device *device)
++{
++	afdev = device;
++	return 0;
++}
++
++static int af_remove(struct device *device)
++{
++	return 0;
++}
++
++/* This function will process IOCTL commands sent by the application and
++ * control the device IO operations.
++ */
++static int af_ioctl(struct inode *inode, struct file *filep,
++		    unsigned int cmd, unsigned long arg)
++{
++	struct af_configuration afconfig = *(af_dev_configptr->config);
++	int result = 0;
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/* Block the semaphore while ioctl is called */
++	down_interruptible(&af_dev_configptr->read_blocked);
++
++	/*Extract the type and number bitfields, and don't */
++	/* decode wrong cmds */
++	/*return ENOTTY (inappropriate ioctl) */
++	if (_IOC_TYPE(cmd) != AF_MAGIC_NO) {
++		/* Release the semaphore */
++		up(&af_dev_configptr->read_blocked);
++		return -ENOTTY;
++	}
++
++	if (_IOC_NR(cmd) > AF_IOC_MAXNR) {
++		/* Release the semaphore */
++		up(&af_dev_configptr->read_blocked);
++		return -ENOTTY;
++	}
++
++	/*Use 'access_ok' to validate user space pointer */
++	if (_IOC_DIR(cmd) & _IOC_READ)
++		result =
++		    !access_ok(VERIFY_WRITE, (void __user *)arg,
++			       _IOC_SIZE(cmd));
++	else if (_IOC_DIR(cmd) & _IOC_WRITE)
++		result =
++		    !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
++
++	if (result) {
++		/* Release the semaphore */
++		up(&af_dev_configptr->read_blocked);
++		return -EFAULT;
++	}
++
++	switch (cmd) {
++
++		/* This ioctl is used to perform hardware */
++		/* set up for AF Engine */
++		/* It will configura all the registers. */
++	case AF_S_PARAM:
++		/*Copy params structure passed by user */
++		if (copy_from_user(af_dev_configptr->config,
++				   (struct af_configuration *)arg,
++				   sizeof(struct af_configuration))) {
++			/* Release the semaphore */
++			up(&af_dev_configptr->read_blocked);
++			return -EFAULT;
++		}
++
++		/*Call AF_hardware_setup to perform register configuration */
++		result = af_hardware_setup();
++		if (!result) {
++			result = af_dev_configptr->size_paxel;
++		} else {
++			dev_err(afdev, "Error : AF_S_PARAM failed");
++			*(af_dev_configptr->config) = afconfig;
++		}
++		break;
++
++		/* This ioctl will get the paramters from application */
++	case AF_G_PARAM:
++		/*Check if Hardware is configured or not */
++		if (af_dev_configptr->config->af_config == H3A_AF_ENABLE) {
++			if (copy_to_user((struct af_configuration *)arg,
++					 af_dev_configptr->config,
++					 sizeof(struct af_configuration))) {
++				up(&af_dev_configptr->read_blocked);
++				return -EFAULT;
++			} else
++				result = af_dev_configptr->size_paxel;
++
++		} else {
++			dev_dbg(afdev, "Error : AF Hardware not configured.");
++			result = -AF_ERR_SETUP;
++		}
++
++		break;
++
++		/* This ioctl will enable AF Engine */
++		/*if hardware configuration is done */
++	case AF_ENABLE:
++		/* Check if hardware is configured or not */
++		if (af_dev_configptr->config->af_config == H3A_AF_DISABLE) {
++			dev_err(afdev, "Error :  AF Hardware not configured.");
++			result = -AF_ERR_SETUP;
++		} else
++			af_engine_setup(1);
++		break;
++
++		/* This ioctl will disable AF Engine */
++	case AF_DISABLE:
++		af_engine_setup(0);
++		break;
++
++	default:
++		dev_err(afdev, "Error : Invalid IOCTL!");
++		result = -ENOTTY;
++		break;
++	}
++
++	/* Before returning increment semaphore */
++	up(&af_dev_configptr->read_blocked);
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++	return result;
++}
++
++/* Function will return the statistics to user */
++ssize_t af_read(struct file * filep, char *kbuff, size_t size, loff_t * offset)
++{
++	void *buff_temp;
++	int result = 0;
++	int ret;
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/* Semaphore will return immediately if read call is busy */
++	ret = down_trylock(&(af_dev_configptr->read_blocked));
++	if (ret != 0) {
++		dev_err(afdev, "\n Read Call : busy");
++		return -EBUSY;
++	}
++
++	/*If no of bytes specified by the user is less */
++	/* than that of buffer return error */
++	if (size < af_dev_configptr->size_paxel) {
++		dev_err(afdev, "\n Error : Invalid buffer size");
++		up(&(af_dev_configptr->read_blocked));
++		return -1;	/* Return error to application */
++	}
++
++	/* The value of bufffer_filled flag determines
++	   the status of statistics */
++	if (af_dev_configptr->buffer_filled == 0) {
++		dev_dbg(afdev, "Read call is blocked .......................");
++		/* Block the read call until new statistics are available */
++		/* or timer expires */
++		/* Decrement the semaphore count */
++		wait_event_interruptible_timeout(af_dev_configptr->
++						 af_wait_queue,
++						 af_dev_configptr->
++						 buffer_filled, AF_TIMEOUT);
++		dev_dbg(afdev,
++			"\n Read Call Unblocked..........................");
++	}
++	if (af_dev_configptr->buffer_filled == 1) {
++		/* New Statistics are available */
++		/* Disable the interrupts while swapping the buffers */
++		disable_irq(IRQ_H3AINT);
++		dev_dbg(afdev, "\n Reading.............................");
++
++		af_dev_configptr->buffer_filled = 0;
++
++		/*Swap application buffer and old buffer */
++		buff_temp = af_dev_configptr->buff_old;
++		af_dev_configptr->buff_old = af_dev_configptr->buff_app;
++		af_dev_configptr->buff_app = buff_temp;
++
++		dev_dbg(afdev, "\n Reading Done.............................");
++
++		/* Enable the interrupts  once swapping is done */
++		enable_irq(IRQ_H3AINT);
++
++		/* New Statistics are not availaible */
++		/* copy the application buffer to user */
++		/* Return the entire statistics to user */
++		if (copy_to_user(kbuff, af_dev_configptr->buff_app,
++				 af_dev_configptr->size_paxel)) {
++			/* Release the semaphore in case of fault */
++			up(&(af_dev_configptr->read_blocked));
++			return -EFAULT;
++		} else
++			result = af_dev_configptr->size_paxel;
++	}
++
++	/* Release the seamphore */
++	up(&(af_dev_configptr->read_blocked));
++	dev_dbg(afdev, "\n Read APPLICATION  BUFFER %d",
++		*((int *)((af_dev_configptr->buff_app))));
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++	return result;
++}
++
++/* This function will handle the H3A interrupt. */
++static irqreturn_t af_isr(int irq, void *dev_id, struct pt_regs *regs)
++{
++	void *buff_temp;	/*Temporary buffer for swapping */
++	int busyaf;
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/* Get the value of PCR register */
++	busyaf = AF_GET_PCR;
++
++	/* If AF Engine has enabled, interrupt is not for AF */
++	if ((busyaf & 0x01) == 0) {
++		return -1;
++	}
++
++	/*Service  the Interrupt */
++	/*Set buffer filled flag to indicate statistics are available */
++	/*Swap current buffer and old buffer */
++	buff_temp = af_dev_configptr->buff_curr;
++	af_dev_configptr->buff_curr = af_dev_configptr->buff_old;
++	af_dev_configptr->buff_old = buff_temp;
++
++	/* Set AF Buf st to current register address */
++	if (af_dev_configptr->buff_curr)
++		af_set_address((unsigned long)
++			       virt_to_phys(af_dev_configptr->buff_curr));
++
++	/* Wake up read as new statistics are available */
++	af_dev_configptr->buffer_filled = 1;
++	wake_up(&(af_dev_configptr->af_wait_queue));
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++	return IRQ_HANDLED;
++}
++
++/* File Operation Structure */
++static struct file_operations af_fops = {
++	.owner = THIS_MODULE,
++	.open = af_open,
++	.ioctl = af_ioctl,
++	.read = af_read,
++	.release = af_release
++};
++static struct platform_device afdevice = {
++	.name = "davinci_af",
++	.id = 2,
++	.dev = {
++		.release = af_platform_release,
++		}
++};
++
++static struct device_driver af_driver = {
++	.name = "davinci_af",
++	.bus = &platform_bus_type,
++	.probe = af_probe,
++	.remove = af_remove,
++};
++
++/* Function to register the AF character device driver. */
++int __init af_init(void)
++{
++	int err;
++	int result = 0;
++	result = AF_GET_CCDC_FMTCFG;
++	result = result & AF_VPEN_MASK;
++	result = result >> AF_FMTCG_VPEN;
++	/* H3A Module cannot be inserted if CCDC
++	   path for H3A is not registered */
++	if (!(result)) {
++		/* Module cannot be inserted if CCDC is not configured */
++		printk("\n Davinci AF driver cannot be loaded");
++		printk("\n VIDEO PORT is not enabled ");
++		printk("\n CCDC needs to be configured");
++		return -1;
++	}
++	/*Register the driver in the kernel. Get major number dynamically */
++	result = alloc_chrdev_region(&dev, AF_MAJOR_NUMBER,
++				     AF_NR_DEVS, DEVICE_NAME);
++	if (result < 0) {
++		printk("Error :  Could not register character device");
++		return -ENODEV;
++	}
++
++	/*allocate memory for device structure and initialize it with 0 */
++	af_dev_configptr =
++	    (struct af_device *)kmalloc(sizeof(struct af_device), GFP_KERNEL);
++	if (!af_dev_configptr) {
++		printk("Error : kmalloc fail");
++		unregister_chrdev_region(dev, AF_NR_DEVS);
++		return -ENOMEM;
++
++	}
++
++	/* Initialize  character device */
++	cdev_init(&c_dev, &af_fops);
++	c_dev.owner = THIS_MODULE;
++	c_dev.ops = &af_fops;
++	err = cdev_add(&c_dev, dev, 1);
++	if (err) {
++		printk("Error : Error in  Adding Davinci AF");
++		unregister_chrdev_region(dev, AF_NR_DEVS);
++		if (af_dev_configptr)
++			kfree(af_dev_configptr);
++		return -err;
++	}
++
++	/* Registe Character device */
++	register_chrdev(MAJOR(dev), DEVICE_NAME, &af_fops);
++	/* register driver as a platform driver */
++	if (driver_register(&af_driver) != 0) {
++		unregister_chrdev_region(dev, 1);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++
++	/* Register the drive as a platform device */
++	if (platform_device_register(&afdevice) != 0) {
++		driver_unregister(&af_driver);
++		unregister_chrdev_region(dev, 1);
++		unregister_chrdev(MAJOR(dev), DEVICE_NAME);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++	af_class = class_create(THIS_MODULE, "davinci_af");
++
++	if (!af_class) {
++		platform_device_unregister(&afdevice);
++		printk("Error : Error in creating device class");
++		unregister_chrdev_region(dev, AF_NR_DEVS);
++		if (af_dev_configptr)
++			kfree(af_dev_configptr);
++		cdev_del(&c_dev);
++		return -EIO;
++	}
++
++	class_device_create(af_class, NULL, dev, NULL, "davinci_af");
++
++	/* Set up the Interrupt handler for H3AINT interrupt */
++	result =
++	    request_irq(IRQ_H3AINT, af_isr, SA_SHIRQ, "dm644xh3a_af",
++			(void *)af_dev_configptr);
++
++	if (result != 0) {
++		printk("Error : Request IRQ Failed");
++		unregister_chrdev_region(dev, AF_NR_DEVS);
++		if (af_dev_configptr)
++			kfree(af_dev_configptr);
++		class_device_destroy(af_class, dev);
++		driver_unregister(&af_driver);
++		platform_device_unregister(&afdevice);
++		class_destroy(af_class);
++		cdev_del(&c_dev);
++		unregister_chrdev(MAJOR(dev), DEVICE_NAME);
++		return result;
++	}
++
++	/* Initialize device structure */
++	memset(af_dev_configptr, 0, sizeof(struct af_device));
++
++	af_dev_configptr->in_use = AF_NOT_IN_USE;
++	af_dev_configptr->buffer_filled = 0;
++
++	return 0;		/*Sucess */
++}
++
++/* This function is called by the kernel while unloading the driver.
++ * It will unregister character device driver
++ */
++void __exit af_cleanup(void)
++{
++
++	/* Return if driver is busy */
++	if (af_dev_configptr->in_use == AF_IN_USE) {
++		printk("Error : Driver in use. Can't remove.");
++		return;
++	}
++
++	/*Free device structure */
++	if (af_dev_configptr)
++		kfree(af_dev_configptr);
++
++	unregister_chrdev_region(dev, AF_NR_DEVS);
++	class_device_destroy(af_class, dev);
++	class_destroy(af_class);
++	driver_unregister(&af_driver);
++	platform_device_unregister(&afdevice);
++	/*unregistering the driver from the kernel */
++	cdev_del(&c_dev);
++	/*Free interrupt line */
++	free_irq(IRQ_H3AINT, af_dev_configptr);
++	/* Unregiser Character device */
++	unregister_chrdev(MAJOR(dev), DEVICE_NAME);
++}
++
++module_init(af_init)
++    module_exit(af_cleanup)
++    MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/media/video/davinci/davinci_af_hw.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/davinci_af_hw.c
+@@ -0,0 +1,178 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* Include driver header file */
++#include <asm/arch/davinci_af_hw.h>
++#include <linux/device.h>
++extern struct device *afdev;
++/* Function to set register */
++int af_register_setup(struct af_device *af_dev)
++{
++	unsigned int pcr = 0, pax1 = 0, pax2 = 0, paxstart = 0;
++	unsigned int coef = 0;
++	unsigned int base_coef_set0 = 0;
++	unsigned int base_coef_set1 = 0;
++	int index;
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/* Configure Hardware Registers */
++	/* Set PCR Register */
++	pcr = regr(AFPCR);	/* Read PCR Register */
++
++	/*Set Accumulator Mode */
++	if (af_dev->config->mode == ACCUMULATOR_PEAK)
++		pcr |= FVMODE;
++	else
++		pcr &= ~FVMODE;
++
++	/*Set A-law */
++	if (af_dev->config->alaw_enable == H3A_AF_ENABLE)
++		pcr |= AF_ALAW_EN;
++	else
++		pcr &= ~AF_ALAW_EN;
++
++	/*Set RGB Position */
++	pcr &= ~RGBPOS;
++	pcr |= (af_dev->config->rgb_pos) << AF_RGBPOS_SHIFT;
++
++	/*HMF Configurations */
++	if (af_dev->config->hmf_config.enable == H3A_AF_ENABLE) {
++		pcr &= ~AF_MED_EN;
++		/* Enable HMF */
++		pcr |= AF_MED_EN;
++
++		/* Set Median Threshold */
++		pcr &= ~MED_TH;
++		pcr |=
++		    (af_dev->config->hmf_config.threshold) << AF_MED_TH_SHIFT;
++	} else
++		pcr &= ~AF_MED_EN;
++
++	/* Set PCR Register */
++	regw(pcr, AFPCR);
++
++	/* Configure AFPAX1 */
++	/*Paxel parameter configuration */
++	/*Set Width in AFPAX1 Register */
++	pax1 &= ~PAXW;
++	pax1 |= (af_dev->config->paxel_config.width) << AF_PAXW_SHIFT;
++
++	/* Set height in AFPAX1 */
++	pax1 &= ~PAXH;
++	pax1 |= af_dev->config->paxel_config.height;
++
++	regw(pax1, AFPAX1);
++
++	/* Configure AFPAX2 Register */
++	/* Set Line Increment in AFPAX2 Register */
++	pax2 &= ~AFINCV;
++	pax2 |= (af_dev->config->paxel_config.line_incr) << AF_LINE_INCR_SHIFT;
++	/* Set Vertical Count */
++	pax2 &= ~PAXVC;
++	pax2 |= (af_dev->config->paxel_config.vt_cnt) << AF_VT_COUNT_SHIFT;
++	/* Set Horizontal Count */
++	pax2 &= ~PAXHC;
++	pax2 |= af_dev->config->paxel_config.hz_cnt;
++	regw(pax2, AFPAX2);
++
++	/* Configure PAXSTART Register */
++	/*Configure Horizontal Start */
++	paxstart &= ~PAXSH;
++	paxstart |=
++	    (af_dev->config->paxel_config.hz_start) << AF_HZ_START_SHIFT;
++	/* Configure Vertical Start */
++	paxstart &= ~PAXSV;
++	paxstart |= af_dev->config->paxel_config.vt_start;
++	regw(paxstart, AFPAXSTART);
++
++	/*SetIIRSH Register */
++	regw(af_dev->config->iir_config.hz_start_pos, AFIIRSH);
++
++	/*Set IIR Filter0 Coefficients */
++	base_coef_set0 = AFCOEF010;
++	for (index = 0; index <= 8; index += 2) {
++		coef &= ~COEF_MASK0;
++		coef |= af_dev->config->iir_config.coeff_set0[index];
++		coef &= ~COEF_MASK1;
++		coef |=
++		    (af_dev->config->iir_config.
++		     coeff_set0[index + 1]) << AF_COEF_SHIFT;
++		regw(coef, base_coef_set0);
++		dev_dbg(afdev, "\n COEF0 %x", regr(base_coef_set0));
++		base_coef_set0 = base_coef_set0 + AFCOEF_OFFSET;
++	}
++
++	/* set AFCOEF0010 Register */
++	regw(af_dev->config->iir_config.coeff_set0[10], AFCOEF0010);
++
++	/*Set IIR Filter1 Coefficients */
++
++	base_coef_set1 = AFCOEF110;
++	for (index = 0; index <= 8; index += 2) {
++		coef &= ~COEF_MASK0;
++		coef |= af_dev->config->iir_config.coeff_set1[index];
++		coef &= ~COEF_MASK1;
++		coef |=
++		    (af_dev->config->iir_config.
++		     coeff_set1[index + 1]) << AF_COEF_SHIFT;
++		regw(coef, base_coef_set1);
++		dev_dbg(afdev, "\n COEF1 %x", regr(base_coef_set1));
++		base_coef_set1 = base_coef_set1 + AFCOEF_OFFSET;
++	}
++	/* Set AFCOEF0110 */
++	regw(af_dev->config->iir_config.coeff_set1[10], AFCOEF1010);
++
++	/*Set AFBUFST to Current buffer Physical Address */
++	regw((unsigned int)(virt_to_phys(af_dev->buff_curr)), AFBUFST);
++
++	dev_dbg(afdev, "\n PCR %x", pcr);
++	dev_dbg(afdev, "\n AFPAX1 %x", regr(AFPAX1));
++	dev_dbg(afdev, "\n PAXSTART %x", paxstart);
++	dev_dbg(afdev, "\n PAX2 %x", regr(AFPAX2));
++	dev_dbg(afdev, "\n COEF 10  %x", regr(AFCOEF0010));
++	dev_dbg(afdev, "\n COEF 10  %x", regr(AFCOEF1010));
++	dev_dbg(afdev, "\n AFBUFST %x", regr(AFBUFST));
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++	return 0;
++}
++
++/* Function to Enable/Disable AF Engine */
++inline void af_engine_setup(int enable)
++{
++	unsigned int pcr;
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	pcr = regr(AFPCR);
++	dev_dbg(afdev, "\n Engine Setup value before PCR : %x", pcr);
++
++	/* Set AF_EN bit in PCR Register */
++	if (enable)
++		pcr |= AF_EN;
++	else
++		pcr &= ~AF_EN;
++
++	regw(pcr, AFPCR);
++
++	dev_dbg(afdev, "\n Engine Setup value after PCR : %x", pcr);
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++}
++
++/* Function to set address */
++inline void af_set_address(unsigned long address)
++{
++	regw(address, AFBUFST);
++}
+Index: linux-2.6.18/include/media/davinci/ccdc_davinci.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/media/davinci/ccdc_davinci.h
+@@ -0,0 +1,484 @@
++/*
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* ccdc_davinci.h */
++
++#ifndef CCDC_DAVINCI_H
++#define CCDC_DAVINCI_H
++#include <asm/io.h>
++#include <linux/videodev.h>
++
++#define TRUE 1
++#define FALSE 0
++
++/* Define to enable/disable video port */
++#define VIDEO_PORT_ENABLE	(1)
++
++typedef enum ccdc_pixfmt {
++	CCDC_PIXFMT_RAW = 0,
++	CCDC_PIXFMT_YCBCR_16BIT = 1,
++	CCDC_PIXFMT_YCBCR_8BIT = 2
++} ccdc_pixfmt;
++
++typedef enum ccdc_frmfmt {
++	CCDC_FRMFMT_PROGRESSIVE = 0,
++	CCDC_FRMFMT_INTERLACED = 1
++} ccdc_frmfmt;
++
++typedef enum ccdc_pinpol {
++	CCDC_PINPOL_POSITIVE = 0,
++	CCDC_PINPOL_NEGATIVE = 1
++} ccdc_pinpol;
++
++/* PIXEL ORDER IN MEMORY from LSB to MSB */
++/* only applicable for 8-bit input mode  */
++typedef enum ccdc_pixorder {
++	CCDC_PIXORDER_CBYCRY = 1,
++	CCDC_PIXORDER_YCBYCR = 0
++} ccdc_pixorder;
++
++typedef enum ccdc_buftype {
++	CCDC_BUFTYPE_FLD_INTERLEAVED,
++	CCDC_BUFTYPE_FLD_SEPARATED
++} ccdc_buftype;
++
++/* enum for No of pixel per line to be avg. in Black Clamping*/
++enum sample_length {
++	_1PIXELS = 0,
++	_2PIXELS,
++	_4PIXELS,
++	_8PIXELS,
++	_16PIXELS
++};
++
++#define FP_NUM_BYTES					(4)
++/* Define for extra pixel/line and extra lines/frame */
++#define NUM_EXTRAPIXELS	    8
++#define NUM_EXTRALINES		8
++
++/* settings for commonly used video formats */
++#define VPFE_WIN_NTSC    {0,0,720,480}
++#define VPFE_WIN_PAL     {0,0,720,576}
++#define VPFE_WIN_NTSC_SP {0,0,640,480}	/* ntsc square pixel */
++#define VPFE_WIN_PAL_SP  {0,0,768,576}	/* pal square pixel */
++#define VPFE_WIN_CIF     {0,0,352,288}
++#define VPFE_WIN_QCIF    {0,0,176,144}
++#define VPFE_WIN_QVGA    {0,0,320,240}
++#define VPFE_WIN_SIF     {0,0,352,240}
++
++#define VPFE_WIN_VGA	{0,0,(640 + NUM_EXTRAPIXELS),(480 + NUM_EXTRALINES)}
++#define VPFE_WIN_SVGA 	{0,0,(800 + NUM_EXTRAPIXELS),(600 + NUM_EXTRALINES)}
++#define VPFE_WIN_XGA	{0,0,(1024+ NUM_EXTRAPIXELS),(768 + NUM_EXTRALINES)}
++#define VPFE_WIN_480p	{0,0,(720 + NUM_EXTRAPIXELS),(480 + NUM_EXTRALINES)}
++#define VPFE_WIN_576p	{0,0,(720 + NUM_EXTRAPIXELS),(576 + NUM_EXTRALINES)}
++#define VPFE_WIN_720p 	{0,0,(1280+ NUM_EXTRAPIXELS),(720 + NUM_EXTRALINES)}
++#define VPFE_WIN_1080p 	{0,0,(1920),(1080)}
++
++/* enum for No of lines in Black Clamping */
++enum sample_line {
++	_1LINES = 0,
++	_2LINES,
++	_4LINES,
++	_8LINES,
++	_16LINES
++};
++
++enum hw_frame {
++	CCDC_RAW,
++	CCDC_YCBCR
++};
++
++/* enum for Alaw gama width */
++enum gama_width {
++	BITS_15_6 = 0,
++	BITS_14_5,
++	BITS_13_4,
++	BITS_12_3,
++	BITS_11_2,
++	BITS_10_1,
++	BITS_09_0
++};
++
++enum data_size {
++	_16BITS = 0,
++	_15BITS,
++	_14BITS,
++	_13BITS,
++	_12BITS,
++	_11BITS,
++	_10BITS,
++	_8BITS
++};
++
++typedef struct v4l2_rect ccdc_imgwin;
++
++/* structure for ALaw */
++struct a_law {
++	unsigned char b_alaw_enable;	/* Enable/disable A-Law */
++	enum gama_width gama_wd;	/*Gama Width Input */
++};
++
++/* structure for Black Clamping */
++struct black_clamp {
++	unsigned char b_clamp_enable;
++	enum sample_length sample_pixel; /* only if bClampEnable is TRUE */
++	enum sample_line sample_ln;	/* only if bClampEnable is TRUE */
++	unsigned short start_pixel;	/* only if bClampEnable is TRUE */
++	unsigned short sgain;	/* only if bClampEnable is TRUE */
++	unsigned short dc_sub;	/* only if bClampEnable is FALSE */
++};
++
++/* structure for Black Level Compensation */
++struct black_compensation {
++	char r_comp;		/* Constant value to subtract
++				   from Red component */
++	char gr_comp;		/* Constant value to subtract
++				   from Gr component */
++	char b_comp;		/* Constant value to subtract
++				   from Blue component */
++	char gb_comp;		/* Constant value to subtract
++				   from Gb component */
++};
++
++/* structure for fault pixel correction */
++struct fault_pixel {
++	unsigned char fpc_enable;	/*Enable or Disable fault
++					  pixel correction */
++	unsigned short fp_num;	/*Number of fault pixel */
++	unsigned int fpc_table_addr;	/*Address of fault pixel table */
++
++};
++
++/* Structure for CCDC configuration parameters for raw capture mode passed
++ * by application
++ */
++typedef struct ccdc_config_params_raw {
++
++	ccdc_pinpol fid_pol;	/* field id polarity */
++	ccdc_pinpol vd_pol;	/* vertical sync polarity */
++	ccdc_pinpol hd_pol;	/* horizontal sync polarity */
++	unsigned char image_invert_enable; /* enable to store the image in
++				  inverse order in memory(bottom to top) */
++	enum data_size data_sz;	/* data size value from 8 to 16 bits */
++	struct a_law alaw;	/* Structure for Optional A-Law */
++	struct black_clamp blk_clamp;	/* Structure for Optical Black Clamp */
++	struct black_compensation blk_comp;	/* Structure for
++						   Black Compensation */
++	struct fault_pixel fault_pxl;	/* Structure for Fault Pixel
++					   Module Configuration */
++} ccdc_config_params_raw;
++
++typedef struct ccdc_params_ycbcr {
++	ccdc_pixfmt pix_fmt;	/* pixel format */
++	ccdc_frmfmt frm_fmt;	/* progressive or interlaced frame */
++	ccdc_imgwin win;	/* video window */
++	ccdc_pinpol fid_pol;	/* field id polarity */
++	ccdc_pinpol vd_pol;	/* vertical sync polarity */
++	ccdc_pinpol hd_pol;	/* horizontal sync polarity */
++	int bt656_enable;	/* enable BT.656 embedded sync mode */
++	ccdc_pixorder pix_order;	/* cb:y:cr:y or y:cb:y:cr in memory */
++	ccdc_buftype buf_type;	/* interleaved or separated fields  */
++
++} ccdc_params_ycbcr;
++
++#define VPFE_CMD_CONFIG_CCDC_YCBCR \
++			_IOW('V',BASE_VIDIOC_PRIVATE + 1,ccdc_params_ycbcr)
++#define VPFE_CMD_CONFIG_CCDC_RAW \
++			_IOW('V',BASE_VIDIOC_PRIVATE + 4,ccdc_config_params_raw)
++
++#ifdef __KERNEL__
++
++/* Structure for CCDC configuration parameters for raw capture mode */
++typedef struct ccdc_params_raw {
++
++	ccdc_pixfmt pix_fmt;	/* pixel format */
++	ccdc_frmfmt frm_fmt;	/* progressive or interlaced frame */
++	ccdc_imgwin win;	/* video window */
++	ccdc_pinpol fid_pol;	/* field id polarity */
++	ccdc_pinpol vd_pol;	/* vertical sync polarity */
++	ccdc_pinpol hd_pol;	/* horizontal sync polarity */
++	ccdc_buftype buf_type;	/* interleaved or separated fields */
++	unsigned char image_invert_enable; /* enable to store the image in
++				 inverse order in memory(bottom to top) */
++	enum data_size data_sz;	/* data size value from 8 to 16 bits */
++	struct a_law alaw;	/* Structure for Optional A-Law */
++	struct black_clamp blk_clamp;	/* Structure for Optical Black Clamp */
++	struct black_compensation blk_comp;	/* Structure for
++						   Black Compensation */
++	struct fault_pixel fault_pxl;	/* Structure for Fault Pixel
++					   Module Configuration */
++} ccdc_params_raw;
++
++extern ccdc_params_raw ccdc_hw_params_raw;
++extern ccdc_params_ycbcr ccdc_hw_params_ycbcr;
++
++static inline enum data_size ccdc_raw_data_size(void)
++{
++	return ccdc_hw_params_raw.data_sz;
++}
++
++static inline unsigned char ccdc_alaw_enable(void)
++{
++	return ccdc_hw_params_raw.alaw.b_alaw_enable;
++}
++
++static inline void ccdc_set_frame_format(enum hw_frame frame_type,
++					 ccdc_frmfmt frame_format)
++{
++	if (frame_type == CCDC_YCBCR)
++		ccdc_hw_params_ycbcr.frm_fmt = frame_format;
++	else
++		ccdc_hw_params_raw.frm_fmt = frame_format;
++}
++
++static inline ccdc_frmfmt ccdc_get_frame_format(enum hw_frame frame_type)
++{
++	if (frame_type == CCDC_YCBCR)
++		return ccdc_hw_params_ycbcr.frm_fmt;
++	else
++		return ccdc_hw_params_raw.frm_fmt;
++}
++
++static inline void ccdc_set_buf_type(enum hw_frame frame_type,
++				     ccdc_buftype buf_type)
++{
++	if (frame_type == CCDC_YCBCR)
++		ccdc_hw_params_ycbcr.buf_type = buf_type;
++	else
++		ccdc_hw_params_raw.buf_type = buf_type;
++}
++
++static inline ccdc_buftype ccdc_get_buf_type(enum hw_frame frame_type)
++{
++	if (frame_type == CCDC_YCBCR)
++		return ccdc_hw_params_ycbcr.buf_type;
++	else
++		return ccdc_hw_params_raw.buf_type;
++}
++
++static inline void ccdc_get_image_window(enum hw_frame frame_type,
++					 ccdc_imgwin * win)
++{
++	if (frame_type == CCDC_YCBCR)
++		*win = ccdc_hw_params_ycbcr.win;
++	else
++		*win = ccdc_hw_params_raw.win;
++}
++
++static inline void ccdc_set_image_window(enum hw_frame frame_type,
++					 ccdc_imgwin win)
++{
++	if (frame_type == CCDC_YCBCR)
++		ccdc_hw_params_ycbcr.win = win;
++	else
++		ccdc_hw_params_raw.win = win;
++}
++
++static inline void ccdc_set_pix_order(ccdc_pixorder order)
++{
++	ccdc_hw_params_ycbcr.pix_order = order;
++}
++static inline ccdc_pixorder ccdc_get_pix_order(void)
++{
++	return ccdc_hw_params_ycbcr.pix_order;
++}
++
++/**************************************************************************\
++* Register OFFSET Definitions
++\**************************************************************************/
++#define PID                             (0x0)
++#define PCR                             (0x4)
++#define SYN_MODE                        (0x8)
++#define HD_VD_WID                       (0xc)
++#define PIX_LINES                       (0x10)
++#define HORZ_INFO                       (0x14)
++#define VERT_START                      (0x18)
++#define VERT_LINES                      (0x1c)
++#define CULLING                         (0x20)
++#define HSIZE_OFF                       (0x24)
++#define SDOFST                          (0x28)
++#define SDR_ADDR                        (0x2c)
++#define CLAMP                           (0x30)
++#define DCSUB                           (0x34)
++#define COLPTN                          (0x38)
++#define BLKCMP                          (0x3c)
++#define FPC                             (0x40)
++#define FPC_ADDR                        (0x44)
++#define VDINT                           (0x48)
++#define ALAW                            (0x4c)
++#define REC656IF                        (0x50)
++#define CCDCFG                          (0x54)
++#define FMTCFG                          (0x58)
++#define FMT_HORZ                        (0x5c)
++#define FMT_VERT                        (0x60)
++#define FMT_ADDR0                       (0x64)
++#define FMT_ADDR1                       (0x68)
++#define FMT_ADDR2                       (0x6c)
++#define FMT_ADDR3                       (0x70)
++#define FMT_ADDR4                       (0x74)
++#define FMT_ADDR5                       (0x78)
++#define FMT_ADDR6                       (0x7c)
++#define FMT_ADDR7                       (0x80)
++#define PRGEVEN_0                       (0x84)
++#define PRGEVEN_1                       (0x88)
++#define PRGODD_0                        (0x8c)
++#define PRGODD_1                        (0x90)
++#define VP_OUT                          (0x94)
++
++#define CCDC_IOBASE_VADDR               IO_ADDRESS(0x01c70400)
++
++#define regw(val, reg)    		outl(val, (reg)+CCDC_IOBASE_VADDR)
++#define regr(reg)         		inl((reg)+CCDC_IOBASE_VADDR)
++
++#define VPSS_SB_IOBASE_VADDR		IO_ADDRESS(0x01c73400)
++#define regw_sb(val, reg)    		outl(val, (reg)+VPSS_SB_IOBASE_VADDR)
++#define regr_sb(reg)         		inl((reg)+VPSS_SB_IOBASE_VADDR)
++
++/***************************************************************
++*	Define for various register bit mask and shifts for CCDC
++****************************************************************/
++#define CCDC_FID_POL_MASK			(0x01)
++#define CCDC_FID_POL_SHIFT			(4)
++#define CCDC_HD_POL_MASK			(0x01)
++#define CCDC_HD_POL_SHIFT			(3)
++#define CCDC_VD_POL_MASK			(0x01)
++#define CCDC_VD_POL_SHIFT			(2)
++#define CCDC_HSIZE_OFF_MASK			(0xffffffe0)
++#define CCDC_32BYTE_ALIGN_VAL			(31)
++#define CCDC_FRM_FMT_MASK			(0x01)
++#define CCDC_FRM_FMT_SHIFT			(7  )
++#define CCDC_DATA_SZ_MASK			(0x07)
++#define CCDC_DATA_SZ_SHIFT			(8)
++#define CCDC_PIX_FMT_MASK			(0x03)
++#define CCDC_PIX_FMT_SHIFT			(12)
++#define CCDC_VP2SDR_DISABLE			(0xFFFBFFFF)
++#define CCDC_WEN_ENABLE				(0x01 << 17)
++#define CCDC_SDR2RSZ_DISABLE			(0xFFF7FFFF)
++#define CCDC_VDHDEN_ENABLE			(0x01 << 16)
++#define CCDC_LPF_ENABLE				(0x01 << 14)
++#define CCDC_ALAW_ENABLE			(0x01 << 3 )
++#define CCDC_ALAW_GAMA_WD_MASK			(0x07)
++#define CCDC_BLK_CLAMP_ENABLE			(0x01 << 31)
++#define CCDC_BLK_SGAIN_MASK			(0x1F )
++#define CCDC_BLK_ST_PXL_MASK			(0x7FFF)
++#define CCDC_BLK_ST_PXL_SHIFT			(10)
++#define CCDC_BLK_SAMPLE_LN_MASK			(0x07)
++#define CCDC_BLK_SAMPLE_LN_SHIFT		(28)
++#define CCDC_BLK_SAMPLE_LINE_MASK		(0x07)
++#define CCDC_BLK_SAMPLE_LINE_SHIFT		(25)
++#define CCDC_BLK_DC_SUB_MASK			(0x03FFF)
++#define CCDC_BLK_COMP_MASK			(0x000000FF)
++#define CCDC_BLK_COMP_GB_COMP_SHIFT		(8)
++#define CCDC_BLK_COMP_GR_COMP_SHIFT		(16)
++#define CCDC_BLK_COMP_R_COMP_SHIFT		(24)
++#define CCDC_LATCH_ON_VSYNC_DISABLE		(0x01 << 15)
++#define CCDC_FPC_ENABLE				(0x01 << 15)
++#define CCDC_FPC_DISABLE			(0x0)
++#define CCDC_FPC_FPC_NUM_MASK 			(0x7FFF)
++#define CCDC_DATA_PACK_ENABLE			(0x01<<11)
++#define CCDC_FMTCFG_VPIN_MASK			(0x07)
++#define CCDC_FMTCFG_VPIN_SHIFT			(12)
++#define CCDC_FMT_HORZ_FMTLNH_MASK		(0x1FFF)
++#define CCDC_FMT_HORZ_FMTSPH_MASK		(0x1FFF)
++#define CCDC_FMT_HORZ_FMTSPH_SHIFT		(16 )
++#define CCDC_FMT_VERT_FMTLNV_MASK		(0x1FFF)
++#define CCDC_FMT_VERT_FMTSLV_MASK		(0x1FFF)
++#define CCDC_FMT_VERT_FMTSLV_SHIFT		(16 )
++#define CCDC_VP_OUT_VERT_NUM_MASK		(0x3FFF)
++#define CCDC_VP_OUT_VERT_NUM_SHIFT		(17)
++#define CCDC_VP_OUT_HORZ_NUM_MASK		(0x1FFF)
++#define CCDC_VP_OUT_HORZ_NUM_SHIFT		(4)
++#define CCDC_VP_OUT_HORZ_ST_MASK		(0x000F)
++#define CCDC_HORZ_INFO_SPH_SHIFT		(16)
++#define CCDC_VERT_START_SLV0_SHIFT		(16)
++#define CCDC_VDINT_VDINT0_SHIFT			(16)
++#define CCDC_VDINT_VDINT1_MASK			(0xFFFF)
++
++/* SBL register and mask defination */
++#define SBL_PCR_VPSS				(4)
++#define SBL_PCR_CCDC_WBL_O			(0xFF7FFFFF)
++
++#define PPC_RAW					(1)
++#define DCSUB_DEFAULT_VAL			(0)
++#define CLAMP_DEFAULT_VAL			(0)
++#define ENABLE_VIDEO_PORT			(0x00008000)
++#define DISABLE_VIDEO_PORT			(0)
++#define CCDC_COLPTN_VAL				(0xBB11BB11)
++#define TWO_BYTES_PER_PIXEL			(2)
++#define INTERLACED_IMAGE_INVERT			(0x4B6D)
++#define INTERLACED_NO_IMAGE_INVERT		(0x0249)
++#define PROGRESSIVE_IMAGE_INVERT		(0x4000)
++#define PROGRESSIVE_NO_IMAGE_INVERT		(0)
++#define CCDC_INTERLACED_HEIGHT_SHIFT		(1)
++
++extern void ccdc_reset(void);
++extern void ccdc_init(void);
++extern void ccdc_cleanup(void);
++
++extern void ccdc_setwin(ccdc_imgwin * image_win, ccdc_frmfmt frm_fmt, int ppc);
++void ccdc_config_ycbcr(void);
++void ccdc_config_raw(void);
++int validate_ccdc_param(ccdc_config_params_raw * ccdcparam);
++int ccdc_update_ycbcr_params(void *);
++int ccdc_update_raw_params(void *);
++
++/* inline functions that must be fast because they are called frequently */
++static inline void ccdc_vdhd_enable(int flag)
++{
++	unsigned int syn_mode;
++	syn_mode = regr(SYN_MODE);
++	syn_mode =
++	    (flag) ? (syn_mode | CCDC_VDHDEN_ENABLE) : (syn_mode &
++							(!CCDC_VDHDEN_ENABLE));
++
++	/* configure internal timing generator */
++	regw(syn_mode, SYN_MODE);
++}
++
++static inline void ccdc_enable(int flag)
++{
++	regw(flag, PCR);
++}
++
++static inline void ccdc_setfbaddr(unsigned long paddr)
++{
++	regw(paddr & 0xffffffe0, SDR_ADDR);
++}
++
++static inline int ccdc_getfid(void)
++{
++	int fid = (regr(SYN_MODE) >> 15) & 0x1;
++	return fid;
++}
++
++static inline int ccdc_sbl_reset(void)
++{
++	int sb_reset;
++	sb_reset = regr_sb(SBL_PCR_VPSS);
++	regw_sb((sb_reset & SBL_PCR_CCDC_WBL_O), SBL_PCR_VPSS);
++	return sb_reset;
++}
++
++static inline void ccdc_enable_vport(void)
++{
++	/* enable video port */
++	regw(ENABLE_VIDEO_PORT, FMTCFG);
++}
++
++#endif
++
++#endif				/* CCDC_DAVINCI_H */
+Index: linux-2.6.18/mvl_patches/pro50-1584.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1584.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1584);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

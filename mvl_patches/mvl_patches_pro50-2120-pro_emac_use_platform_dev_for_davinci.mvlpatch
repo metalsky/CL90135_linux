@@ -1,0 +1,430 @@
+#! /usr/bin/env bash
+# Patch: -pro_emac_use_platform_dev_for_davinci
+# Date: Thu Feb 19 15:01:47 2009
+# Source: MontaVista Software, Inc.
+# MR: 28780
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Mikhail Cherkashin <mikhailcher@ru.mvista.com>
+# Description:
+# platform devices is introduced to DaVinci dm644x and dm646x devices.
+# 
+#  arch/arm/mach-davinci/devices.c |   68 +++++++++++++++++++++++++++++
+#  include/linux/davinci_emac.h    |   92 ++++++++++++++++++++++++++++++++++++++++
+#  2 files changed, 160 insertions(+)
+# 
+
+PATCHNUM=2120
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28780
+Type: Enhancement
+Disposition: local
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Mikhail Cherkashin <mikhailcher@ru.mvista.com>
+Description:
+platform devices is introduced to DaVinci dm644x and dm646x devices.
+
+ arch/arm/mach-davinci/devices.c |   68 +++++++++++++++++++++++++++++
+ include/linux/davinci_emac.h    |   92 ++++++++++++++++++++++++++++++++++++++++
+ mvl_patches/pro50-2120.c        |   16 ++++++
+ 3 files changed, 176 insertions(+)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/devices.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/devices.c
++++ linux-2.6.18/arch/arm/mach-davinci/devices.c
+@@ -18,6 +18,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/usb/musb.h>
++#include <linux/davinci_emac.h>
+ 
+ #include <asm/hardware.h>
+ #include <asm/io.h>
+@@ -155,11 +156,78 @@ static void __init davinci_init_cpu_usb(
+ 	}
+ }
+ 
++/*
++ * MAC stuff
++ */
++
++static struct emac_init_config dm646x_emac_data = {
++	.base_address = IO_ADDRESS(DAVINCI_EMAC_CNTRL_REGS_BASE),
++	.intr_line = 24,
++	.reset_line = 0,
++	.emac_bus_frequency = 148500000,
++	.mdio_base_address = IO_ADDRESS(DAVINCI_MDIO_CNTRL_REGS_BASE),
++	.mdio_reset_line = 0,
++	.mdio_intr_line = 0,
++	.mdio_bus_frequency = 148500000,
++	.mdio_clock_frequency = 2200000,
++	.phy_mask = 3,
++	.num_intr_lines = 4,
++	.interrupt_name = {
++		[0] = "EMAC RX Threshold",
++		[1] = "EMAC Receive",
++		[2] = "EMAC Transmit",
++		[3] = "EMAC Misc",
++	},
++};
++
++static struct emac_init_config dm644x_emac_data = {
++	.base_address = IO_ADDRESS(DAVINCI_EMAC_CNTRL_REGS_BASE),
++	.intr_line = 13,
++	.reset_line = 0,
++	.emac_bus_frequency = 76500000,
++	.mdio_base_address = IO_ADDRESS(DAVINCI_MDIO_CNTRL_REGS_BASE),
++	.mdio_reset_line = 0,
++	.mdio_intr_line = 0,
++	.mdio_bus_frequency = 76500000,
++	.mdio_clock_frequency = 2200000,
++	.phy_mask = 2,
++	.num_intr_lines = 1,
++	.interrupt_name = {
++		[0] = "EMAC",
++	},
++};
++
++static struct platform_device emac_device = {
++	.name           = "emac_davinci",
++	.id             = 1,
++	.dev		= {
++		.platform_data = &dm644x_emac_data,
++	},
++	/*
++	 * TODO: use resources for addresses
++	 * .num_resources	= ARRAY_SIZE(mac_resources),
++	 * .resource	= mac_resources,
++	 */
++};
++
++static void __init davinci_init_cpu_emac_register(void)
++{
++	if (cpu_is_davinci_dm644x())
++		emac_device.dev.platform_data = &dm644x_emac_data;
++	else if (cpu_is_davinci_dm6467())
++		emac_device.dev.platform_data = &dm646x_emac_data;
++	else
++		return;
++
++	platform_device_register(&emac_device);
++}
++
+ static int __init davinci_init_devices(void)
+ {
+ 	davinci_init_cpu_i2c();
+ 	davinci_init_cpu_usb();
+ 	platform_add_devices(devices, ARRAY_SIZE(devices));
++	davinci_init_cpu_emac_register();
+ 	return 0;
+ }
+ arch_initcall(davinci_init_devices);
+Index: linux-2.6.18/include/linux/davinci_emac.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/linux/davinci_emac.h
+@@ -0,0 +1,92 @@
++/*
++ * Copyright 2006 (c) Texas Instruments
++ * Copyright 2008 (c) MontaVista Software
++ *
++ * Header file for DaVinci EMAC platform data
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++*/
++
++#ifndef __DAVINCI_EMAC_PLATFORM_DATA
++#define __DAVINCI_EMAC_PLATFORM_DATA
++
++/**
++ *  EMAC RX configuration
++ *
++ *  This data structure configures the RX module of the device
++ */
++struct emac_rx_config {
++	bool pass_crc;		/* pass CRC bytes to packet memory */
++	bool qos_enable;	/* receive qo_s enable ? */
++	bool no_buffer_chaining;	/* DEBUG ONLY - ALWAYS SET TO FALSE */
++	bool copy_maccontrol_frames_enable;
++	bool copy_short_frames_enable;
++	bool copy_error_frames_enable;
++	bool promiscous_enable;
++	u32 promiscous_channel;	/* promiscous receive channel */
++	bool broadcast_enable;	/* receive broadcast frames ? */
++	u32 broadcast_channel;	/* broadcast receive channel */
++	bool multicast_enable;	/* receive multicast frames ? */
++	u32 multicast_channel;	/* multicast receive channel */
++	u32 max_rx_pkt_length;	/* max receive packet length */
++	u32 buffer_offset;	/* buffer offset for all RX channels */
++};
++
++/**
++ *  EMAC MAC configuration
++ *
++ *  This data structure configures the MAC module parameters of the device
++ */
++struct emac_mac_config {
++	bool priority_is_fixed;
++	bool tx_short_gap_enable;
++	bool giga_bit_enable;
++	bool tx_pacing_enable;
++	bool mii_enable;	/* DEBUG ONLY - ALWAYS SET TO TRUE */
++	bool tx_flow_enable;
++	bool rx_flow_enable;
++	bool loopback_enable;
++	bool full_duplex_enable;	/* DEBUG ONLY - based upon phy_mode */
++	bool tx_interrupt_disable;
++};
++
++#define EMAC_MAX_INTERRUPTS 4
++#define EMAC_MAX_INTNAME_LENTH 20
++/**
++ *  EMAC Init Configuration
++ *
++ *  Configuration information provided to DDC layer during
++ *  initialization.  DDA gets the config information from the OS/PAL
++ *  layer and passes the relevant config to the DDC during
++ *  initialization. The config info can come from various sources -
++ *  static compiled in info, boot time (ENV, Flash) info etc.
++ */
++struct emac_init_config {
++	u32 num_tx_channels;
++	u32 num_rx_channels;
++	u32 emac_bus_frequency;
++	u32 base_address;
++	u32 e_wrap_base_address;
++	u32 intr_line;
++	u32 num_intr_lines;
++	char interrupt_name[EMAC_MAX_INTERRUPTS][EMAC_MAX_INTNAME_LENTH];
++	u32 reset_line;
++	u32 mdio_base_address;
++	u32 mdio_reset_line;
++	u32 mdio_intr_line;
++	u32 phy_mask;
++	u32 m_link_mask;
++	u32 mdio_bus_frequency;
++	u32 mdio_clock_frequency;
++	u32 mdio_tick_msec;
++	u32 mib64cnt_msec;
++	u32 phy_mode;
++	struct emac_rx_config rx_cfg;
++	struct emac_mac_config mac_cfg;
++};
++
++#endif
++
+Index: linux-2.6.18/mvl_patches/pro50-2120.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2120.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2120);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

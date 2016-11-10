@@ -1,0 +1,687 @@
+#! /usr/bin/env bash
+# Patch: -ide_add_fixup_method_to_ide_hwif_t
+# Date: Fri Sep 19 13:57:33 2008
+# Source: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+# MR: 27086
+# Type: Enhancement
+# Disposition: merged from 2.6.24-rc1
+# Signed-off-by: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+# ide: add ->fixup method to ide_hwif_t
+# 
+# * Add ->fixup method to ide_hwif_t.
+# 
+# * Set hwif->fixup in ide_pci_setup_ports() to d->fixup.
+# 
+# * Use hwif->fixup in probe_hwif().
+# 
+# * Use probe_hwif_init() instead of probe_hwif_init_with_fixup() in
+#   ide_setup_pci_device().
+# 
+# * Add 'fixup' argument to ide_register_hw() and use it to set hwif->fixup,
+#   update all ide_register_hw() users accordingly.
+# 
+# * Convert ide-cs/delkin_cb host drivers to use ide_register_hw().
+# 
+# * Restore hwif->fixup in ide_hwif_restore().
+# 
+# * Remove ide_register_hw_with_fixup(), probe_hwif_init_with_fixup()
+#   and 'fixup' argument from probe_hwif().
+# 
+# The patch is quite different from its upstream version as I didn't want to merge
+# the 'it821x' RAID mode fix and instead incorporated the fixup call place change
+# from it; also I didn't merge the patches converting 'hwif->mmio' to a flag and
+# {tune|speed}proc() methods to set_{pio|dma}_mode(), adding the PIO mode support
+# mask, [mu]dma_filter() methods, the 'host_flags' field, hwif_register_devices();
+# also, the 'delkin_cb' driver wasn't yet present in 2.6.18, and arm26 support had
+# not been removed...
+# 
+# commit fd9bb53942a7ca3398a63f2c238afd8fbed3ec0e
+# tree eab9592f5bcbee89e0fdf9661e40a92d629d0a32
+# parent 438c470261036db25bfae15235ba99812e3dc763
+# author Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:31 +0200
+# committer Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:31 +0200
+# 
+#  drivers/ide/arm/bast-ide.c     |    2 +-
+#  drivers/ide/arm/ide_arm.c      |    2 +-
+#  drivers/ide/cris/ide-cris.c    |    2 +-
+#  drivers/ide/h8300/ide-h8300.c  |    2 +-
+#  drivers/ide/ide-pnp.c          |    2 +-
+#  drivers/ide/ide-probe.c        |   13 ++++---------
+#  drivers/ide/ide.c              |   23 +++++++++--------------
+#  drivers/ide/legacy/buddha.c    |    4 ++--
+#  drivers/ide/legacy/falconide.c |    2 +-
+#  drivers/ide/legacy/gayle.c     |    2 +-
+#  drivers/ide/legacy/ide-cs.c    |    2 +-
+#  drivers/ide/legacy/macide.c    |    6 +++---
+#  drivers/ide/legacy/q40ide.c    |    2 +-
+#  drivers/ide/setup-pci.c        |    6 ++++--
+#  drivers/macintosh/mediabay.c   |    2 +-
+#  include/linux/ide.h            |   11 ++++-------
+#  16 files changed, 36 insertions(+), 47 deletions(-)
+# 
+
+PATCHNUM=1529
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+MR: 27086
+Type: Enhancement
+Disposition: merged from 2.6.24-rc1
+Signed-off-by: Bartlomiej Zolnierkiewicz <bzolnier@gmail.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+ide: add ->fixup method to ide_hwif_t
+
+* Add ->fixup method to ide_hwif_t.
+
+* Set hwif->fixup in ide_pci_setup_ports() to d->fixup.
+
+* Use hwif->fixup in probe_hwif().
+
+* Use probe_hwif_init() instead of probe_hwif_init_with_fixup() in
+  ide_setup_pci_device().
+
+* Add 'fixup' argument to ide_register_hw() and use it to set hwif->fixup,
+  update all ide_register_hw() users accordingly.
+
+* Convert ide-cs/delkin_cb host drivers to use ide_register_hw().
+
+* Restore hwif->fixup in ide_hwif_restore().
+
+* Remove ide_register_hw_with_fixup(), probe_hwif_init_with_fixup()
+  and 'fixup' argument from probe_hwif().
+
+The patch is quite different from its upstream version as I didn't want to merge
+the 'it821x' RAID mode fix and instead incorporated the fixup call place change
+from it; also I didn't merge the patches converting 'hwif->mmio' to a flag and
+{tune|speed}proc() methods to set_{pio|dma}_mode(), adding the PIO mode support
+mask, [mu]dma_filter() methods, the 'host_flags' field, hwif_register_devices();
+also, the 'delkin_cb' driver wasn't yet present in 2.6.18, and arm26 support had
+not been removed...
+
+commit fd9bb53942a7ca3398a63f2c238afd8fbed3ec0e
+tree eab9592f5bcbee89e0fdf9661e40a92d629d0a32
+parent 438c470261036db25bfae15235ba99812e3dc763
+author Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:31 +0200
+committer Bartlomiej Zolnierkiewicz <bzolnier@gmail.com> Sat, 20 Oct 2007 00:32:31 +0200
+
+ drivers/ide/arm/bast-ide.c     |    2 +-
+ drivers/ide/arm/ide_arm.c      |    2 +-
+ drivers/ide/cris/ide-cris.c    |    2 +-
+ drivers/ide/h8300/ide-h8300.c  |    2 +-
+ drivers/ide/ide-pnp.c          |    2 +-
+ drivers/ide/ide-probe.c        |   13 ++++---------
+ drivers/ide/ide.c              |   23 +++++++++--------------
+ drivers/ide/legacy/buddha.c    |    4 ++--
+ drivers/ide/legacy/falconide.c |    2 +-
+ drivers/ide/legacy/gayle.c     |    2 +-
+ drivers/ide/legacy/ide-cs.c    |    2 +-
+ drivers/ide/legacy/macide.c    |    6 +++---
+ drivers/ide/legacy/q40ide.c    |    2 +-
+ drivers/ide/setup-pci.c        |    6 ++++--
+ drivers/macintosh/mediabay.c   |    2 +-
+ include/linux/ide.h            |   11 ++++-------
+ mvl_patches/pro50-1529.c       |   16 ++++++++++++++++
+ 17 files changed, 52 insertions(+), 47 deletions(-)
+
+Index: linux-2.6.18/drivers/ide/arm/bast-ide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/arm/bast-ide.c
++++ linux-2.6.18/drivers/ide/arm/bast-ide.c
+@@ -45,7 +45,7 @@ bastide_register(unsigned int base, unsi
+ 	hw.io_ports[IDE_CONTROL_OFFSET] = aux + (6 * 0x20);
+ 	hw.irq = irq;
+ 
+-	ide_register_hw(&hw, 0, hwif);
++	ide_register_hw(&hw, NULL, 0, hwif);
+ 
+ 	return 0;
+ }
+Index: linux-2.6.18/drivers/ide/arm/ide_arm.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/arm/ide_arm.c
++++ linux-2.6.18/drivers/ide/arm/ide_arm.c
+@@ -38,6 +38,6 @@ void __init ide_arm_init(void)
+ 		memset(&hw, 0, sizeof(hw));
+ 		ide_std_init_ports(&hw, IDE_ARM_IO, IDE_ARM_IO + 0x206);
+ 		hw.irq = IDE_ARM_IRQ;
+-		ide_register_hw(&hw, 1, NULL);
++		ide_register_hw(&hw, NULL, 1, NULL);
+ 	}
+ }
+Index: linux-2.6.18/drivers/ide/cris/ide-cris.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/cris/ide-cris.c
++++ linux-2.6.18/drivers/ide/cris/ide-cris.c
+@@ -794,7 +794,7 @@ init_e100_ide (void)
+ 		                ide_offsets,
+ 		                0, 0, cris_ide_ack_intr,
+ 		                ide_default_irq(0));
+-		ide_register_hw(&hw, 1, &hwif);
++		ide_register_hw(&hw, NULL, 1, &hwif);
+ 		hwif->mmio = 2;
+ 		hwif->chipset = ide_etrax100;
+ 		hwif->tuneproc = &tune_cris_ide;
+Index: linux-2.6.18/drivers/ide/h8300/ide-h8300.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/h8300/ide-h8300.c
++++ linux-2.6.18/drivers/ide/h8300/ide-h8300.c
+@@ -103,7 +103,7 @@ void __init h8300_ide_init(void)
+ 	hw_setup(&hw);
+ 
+ 	/* register if */
+-	idx = ide_register_hw(&hw, 1, &hwif);
++	idx = ide_register_hw(&hw, NULL, 1, &hwif);
+ 	if (idx == -1) {
+ 		printk(KERN_ERR "ide-h8300: IDE I/F register failed\n");
+ 		return;
+Index: linux-2.6.18/drivers/ide/ide-pnp.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide-pnp.c
++++ linux-2.6.18/drivers/ide/ide-pnp.c
+@@ -42,7 +42,7 @@ static int idepnp_probe(struct pnp_dev *
+ 	hw.irq = pnp_irq(dev, 0);
+ 	hw.dma = NO_DMA;
+ 
+-	index = ide_register_hw(&hw, 1, &hwif);
++	index = ide_register_hw(&hw, NULL, 1, &hwif);
+ 
+ 	if (index != -1) {
+ 	    	printk(KERN_INFO "ide%d: generic PnP IDE interface\n", index);
+Index: linux-2.6.18/drivers/ide/ide-probe.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide-probe.c
++++ linux-2.6.18/drivers/ide/ide-probe.c
+@@ -817,6 +817,9 @@ static void probe_hwif(ide_hwif_t *hwif)
+ 		return;
+ 	}
+ 
++	if (hwif->fixup)
++		hwif->fixup(hwif);
++
+ 	for (unit = 0; unit < MAX_DRIVES; ++unit) {
+ 		ide_drive_t *drive = &hwif->drives[unit];
+ 
+@@ -869,13 +872,10 @@ static void probe_hwif(ide_hwif_t *hwif)
+ 
+ static int hwif_init(ide_hwif_t *hwif);
+ 
+-int probe_hwif_init_with_fixup(ide_hwif_t *hwif, void (*fixup)(ide_hwif_t *hwif))
++int probe_hwif_init(ide_hwif_t *hwif)
+ {
+ 	probe_hwif(hwif);
+ 
+-	if (fixup)
+-		fixup(hwif);
+-
+ 	if (!hwif_init(hwif)) {
+ 		printk(KERN_INFO "%s: failed to initialize IDE interface\n",
+ 				 hwif->name);
+@@ -897,11 +897,6 @@ int probe_hwif_init_with_fixup(ide_hwif_
+ 	return 0;
+ }
+ 
+-int probe_hwif_init(ide_hwif_t *hwif)
+-{
+-	return probe_hwif_init_with_fixup(hwif, NULL);
+-}
+-
+ EXPORT_SYMBOL(probe_hwif_init);
+ 
+ #if MAX_HWIFS > 1
+Index: linux-2.6.18/drivers/ide/ide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/ide.c
++++ linux-2.6.18/drivers/ide/ide.c
+@@ -468,6 +468,8 @@ static void ide_hwif_restore(ide_hwif_t 
+ 	hwif->cds			= tmp_hwif->cds;
+ #endif
+ 
++	hwif->fixup			= tmp_hwif->fixup;
++
+ 	hwif->tuneproc			= tmp_hwif->tuneproc;
+ 	hwif->speedproc			= tmp_hwif->speedproc;
+ 	hwif->selectproc		= tmp_hwif->selectproc;
+@@ -741,11 +743,11 @@ void ide_setup_ports (	hw_regs_t *hw,
+ }
+ 
+ /**
+- *	ide_register_hw_with_fixup	-	register IDE interface
++ *	ide_register_hw		-	register IDE interface
+  *	@hw: hardware registers
++ *	@fixup: fixup function
+  *	@initializing: set while initializing built-in drivers
+  *	@hwifp: pointer to returned hwif
+- *	@fixup: fixup function
+  *
+  *	Register an IDE interface, specifying exactly the registers etc.
+  *	Set init=1 iff calling before probes have taken place.
+@@ -753,9 +755,8 @@ void ide_setup_ports (	hw_regs_t *hw,
+  *	Returns -1 on error.
+  */
+ 
+-int ide_register_hw_with_fixup(hw_regs_t *hw, int initializing,
+-			       ide_hwif_t **hwifp,
+-			       void(*fixup)(ide_hwif_t *hwif))
++int ide_register_hw(hw_regs_t *hw, void (*fixup)(ide_hwif_t *),
++		    int initializing, ide_hwif_t **hwifp)
+ {
+ 	int index, retry = 1;
+ 	ide_hwif_t *hwif;
+@@ -791,11 +792,12 @@ found:
+ 	memcpy(hwif->io_ports, hwif->hw.io_ports, sizeof(hwif->hw.io_ports));
+ 	hwif->irq = hw->irq;
+ 	hwif->noprobe = 0;
++	hwif->fixup = fixup;
+ 	hwif->chipset = hw->chipset;
+ 	hwif->gendev.parent = hw->dev;
+ 
+ 	if (!initializing) {
+-		probe_hwif_init_with_fixup(hwif, fixup);
++		probe_hwif_init(hwif);
+ 		ide_proc_register_port(hwif);
+ 	}
+ 
+@@ -805,13 +807,6 @@ found:
+ 	return (initializing || hwif->present) ? index : -1;
+ }
+ 
+-EXPORT_SYMBOL(ide_register_hw_with_fixup);
+-
+-int ide_register_hw(hw_regs_t *hw, int initializing, ide_hwif_t **hwifp)
+-{
+-	return ide_register_hw_with_fixup(hw, initializing, hwifp, NULL);
+-}
+-
+ EXPORT_SYMBOL(ide_register_hw);
+ 
+ /*
+@@ -1318,7 +1313,7 @@ int generic_ide_ioctl(ide_drive_t *drive
+ 			ide_init_hwif_ports(&hw, (unsigned long) args[0],
+ 					    (unsigned long) args[1], NULL);
+ 			hw.irq = args[2];
+-			if (ide_register_hw(&hw, 0, NULL) == -1)
++			if (ide_register_hw(&hw, NULL, 0, NULL) == -1)
+ 				return -EIO;
+ 			return 0;
+ 		}
+Index: linux-2.6.18/drivers/ide/legacy/buddha.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/buddha.c
++++ linux-2.6.18/drivers/ide/legacy/buddha.c
+@@ -212,8 +212,8 @@ fail_base2:
+ //						xsurf_iops,
+ 						IRQ_AMIGA_PORTS);
+ 			}	
+-			
+-			index = ide_register_hw(&hw, 1, &hwif);
++
++			index = ide_register_hw(&hw, NULL, 1, &hwif);
+ 			if (index != -1) {
+ 				hwif->mmio = 2;
+ 				printk("ide%d: ", index);
+Index: linux-2.6.18/drivers/ide/legacy/falconide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/falconide.c
++++ linux-2.6.18/drivers/ide/legacy/falconide.c
+@@ -70,7 +70,7 @@ void __init falconide_init(void)
+ 			0, 0, NULL,
+ //			falconide_iops,
+ 			IRQ_MFP_IDE);
+-	index = ide_register_hw(&hw, 1, NULL);
++	index = ide_register_hw(&hw, NULL, 1, NULL);
+ 
+ 	if (index != -1)
+ 	    printk("ide%d: Falcon IDE interface\n", index);
+Index: linux-2.6.18/drivers/ide/legacy/gayle.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/gayle.c
++++ linux-2.6.18/drivers/ide/legacy/gayle.c
+@@ -165,7 +165,7 @@ found:
+ //			&gayle_iops,
+ 			IRQ_AMIGA_PORTS);
+ 
+-	index = ide_register_hw(&hw, 1, &hwif);
++	index = ide_register_hw(&hw, NULL, 1, &hwif);
+ 	if (index != -1) {
+ 	    hwif->mmio = 2;
+ 	    switch (i) {
+Index: linux-2.6.18/drivers/ide/legacy/ide-cs.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/ide-cs.c
++++ linux-2.6.18/drivers/ide/legacy/ide-cs.c
+@@ -154,7 +154,7 @@ static int idecs_register(unsigned long 
+     hw.irq = irq;
+     hw.chipset = ide_pci;
+     hw.dev = &handle->dev;
+-    return ide_register_hw_with_fixup(&hw, 0, NULL, ide_undecoded_slave);
++    return ide_register_hw(&hw, &ide_undecoded_slave, 0, NULL);
+ }
+ 
+ /*======================================================================
+Index: linux-2.6.18/drivers/ide/legacy/macide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/macide.c
++++ linux-2.6.18/drivers/ide/legacy/macide.c
+@@ -102,21 +102,21 @@ void macide_init(void)
+ 				0, 0, macide_ack_intr,
+ //				quadra_ide_iops,
+ 				IRQ_NUBUS_F);
+-		index = ide_register_hw(&hw, 1, &hwif);
++		index = ide_register_hw(&hw, NULL, 1, &hwif);
+ 		break;
+ 	case MAC_IDE_PB:
+ 		ide_setup_ports(&hw, IDE_BASE, macide_offsets,
+ 				0, 0, macide_ack_intr,
+ //				macide_pb_iops,
+ 				IRQ_NUBUS_C);
+-		index = ide_register_hw(&hw, 1, &hwif);
++		index = ide_register_hw(&hw, NULL, 1, &hwif);
+ 		break;
+ 	case MAC_IDE_BABOON:
+ 		ide_setup_ports(&hw, BABOON_BASE, macide_offsets,
+ 				0, 0, NULL,
+ //				macide_baboon_iops,
+ 				IRQ_BABOON_1);
+-		index = ide_register_hw(&hw, 1, &hwif);
++		index = ide_register_hw(&hw, NULL, 1, &hwif);
+ 		if (index == -1) break;
+ 		if (macintosh_config->ident == MAC_MODEL_PB190) {
+ 
+Index: linux-2.6.18/drivers/ide/legacy/q40ide.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/legacy/q40ide.c
++++ linux-2.6.18/drivers/ide/legacy/q40ide.c
+@@ -142,7 +142,7 @@ void q40ide_init(void)
+ 			0, NULL,
+ //			m68kide_iops,
+ 			q40ide_default_irq(pcide_bases[i]));
+-	index = ide_register_hw(&hw, 1, &hwif);
++	index = ide_register_hw(&hw, NULL, 1, &hwif);
+ 	// **FIXME**
+ 	if (index != -1)
+ 		hwif->mmio = 2;
+Index: linux-2.6.18/drivers/ide/setup-pci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/ide/setup-pci.c
++++ linux-2.6.18/drivers/ide/setup-pci.c
+@@ -616,6 +616,8 @@ void ide_pci_setup_ports(struct pci_dev 
+ 		else
+ 			ide_hwif_setup_dma(dev, d, hwif);
+ bypass_legacy_dma:
++		hwif->fixup = d->fixup;
++
+ 		if (d->init_hwif)
+ 			/* Call chipset-specific routine
+ 			 * for each enabled hwif
+@@ -716,9 +718,9 @@ int ide_setup_pci_device(struct pci_dev 
+ 		mate = &ide_hwifs[index_list.b.high];
+ 
+ 	if (hwif)
+-		probe_hwif_init_with_fixup(hwif, d->fixup);
++		probe_hwif_init(hwif);
+ 	if (mate)
+-		probe_hwif_init_with_fixup(mate, d->fixup);
++		probe_hwif_init(mate);
+ 
+ 	if (hwif)
+ 		ide_proc_register_port(hwif);
+Index: linux-2.6.18/drivers/macintosh/mediabay.c
+===================================================================
+--- linux-2.6.18.orig/drivers/macintosh/mediabay.c
++++ linux-2.6.18/drivers/macintosh/mediabay.c
+@@ -563,7 +563,7 @@ static void media_bay_step(int i)
+ 				ide_init_hwif_ports(&hw, (unsigned long) bay->cd_base, (unsigned long) 0, NULL);
+ 				hw.irq = bay->cd_irq;
+ 				hw.chipset = ide_pmac;
+-				bay->cd_index = ide_register_hw(&hw, 0, NULL);
++				bay->cd_index = ide_register_hw(&hw, NULL, 0, NULL);
+ 				pmu_resume();
+ 			}
+ 			if (bay->cd_index == -1) {
+Index: linux-2.6.18/include/linux/ide.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/ide.h
++++ linux-2.6.18/include/linux/ide.h
+@@ -217,12 +217,8 @@ typedef struct hw_regs_s {
+ 	struct device	*dev;
+ } hw_regs_t;
+ 
+-/*
+- * Register new hardware with ide
+- */
+-int ide_register_hw(hw_regs_t *, int, struct hwif_s **);
+-int ide_register_hw_with_fixup(hw_regs_t *, int, struct hwif_s **,
+-			       void (*)(struct hwif_s *));
++int ide_register_hw(hw_regs_t *, void (*)(struct hwif_s *), int,
++		    struct hwif_s **);
+ 
+ /*
+  * Set up hw_regs_t structure before calling ide_register_hw (optional)
+@@ -714,6 +710,8 @@ typedef struct hwif_s {
+ //	u8	(*ratefilter)(ide_drive_t *, u8);
+ #endif
+ 
++	void (*fixup)(struct hwif_s *);
++
+ 	void (*ata_input_data)(ide_drive_t *, void *, u32);
+ 	void (*ata_output_data)(ide_drive_t *, void *, u32);
+ 
+@@ -1305,7 +1303,6 @@ void ide_unregister_region(struct gendis
+ 
+ void ide_undecoded_slave(ide_hwif_t *);
+ 
+-int probe_hwif_init_with_fixup(ide_hwif_t *, void (*)(ide_hwif_t *));
+ extern int probe_hwif_init(ide_hwif_t *);
+ 
+ static inline void *ide_get_hwifdata (ide_hwif_t * hwif)
+Index: linux-2.6.18/mvl_patches/pro50-1529.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1529.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1529);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

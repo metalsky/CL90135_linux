@@ -1,0 +1,503 @@
+#! /usr/bin/env bash
+# Patch: -POWERPC_MPIC_support_more_than_256_sources
+# Date: Wed Dec  3 14:03:26 2008
+# Source: git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+# MR: 30078
+# Type: Enhancement
+# Disposition: backport
+# Signed-off-by: Randy Vinson <rvinson@mvista.com>
+# Description:
+# From 7df2457db83bc922fcc8b462526b77f1ffe8c84b Mon Sep 17 00:00:00 2001
+# From: Olof Johansson <olof@lixom.net>
+# Date: Sun, 28 Jan 2007 23:33:18 -0600
+# Subject: [PATCH] [POWERPC] MPIC: support more than 256 sources
+# 
+# Allow more than the default 256 MPIC sources. Allocates a new flag
+# (MPIC_LARGE_VECTORS) to be used by platform code when instantiating
+# the mpic.
+# 
+# I picked 11 bits worth right now since it would cover the number of
+# sources on any hardware I have seen. It can always be increased later
+# if needed.
+# 
+# Signed-off-by: Olof Johansson <olof@lixom.net>
+# Signed-off-by: Paul Mackerras <paulus@samba.org>
+
+PATCHNUM=1949
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+MR: 30078
+Type: Enhancement
+Disposition: backport
+Signed-off-by: Randy Vinson <rvinson@mvista.com>
+Description:
+From 7df2457db83bc922fcc8b462526b77f1ffe8c84b Mon Sep 17 00:00:00 2001
+From: Olof Johansson <olof@lixom.net>
+Date: Sun, 28 Jan 2007 23:33:18 -0600
+Subject: [PATCH] [POWERPC] MPIC: support more than 256 sources
+
+Allow more than the default 256 MPIC sources. Allocates a new flag
+(MPIC_LARGE_VECTORS) to be used by platform code when instantiating
+the mpic.
+
+I picked 11 bits worth right now since it would cover the number of
+sources on any hardware I have seen. It can always be increased later
+if needed.
+
+Signed-off-by: Olof Johansson <olof@lixom.net>
+Signed-off-by: Paul Mackerras <paulus@samba.org>
+Index: linux-2.6.18/arch/powerpc/platforms/pasemi/setup.c
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/platforms/pasemi/setup.c
++++ linux-2.6.18/arch/powerpc/platforms/pasemi/setup.c
+@@ -133,8 +133,9 @@ static __init void pas_init_IRQ(void)
+ 	printk(KERN_DEBUG "OpenPIC addr: %lx\n", openpic_addr);
+ 	of_node_put(root);
+ 
+-	mpic = mpic_alloc(mpic_node, openpic_addr, MPIC_PRIMARY, 0, 0,
+-			  " PAS-OPIC  ");
++	mpic = mpic_alloc(mpic_node, openpic_addr,
++			  MPIC_PRIMARY|MPIC_LARGE_VECTORS,
++			  0, 0, " PAS-OPIC  ");
+ 	BUG_ON(!mpic);
+ 
+ 	mpic_assign_isu(mpic, 0, openpic_addr + 0x10000);
+Index: linux-2.6.18/arch/powerpc/sysdev/mpic.c
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/sysdev/mpic.c
++++ linux-2.6.18/arch/powerpc/sysdev/mpic.c
+@@ -496,13 +496,18 @@ static void __init mpic_scan_ht_pics(str
+ static struct mpic *mpic_find(unsigned int irq, unsigned int *is_ipi)
+ {
+ 	unsigned int src = mpic_irq_to_hw(irq);
++	struct mpic *mpic;
+ 
+ 	if (irq < NUM_ISA_INTERRUPTS)
+ 		return NULL;
++
++	mpic = irq_desc[irq].chip_data;
++
+ 	if (is_ipi)
+-		*is_ipi = (src >= MPIC_VEC_IPI_0 && src <= MPIC_VEC_IPI_3);
++		*is_ipi = (src >= mpic->ipi_vecs[0] &&
++			   src <= mpic->ipi_vecs[3]);
+ 
+-	return irq_desc[irq].chip_data;
++	return mpic;
+ }
+ 
+ /* Convert a cpu mask from logical to physical cpu numbers. */
+@@ -540,7 +545,11 @@ static inline void mpic_eoi(struct mpic 
+ #ifdef CONFIG_SMP
+ static irqreturn_t mpic_ipi_action(int irq, void *dev_id, struct pt_regs *regs)
+ {
+-	smp_message_recv(mpic_irq_to_hw(irq) - MPIC_VEC_IPI_0, regs);
++	struct mpic *mpic;
++
++	mpic = mpic_find(irq, NULL);
++	smp_message_recv(mpic_irq_to_hw(irq) - mpic->ipi_vecs[0], regs);
++
+ 	return IRQ_HANDLED;
+ }
+ #endif /* CONFIG_SMP */
+@@ -663,7 +672,7 @@ static void mpic_end_ht_irq(unsigned int
+ static void mpic_unmask_ipi(unsigned int irq)
+ {
+ 	struct mpic *mpic = mpic_from_ipi(irq);
+-	unsigned int src = mpic_irq_to_hw(irq) - MPIC_VEC_IPI_0;
++	unsigned int src = mpic_irq_to_hw(irq) - mpic->ipi_vecs[0];
+ 
+ 	DBG("%s: enable_ipi: %d (ipi %d)\n", mpic->name, irq, src);
+ 	mpic_ipi_write(src, mpic_ipi_read(src) & ~MPIC_VECPRI_MASK);
+@@ -808,11 +817,11 @@ static int mpic_host_map(struct irq_host
+ 
+ 	DBG("mpic: map virq %d, hwirq 0x%lx\n", virq, hw);
+ 
+-	if (hw == MPIC_VEC_SPURRIOUS)
++	if (hw == mpic->spurious_vec)
+ 		return -EINVAL;
+ 
+ #ifdef CONFIG_SMP
+-	else if (hw >= MPIC_VEC_IPI_0) {
++	else if (hw >= mpic->ipi_vecs[0]) {
+ 		WARN_ON(!(mpic->flags & MPIC_PRIMARY));
+ 
+ 		DBG("mpic: mapping as IPI\n");
+@@ -905,6 +914,7 @@ struct mpic * __init mpic_alloc(struct d
+ 	u32		reg;
+ 	const char	*vers;
+ 	int		i;
++	int		intvec_top;
+ 	u64		paddr = phys_addr;
+ 
+ 	mpic = alloc_bootmem(sizeof(struct mpic));
+@@ -915,9 +925,9 @@ struct mpic * __init mpic_alloc(struct d
+ 	mpic->name = name;
+ 	mpic->of_node = of_node_get(node);
+ 
+-	mpic->irqhost = irq_alloc_host(IRQ_HOST_MAP_LINEAR, 256,
++	mpic->irqhost = irq_alloc_host(IRQ_HOST_MAP_LINEAR, isu_size,
+ 				       &mpic_host_ops,
+-				       MPIC_VEC_SPURRIOUS);
++				       flags & MPIC_LARGE_VECTORS ? 2048 : 256);
+ 	if (mpic->irqhost == NULL) {
+ 		of_node_put(node);
+ 		return NULL;
+@@ -945,6 +955,21 @@ struct mpic * __init mpic_alloc(struct d
+ 	mpic->irq_count = irq_count;
+ 	mpic->num_sources = 0; /* so far */
+ 
++	if (flags & MPIC_LARGE_VECTORS)
++		intvec_top = 2047;
++	else
++		intvec_top = 255;
++
++	mpic->timer_vecs[0] = intvec_top - 8;
++	mpic->timer_vecs[1] = intvec_top - 7;
++	mpic->timer_vecs[2] = intvec_top - 6;
++	mpic->timer_vecs[3] = intvec_top - 5;
++	mpic->ipi_vecs[0]   = intvec_top - 4;
++	mpic->ipi_vecs[1]   = intvec_top - 3;
++	mpic->ipi_vecs[2]   = intvec_top - 2;
++	mpic->ipi_vecs[3]   = intvec_top - 1;
++	mpic->spurious_vec  = intvec_top;
++
+ 	/* Check for "big-endian" in device-tree */
+ 	if (node && get_property(node, "big-endian", NULL) != NULL)
+ 		mpic->flags |= MPIC_BIG_ENDIAN;
+@@ -1079,11 +1104,6 @@ void __init mpic_init(struct mpic *mpic)
+ 	int i;
+ 
+ 	BUG_ON(mpic->num_sources == 0);
+-	WARN_ON(mpic->num_sources > MPIC_VEC_IPI_0);
+-
+-	/* Sanitize source count */
+-	if (mpic->num_sources > MPIC_VEC_IPI_0)
+-		mpic->num_sources = MPIC_VEC_IPI_0;
+ 
+ 	printk(KERN_INFO "mpic: Initializing for %d sources\n", mpic->num_sources);
+ 
+@@ -1099,7 +1119,7 @@ void __init mpic_init(struct mpic *mpic)
+ 			   i * MPIC_INFO(TIMER_STRIDE) +
+ 			   MPIC_INFO(TIMER_VECTOR_PRI),
+ 			   MPIC_VECPRI_MASK |
+-			   (MPIC_VEC_TIMER_0 + i));
++			   (mpic->timer_vecs[0] + i));
+ 	}
+ 
+ 	/* Initialize IPIs to our reserved vectors and mark them disabled for now */
+@@ -1108,7 +1128,7 @@ void __init mpic_init(struct mpic *mpic)
+ 		mpic_ipi_write(i,
+ 			       MPIC_VECPRI_MASK |
+ 			       (10 << MPIC_VECPRI_PRIORITY_SHIFT) |
+-			       (MPIC_VEC_IPI_0 + i));
++			       (mpic->ipi_vecs[0] + i));
+ 	}
+ 
+ 	/* Initialize interrupt sources */
+@@ -1131,8 +1151,8 @@ void __init mpic_init(struct mpic *mpic)
+ 			       1 << hard_smp_processor_id());
+ 	}
+ 	
+-	/* Init spurrious vector */
+-	mpic_write(mpic->gregs, MPIC_INFO(GREG_SPURIOUS), MPIC_VEC_SPURRIOUS);
++	/* Init spurious vector */
++	mpic_write(mpic->gregs, MPIC_INFO(GREG_SPURIOUS), mpic->spurious_vec);
+ 
+ 	/* Disable 8259 passthrough, if supported */
+ 	if (!(mpic->flags & MPIC_NO_PTHROU_DIS))
+@@ -1179,9 +1199,9 @@ void mpic_irq_set_priority(unsigned int 
+ 
+ 	spin_lock_irqsave(&mpic_lock, flags);
+ 	if (is_ipi) {
+-		reg = mpic_ipi_read(src - MPIC_VEC_IPI_0) &
++		reg = mpic_ipi_read(src - mpic->ipi_vecs[0]) &
+ 			~MPIC_VECPRI_PRIORITY_MASK;
+-		mpic_ipi_write(src - MPIC_VEC_IPI_0,
++		mpic_ipi_write(src - mpic->ipi_vecs[0],
+ 			       reg | (pri << MPIC_VECPRI_PRIORITY_SHIFT));
+ 	} else {
+ 		reg = mpic_irq_read(src, MPIC_INFO(IRQ_VECTOR_PRI))
+@@ -1202,7 +1222,7 @@ unsigned int mpic_irq_get_priority(unsig
+ 
+ 	spin_lock_irqsave(&mpic_lock, flags);
+ 	if (is_ipi)
+-		reg = mpic_ipi_read(src = MPIC_VEC_IPI_0);
++		reg = mpic_ipi_read(src = mpic->ipi_vecs[0]);
+ 	else
+ 		reg = mpic_irq_read(src, MPIC_INFO(IRQ_VECTOR_PRI));
+ 	spin_unlock_irqrestore(&mpic_lock, flags);
+@@ -1308,7 +1328,7 @@ unsigned int mpic_get_one_irq(struct mpi
+ #ifdef DEBUG_LOW
+ 	DBG("%s: get_one_irq(): %d\n", mpic->name, src);
+ #endif
+-	if (unlikely(src == MPIC_VEC_SPURRIOUS))
++	if (unlikely(src == mpic->spurious_vec))
+ 		return NO_IRQ;
+ 	return irq_linear_revmap(mpic->irqhost, src);
+ }
+@@ -1340,7 +1360,7 @@ void mpic_request_ipis(void)
+ 
+ 	for (i = 0; i < 4; i++) {
+ 		unsigned int vipi = irq_create_mapping(mpic->irqhost,
+-						       MPIC_VEC_IPI_0 + i);
++						       mpic->ipi_vecs[0] + i);
+ 		if (vipi == NO_IRQ) {
+ 			printk(KERN_ERR "Failed to map IPI %d\n", i);
+ 			break;
+Index: linux-2.6.18/include/asm-powerpc/mpic.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-powerpc/mpic.h
++++ linux-2.6.18/include/asm-powerpc/mpic.h
+@@ -103,21 +103,6 @@
+ #define MPIC_MAX_ISU		32
+ 
+ /*
+- * Special vector numbers (internal use only)
+- */
+-#define MPIC_VEC_SPURRIOUS	255
+-#define MPIC_VEC_IPI_3		254
+-#define MPIC_VEC_IPI_2		253
+-#define MPIC_VEC_IPI_1		252
+-#define MPIC_VEC_IPI_0		251
+-
+-/* unused */
+-#define MPIC_VEC_TIMER_3	250
+-#define MPIC_VEC_TIMER_2	249
+-#define MPIC_VEC_TIMER_1	248
+-#define MPIC_VEC_TIMER_0	247
+-
+-/*
+  * Tsi108 implementation of MPIC has many differences from the original one
+  */
+ 
+@@ -274,6 +259,13 @@ struct mpic
+ 	unsigned char		*senses;
+ 	unsigned int		senses_count;
+ 
++	/* vector numbers used for internal sources (ipi/timers) */
++	unsigned int		ipi_vecs[4];
++	unsigned int		timer_vecs[4];
++
++	/* Spurious vector to program into unused sources */
++	unsigned int		spurious_vec;
++
+ #ifdef CONFIG_MPIC_U3_HT_IRQS
+ 	/* The fixup table */
+ 	struct mpic_irq_fixup	*fixups;
+@@ -326,6 +318,8 @@ struct mpic
+ #define MPIC_NO_PTHROU_DIS		0x00000040
+ /* DCR based MPIC */
+ #define MPIC_USES_DCR			0x00000080
++/* MPIC has 11-bit vector fields (or larger) */
++#define MPIC_LARGE_VECTORS		0x00000100
+ 
+ /* MPIC HW modification ID */
+ #define MPIC_REGSET_MASK		0xf0000000
+Index: linux-2.6.18/mvl_patches/pro50-1949.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1949.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1949);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

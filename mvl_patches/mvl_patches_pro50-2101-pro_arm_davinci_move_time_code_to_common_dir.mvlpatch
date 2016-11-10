@@ -1,0 +1,1087 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_move_time_code_to_common_dir
+# Date: Thu Feb 19 15:00:31 2009
+# Source: MontaVista Software, Inc.
+# MR: 30941
+# Type: Enhancement
+# Disposition: needs submitting to davinci community
+# Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+#     DaVinci: Move common time code to arch/arm/plat-davinci/
+# 
+#     Move the common time code that can be used by DaVinci and other DaVinci
+#     alike platforms into arch/arm/plat-davinci. Also, add macros for a number
+#     of bits to shift values over to be put into the correct field.
+# 
+#  arch/arm/mach-davinci/devices.c         |    2 
+#  arch/arm/mach-davinci/time.c            |  351 +-------------------------------
+#  arch/arm/plat-davinci/Makefile          |    2 
+#  arch/arm/plat-davinci/time.c            |  288 ++++++++++++++++++++++++++
+#  include/asm-arm/arch-davinci/hardware.h |    3 
+#  include/asm-arm/arch-davinci/system.h   |    4 
+#  include/asm-arm/arch-davinci/time.h     |   66 ++++++
+#  7 files changed, 371 insertions(+), 345 deletions(-)
+# 
+
+PATCHNUM=2101
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 30941
+Type: Enhancement
+Disposition: needs submitting to davinci community
+Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+    DaVinci: Move common time code to arch/arm/plat-davinci/
+
+    Move the common time code that can be used by DaVinci and other DaVinci
+    alike platforms into arch/arm/plat-davinci. Also, add macros for a number
+    of bits to shift values over to be put into the correct field.
+
+ arch/arm/mach-davinci/devices.c         |    2 
+ arch/arm/mach-davinci/time.c            |  351 +-------------------------------
+ arch/arm/plat-davinci/Makefile          |    2 
+ arch/arm/plat-davinci/time.c            |  288 ++++++++++++++++++++++++++
+ include/asm-arm/arch-davinci/hardware.h |    3 
+ include/asm-arm/arch-davinci/system.h   |    4 
+ include/asm-arm/arch-davinci/time.h     |   66 ++++++
+ mvl_patches/pro50-2101.c                |   16 +
+ 8 files changed, 387 insertions(+), 345 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/devices.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/devices.c
++++ linux-2.6.18/arch/arm/mach-davinci/devices.c
+@@ -27,8 +27,6 @@
+ #include <asm/arch/i2c.h>
+ #include <asm/arch/cpu.h>
+ 
+-#define DAVINCI_WDOG_BASE	(IO_PHYS + 0x21C00)
+-
+ static struct resource i2c_resources[] = {
+ 	{
+ 		.start		= DAVINCI_I2C_BASE,
+Index: linux-2.6.18/arch/arm/mach-davinci/time.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/time.c
++++ linux-2.6.18/arch/arm/mach-davinci/time.c
+@@ -1,45 +1,21 @@
+ /*
+  * DaVinci timer subsystem
+  *
+- * Author: Kevin Hilman, MontaVista Software, Inc. <source@mvista.com>
++ * Author: Kevin Hilman, MontaVista Software, Inc.
++ * Copyright (C) 2007-2008 MontaVista Software, Inc. <source@mvista.com>
+  *
+- * 2007 (c) MontaVista Software, Inc. This file is licensed under
+- * the terms of the GNU General Public License version 2. This program
+- * is licensed "as is" without any warranty of any kind, whether express
+- * or implied.
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
+  */
+ #include <linux/kernel.h>
+ #include <linux/init.h>
+-#include <linux/types.h>
+-#include <linux/interrupt.h>
+-#include <linux/clocksource.h>
+-#include <linux/clockchips.h>
+-#include <linux/spinlock.h>
+ 
+-#include <asm/io.h>
+ #include <asm/hardware.h>
+-#include <asm/system.h>
+-#include <asm/irq.h>
+ #include <asm/mach/irq.h>
+ #include <asm/mach/time.h>
+-#include <asm/errno.h>
+-#include <asm/arch/io.h>
+ #include <asm/arch/cpu.h>
+-
+-static struct clock_event_device clockevent_davinci;
+-
+-#define DAVINCI_TIMER0_BASE (IO_PHYS + 0x21400)
+-#define DAVINCI_TIMER1_BASE (IO_PHYS + 0x21800)
+-#define DAVINCI_WDOG_BASE   (IO_PHYS + 0x21C00)
+-
+-enum {
+-	T0_BOT = 0, T0_TOP, T1_BOT, T1_TOP, NUM_TIMERS,
+-};
+-
+-#define IS_TIMER1(id)    (id & 0x2)
+-#define IS_TIMER0(id)    (!IS_TIMER1(id))
+-#define IS_TIMER_TOP(id) ((id & 0x1))
+-#define IS_TIMER_BOT(id) (!IS_TIMER_TOP(id))
++#include <asm/arch/time.h>
+ 
+ static int timer_irqs[NUM_TIMERS] = {
+ 	IRQ_TINT0_TINT12,
+@@ -48,252 +24,12 @@ static int timer_irqs[NUM_TIMERS] = {
+ 	IRQ_TINT1_TINT34,
+ };
+ 
+-static int tid_system;
+-static int tid_freerun;
+-
+-/* Timer register offsets */
+-#define PID12                        0x0
+-#define TIM12                        0x10
+-#define TIM34                        0x14
+-#define PRD12                        0x18
+-#define PRD34                        0x1c
+-#define TCR                          0x20
+-#define TGCR                         0x24
+-#define WDTCR                        0x28
+-
+-/* Timer register bitfields */
+-#define TCR_ENAMODE_DISABLE          0x0
+-#define TCR_ENAMODE_ONESHOT          0x1
+-#define TCR_ENAMODE_PERIODIC         0x2
+-#define TCR_ENAMODE_MASK             0x3
+-
+-#define TGCR_TIMMODE_SHIFT           2
+-#define TGCR_TIMMODE_64BIT_GP        0x0
+-#define TGCR_TIMMODE_32BIT_UNCHAINED 0x1
+-#define TGCR_TIMMODE_64BIT_WDOG      0x2
+-#define TGCR_TIMMODE_32BIT_CHAINED   0x3
+-
+-#define TGCR_TIM12RS_SHIFT           0
+-#define TGCR_TIM34RS_SHIFT           1
+-#define TGCR_RESET                   0x0
+-#define TGCR_UNRESET                 0x1
+-#define TGCR_RESET_MASK              0x3
+-
+-#define WDTCR_WDEN_SHIFT             14
+-#define WDTCR_WDEN_DISABLE           0x0
+-#define WDTCR_WDEN_ENABLE            0x1
+-#define WDTCR_WDKEY_SHIFT            16
+-#define WDTCR_WDKEY_SEQ0             0xa5c6
+-#define WDTCR_WDKEY_SEQ1             0xda7e
+-
+-struct timer_s {
+-	char *name;
+-	unsigned int id;
+-	unsigned long period;
+-	unsigned long opts;
+-	unsigned long reg_base;
+-	unsigned long tim_reg;
+-	unsigned long prd_reg;
+-	unsigned long enamode_shift;
+-	struct irqaction irqaction;
+-};
+-
+-/* values for 'opts' field of struct timer_s */
+-#define TIMER_OPTS_DISABLED   0x00
+-#define TIMER_OPTS_ONESHOT    0x01
+-#define TIMER_OPTS_PERIODIC   0x02
+-
+-static int timer32_config(struct timer_s *t)
+-{
+-	u32 tcr = davinci_readl(t->reg_base + TCR);
+-
+-	/* disable timer */
+-	tcr &= ~(TCR_ENAMODE_MASK << t->enamode_shift);
+-	davinci_writel(tcr, t->reg_base + TCR);
+-
+-	/* reset counter to zero, set new period */
+-	davinci_writel(0, t->tim_reg);
+-	davinci_writel(t->period, t->prd_reg);
+-
+-	/* Set enable mode */
+-	if (t->opts & TIMER_OPTS_ONESHOT) {
+-		tcr |= TCR_ENAMODE_ONESHOT << t->enamode_shift;
+-	} else if (t->opts & TIMER_OPTS_PERIODIC) {
+-		tcr |= TCR_ENAMODE_PERIODIC << t->enamode_shift;
+-	}
+-
+-	davinci_writel(tcr, t->reg_base + TCR);
+-	return 0;
+-}
+-
+-static inline u32 timer32_read(struct timer_s *t)
+-{
+-	return davinci_readl(t->tim_reg);
+-}
+-
+-static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+-{
+-	struct clock_event_device *evt = &clockevent_davinci;
+-
+-	evt->event_handler(regs);
+-	return IRQ_HANDLED;
+-}
+-
+-/* called when 32-bit counter wraps */
+-static irqreturn_t freerun_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+-{
+-	return IRQ_HANDLED;
+-}
+-
+-static struct timer_s davinci_system_timer = {
+-	.name      = "clockevent",
+-	.opts      = TIMER_OPTS_DISABLED,
+-	.irqaction = {
+-		.flags   = IRQF_DISABLED | IRQF_TIMER,
+-		.handler = timer_interrupt,
+-	}
+-};
+-
+-static struct timer_s davinci_freerun_timer = {
+-	.name       = "free-run counter",
+-	.period     = ~0,
+-	.opts       = TIMER_OPTS_PERIODIC,
+-	.irqaction = {
+-		.flags   = IRQF_DISABLED | IRQF_TIMER,
+-		.handler = freerun_interrupt,
+-	}
+-};
+-static struct timer_s *timers[NUM_TIMERS];
+-
+-static void __init timer_init(int num_timers, u32 *bases)
+-{
+-	int i;
+-
+-	/* Global init of each 64-bit timer as a whole */
+-	for (i = 0; i < num_timers; i++) {
+-		u32 tgcr, base = bases[i];
+-
+-		/* Disabled, Internal clock source */
+-		davinci_writel(0, base + TCR);
+-
+-		/* reset both timers, no pre-scaler for timer34 */
+-		tgcr = 0;
+-		davinci_writel(tgcr, base + TGCR);
+-
+-		/* Set both timers to unchained 32-bit */
+-		tgcr = TGCR_TIMMODE_32BIT_UNCHAINED << TGCR_TIMMODE_SHIFT;
+-		davinci_writel(tgcr, base + TGCR);
+-
+-		/* Unreset timers */
+-		tgcr |= (TGCR_UNRESET << TGCR_TIM12RS_SHIFT) |
+-			(TGCR_UNRESET << TGCR_TIM34RS_SHIFT);
+-		davinci_writel(tgcr, base + TGCR);
+-
+-		/* Init both counters to zero */
+-		davinci_writel(0, base + TIM12);
+-		davinci_writel(0, base + TIM34);
+-	}
+-
+-	/* Init of each timer as a 32-bit timer */
+-	for (i = 0; i < NUM_TIMERS; i++) {
+-		struct timer_s *t = timers[i];
+-
+-		if (t && t->name) {
+-			t->id = i;
+-			t->reg_base = bases[i >> 1];
+-
+-			if (IS_TIMER_BOT(t->id)) {
+-				t->enamode_shift = 6;
+-				t->tim_reg = t->reg_base + TIM12;
+-				t->prd_reg = t->reg_base + PRD12;
+-			} else {
+-				t->enamode_shift = 22;
+-				t->tim_reg = t->reg_base + TIM34;
+-				t->prd_reg = t->reg_base + PRD34;
+-			}
+-
+-			/* Register interrupt */
+-			t->irqaction.name = t->name;
+-			t->irqaction.dev_id = (void *)t;
+-			if (t->irqaction.handler != NULL) {
+-				setup_irq(timer_irqs[t->id], &t->irqaction);
+-			}
+-
+-			timer32_config(timers[i]);
+-		}
+-	}
+-}
+-
+-/*
+- * clocksource
+- */
+-static cycle_t read_cycles(void)
+-{
+-	struct timer_s *t = timers[tid_freerun];
+-
+-	return (cycles_t)timer32_read(t);
+-}
+-
+-static struct clocksource clocksource_davinci = {
+-	.name		= "timer0_1",
+-	.rating		= 300,
+-	.read		= read_cycles,
+-	.mask		= CLOCKSOURCE_MASK(32),
+-	.shift		= 24,
+-	.is_continuous	= 1,
+-};
+-
+-/*
+- * clockevent
+- */
+-static void davinci_set_next_event(unsigned long cycles,
+-				  struct clock_event_device *evt)
+-{
+-	struct timer_s *t = timers[tid_system];
+-
+-	t->period = cycles;
+-	timer32_config(t);
+-}
+-
+-static void davinci_set_mode(enum clock_event_mode mode,
+-			     struct clock_event_device *evt)
+-{
+-	struct timer_s *t = timers[tid_system];
+-
+-	switch (mode) {
+-	case CLOCK_EVT_PERIODIC:
+-		t->period = DAVINCI_CLOCK_TICK_RATE / (HZ);
+-		t->opts = TIMER_OPTS_PERIODIC;
+-		timer32_config(t);
+-		break;
+-	case CLOCK_EVT_ONESHOT:
+-		t->opts = TIMER_OPTS_ONESHOT;
+-		break;
+-	case CLOCK_EVT_SHUTDOWN:
+-		t->opts = TIMER_OPTS_DISABLED;
+-		break;
+-	}
+-}
+-
+-static struct clock_event_device clockevent_davinci = {
+-	.name		= "timer0_0",
+-	.capabilities	= CLOCK_CAPS_MASK,
+-	.shift		= 32,
+-	.set_next_event	= davinci_set_next_event,
+-	.set_mode	= davinci_set_mode,
+-};
+-
+-
+ static u32 davinci_bases[] = { DAVINCI_TIMER0_BASE, DAVINCI_TIMER1_BASE };
++
+ static void __init davinci_timer_init(void)
+ {
+-	int num_timers;
+-	u32 *bases;
+-	static char err[] __initdata = KERN_ERR
+-		"%s: can't register clocksource!\n";
++	int system;
+ 
+-	num_timers = 2;
+-	bases = davinci_bases;
+ 	if (cpu_is_davinci_dm6467()) {
+ 		/*
+ 		 * Configure the 2 64-bit timer as 4 32-bit timers with
+@@ -305,8 +41,7 @@ static void __init davinci_timer_init(vo
+ 		 * T1_BOT: Timer 1, bottom:  reserved for DSP
+ 		 * T1_TOP: Timer 1, top   :  Linux system tick
+ 		 */
+-		tid_system = T1_TOP;
+-		tid_freerun = T0_TOP;
++		system = T1_TOP;
+ 	} else {
+ 		/*
+ 		 * Configure the 2 64-bit timer as 4 32-bit timers with
+@@ -317,75 +52,11 @@ static void __init davinci_timer_init(vo
+ 		 * T1_BOT: Timer 1, bottom:  (used by DSP in TI DSPLink code)
+ 		 * T1_TOP: Timer 1, top   :  <unused>
+ 		 */
+-		tid_system = T0_BOT;
+-		tid_freerun = T0_TOP;
++		system = T0_BOT;
+ 	}
+-	timers[tid_system] = &davinci_system_timer;
+-	timers[tid_freerun] = &davinci_freerun_timer;
+-
+-	/* init timer hw */
+-	timer_init(num_timers, bases);
+-
+-	/* setup clocksource */
+-	clocksource_davinci.mult =
+-		clocksource_khz2mult(DAVINCI_CLOCK_TICK_RATE/1000,
+-				     clocksource_davinci.shift);
+-	if (clocksource_register(&clocksource_davinci))
+-		printk(err, clocksource_davinci.name);
+-
+-	/* setup clockevent */
+-	clockevent_davinci.mult = div_sc(DAVINCI_CLOCK_TICK_RATE, NSEC_PER_SEC,
+-					 clockevent_davinci.shift);
+-	clockevent_davinci.max_delta_ns =
+-		clockevent_delta2ns(0xfffffffe, &clockevent_davinci);
+-	clockevent_davinci.min_delta_ns =
+-		clockevent_delta2ns(1, &clockevent_davinci);
+-
+-	register_global_clockevent(&clockevent_davinci);
++	davinci_common_timer_init(davinci_bases, 2, timer_irqs, system, T0_TOP);
+ }
+ 
+ struct sys_timer davinci_timer = {
+ 	.init   = davinci_timer_init,
+ };
+-
+-/* Reset board using the watchdog timer */
+-void davinci_watchdog_reset(void)
+-{
+-	u32 tgcr, wdtcr, base = DAVINCI_WDOG_BASE;
+-
+-	/* disable, internal clock source */
+-	davinci_writel(0, base + TCR);
+-
+-	/* reset timer, set mode to 64-bit watchdog, and unreset */
+-	davinci_writel(0, base + TGCR);
+-	tgcr =	(TGCR_TIMMODE_64BIT_WDOG << TGCR_TIMMODE_SHIFT) |
+-		(TGCR_UNRESET << TGCR_TIM12RS_SHIFT) |
+-		(TGCR_UNRESET << TGCR_TIM34RS_SHIFT);
+-	davinci_writel(tgcr, base + TGCR);
+-
+-	/* clear counter and period regs */
+-	davinci_writel(0, base + TIM12);
+-	davinci_writel(0, base + TIM34);
+-	davinci_writel(0, base + PRD12);
+-	davinci_writel(0, base + PRD34);
+-
+-	/* enable periodic mode */
+-	davinci_writel(TCR_ENAMODE_PERIODIC << 6, base + TCR);
+-
+-	/* put watchdog in pre-active state */
+-	wdtcr = (WDTCR_WDKEY_SEQ0 << WDTCR_WDKEY_SHIFT) |
+-		(WDTCR_WDEN_ENABLE << WDTCR_WDEN_SHIFT);
+-	davinci_writel(wdtcr, base + WDTCR);
+-
+-	/* put watchdog in active state */
+-	wdtcr = (WDTCR_WDKEY_SEQ1 << WDTCR_WDKEY_SHIFT) |
+-		(WDTCR_WDEN_ENABLE << WDTCR_WDEN_SHIFT);
+-	davinci_writel(wdtcr, base + WDTCR);
+-
+-	/*
+-	 * Write an invalid value to the WDKEY field to trigger
+-	 * a watchdog reset.
+-	 */
+-	wdtcr = 0xDEADBEEF;
+-	davinci_writel(wdtcr, base + WDTCR);
+-}
+Index: linux-2.6.18/arch/arm/plat-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/Makefile
++++ linux-2.6.18/arch/arm/plat-davinci/Makefile
+@@ -2,7 +2,7 @@
+ # Makefile for the linux kernel.
+ #
+ #
+-obj-y := clock.o dma.o
++obj-y := clock.o dma.o time.o
+ 
+ # Common objects
+ obj-$(CONFIG_GENERIC_GPIO)	+= gpio.o
+Index: linux-2.6.18/arch/arm/plat-davinci/time.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/plat-davinci/time.c
+@@ -0,0 +1,288 @@
++/*
++ * DaVinci timer subsystem
++ *
++ * Author: Kevin Hilman, MontaVista Software, Inc.
++ * Copyright (C) 2007-2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++#include <linux/kernel.h>
++#include <linux/clockchips.h>
++#include <linux/irq.h>
++
++#include <asm/arch/time.h>
++
++static struct clock_event_device clockevent_davinci;
++
++static int tid_system;
++static int tid_freerun;
++
++struct timer_s {
++	char *name;
++	unsigned int id;
++	unsigned long period;
++	unsigned long opts;
++	unsigned long reg_base;
++	unsigned long tim_reg;
++	unsigned long prd_reg;
++	unsigned long enamode_shift;
++	struct irqaction irqaction;
++};
++
++/* values for 'opts' field of struct timer_s */
++#define TIMER_OPTS_DISABLED   0x00
++#define TIMER_OPTS_ONESHOT    0x01
++#define TIMER_OPTS_PERIODIC   0x02
++
++static void timer32_config(struct timer_s *t)
++{
++	u32 tcr = davinci_readl(t->reg_base + TCR);
++
++	/* Disable timer */
++	tcr &= ~(TCR_ENAMODE_MASK << t->enamode_shift);
++	davinci_writel(tcr, t->reg_base + TCR);
++
++	/* Reset counter to zero, set new period */
++	davinci_writel(0, t->tim_reg);
++	davinci_writel(t->period, t->prd_reg);
++
++	/* Set enable mode */
++	if (t->opts & TIMER_OPTS_ONESHOT)
++		tcr |= TCR_ENAMODE_ONESHOT << t->enamode_shift;
++	else if (t->opts & TIMER_OPTS_PERIODIC)
++		tcr |= TCR_ENAMODE_PERIODIC << t->enamode_shift;
++
++	davinci_writel(tcr, t->reg_base + TCR);
++}
++
++static inline u32 timer32_read(struct timer_s *t)
++{
++	return davinci_readl(t->tim_reg);
++}
++
++static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
++{
++	clockevent_davinci.event_handler(regs);
++	return IRQ_HANDLED;
++}
++
++/* Called when 32-bit counter wraps */
++static irqreturn_t freerun_interrupt(int irq, void *dev_id,
++				     struct pt_regs *regs)
++{
++	return IRQ_HANDLED;
++}
++
++static struct timer_s davinci_system_timer = {
++	.name		= "clockevent",
++	.opts		= TIMER_OPTS_DISABLED,
++	.irqaction	= {
++		.flags		= IRQF_DISABLED | IRQF_TIMER,
++		.handler	= timer_interrupt
++	}
++};
++
++static struct timer_s davinci_freerun_timer = {
++	.name		= "free-run counter",
++	.period 	= ~0,
++	.opts		= TIMER_OPTS_PERIODIC,
++	.irqaction	= {
++		.flags		= IRQF_DISABLED | IRQF_TIMER,
++		.handler	= freerun_interrupt
++	}
++};
++static struct timer_s *timers[NUM_TIMERS];
++
++static void __init timer_init(int num_timers64, u32 *bases,
++			      int *timer_irqs)
++{
++	int i;
++
++	/* Global init of each 64-bit timer as a whole */
++	for (i = 0; i < num_timers64; i++) {
++		u32 tgcr, base = bases[i];
++
++		/* Disabled, Internal clock source */
++		davinci_writel(0, base + TCR);
++
++		/* reset both timers, no pre-scaler for timer34 */
++		davinci_writel(0, base + TGCR);
++
++		/* Set both timers to unchained 32-bit */
++		tgcr = TGCR_TIMMODE_32BIT_UNCHAINED << TGCR_TIMMODE_SHIFT;
++		davinci_writel(tgcr, base + TGCR);
++
++		/* Unreset timers */
++		tgcr |= (TGCR_UNRESET << TGCR_TIM12RS_SHIFT) |
++			(TGCR_UNRESET << TGCR_TIM34RS_SHIFT);
++		davinci_writel(tgcr, base + TGCR);
++
++		/* Init both counters to zero */
++		davinci_writel(0, base + TIM12);
++		davinci_writel(0, base + TIM34);
++	}
++
++	/* Init of each timer as a 32-bit timer */
++	for (i = 0; i < NUM_TIMERS; i++) {
++		struct timer_s *t = timers[i];
++
++		if (t && t->name) {
++			t->id = i;
++			t->reg_base = bases[i >> 1];
++
++			if (IS_TIMER_BOT(i)) {
++				t->enamode_shift = ENAMODE12_SHIFT;
++				t->tim_reg = t->reg_base + TIM12;
++				t->prd_reg = t->reg_base + PRD12;
++			} else {
++				t->enamode_shift = ENAMODE34_SHIFT;
++				t->tim_reg = t->reg_base + TIM34;
++				t->prd_reg = t->reg_base + PRD34;
++			}
++
++			/* Register interrupt */
++			t->irqaction.name = t->name;
++			t->irqaction.dev_id = (void *)t;
++			if (t->irqaction.handler != NULL)
++				setup_irq(timer_irqs[i], &t->irqaction);
++
++			timer32_config(timers[i]);
++		}
++	}
++}
++
++/*
++ * clocksource
++ */
++static cycle_t read_cycles(void)
++{
++	struct timer_s *t = timers[tid_freerun];
++
++	return (cycles_t)timer32_read(t);
++}
++
++static struct clocksource clocksource_davinci = {
++	.name		= "timer0_1",
++	.rating		= 300,
++	.read		= read_cycles,
++	.mask		= CLOCKSOURCE_MASK(32),
++	.shift		= 24,
++	.is_continuous	= 1,
++};
++
++/*
++ * Clockevent code
++ */
++static void davinci_set_next_event(unsigned long cycles,
++				   struct clock_event_device *evt)
++{
++	struct timer_s *t = timers[tid_system];
++
++	t->period = cycles;
++	timer32_config(t);
++}
++
++static void davinci_set_mode(enum clock_event_mode mode,
++			     struct clock_event_device *evt)
++{
++	struct timer_s *t = timers[tid_system];
++
++	switch (mode) {
++	case CLOCK_EVT_PERIODIC:
++		t->period = DAVINCI_CLOCK_TICK_RATE / HZ;
++		t->opts = TIMER_OPTS_PERIODIC;
++		timer32_config(t);
++		break;
++	case CLOCK_EVT_ONESHOT:
++		t->opts = TIMER_OPTS_ONESHOT;
++		break;
++	case CLOCK_EVT_SHUTDOWN:
++		t->opts = TIMER_OPTS_DISABLED;
++		break;
++	}
++}
++
++static struct clock_event_device clockevent_davinci = {
++	.name		= "timer0_0",
++	.capabilities	= CLOCK_CAPS_MASK,
++	.shift		= 32,
++	.set_next_event	= davinci_set_next_event,
++	.set_mode	= davinci_set_mode,
++};
++
++static char error[] __initdata = KERN_ERR "%s: can't register clocksource!\n";
++
++void __init davinci_common_timer_init(u32 *bases, int num_timers64,
++				      int timer_irqs[NUM_TIMERS],
++				      int system, int freerun)
++{
++	tid_system  = system;
++	tid_freerun = freerun;
++
++	timers[tid_system]  = &davinci_system_timer;
++	timers[tid_freerun] = &davinci_freerun_timer;
++
++	/* Init timer hardware */
++	timer_init(num_timers64, bases, timer_irqs);
++
++	/* Setup clocksource */
++	clocksource_davinci.mult =
++		clocksource_khz2mult(DAVINCI_CLOCK_TICK_RATE / 1000,
++				     clocksource_davinci.shift);
++	if (clocksource_register(&clocksource_davinci))
++		printk(error, clocksource_davinci.name);
++
++	/* Setup clockevent */
++	clockevent_davinci.mult = div_sc(DAVINCI_CLOCK_TICK_RATE, NSEC_PER_SEC,
++					 clockevent_davinci.shift);
++	clockevent_davinci.max_delta_ns =
++		clockevent_delta2ns(0xfffffffe, &clockevent_davinci);
++	clockevent_davinci.min_delta_ns =
++		clockevent_delta2ns(1, &clockevent_davinci);
++
++	register_global_clockevent(&clockevent_davinci);
++}
++
++/* Reset board using the watchdog timer */
++void davinci_watchdog_reset(u32 base)
++{
++	u32 tgcr, wdtcr;
++
++	/* Disable, internal clock source */
++	davinci_writel(0, base + TCR);
++
++	/* Reset timer, set mode to 64-bit watchdog, and unreset */
++	davinci_writel(0, base + TGCR);
++	tgcr =	(TGCR_TIMMODE_64BIT_WDOG << TGCR_TIMMODE_SHIFT) |
++		(TGCR_UNRESET << TGCR_TIM12RS_SHIFT) |
++		(TGCR_UNRESET << TGCR_TIM34RS_SHIFT);
++	davinci_writel(tgcr, base + TGCR);
++
++	/* Clear counter and period regs */
++	davinci_writel(0, base + TIM12);
++	davinci_writel(0, base + TIM34);
++	davinci_writel(0, base + PRD12);
++	davinci_writel(0, base + PRD34);
++
++	/* Enable periodic mode */
++	davinci_writel(TCR_ENAMODE_PERIODIC << ENAMODE12_SHIFT, base + TCR);
++
++	/* Put watchdog in pre-active state */
++	wdtcr = (WDTCR_WDKEY_SEQ0 << WDTCR_WDKEY_SHIFT) |
++		(WDTCR_WDEN_ENABLE << WDTCR_WDEN_SHIFT);
++	davinci_writel(wdtcr, base + WDTCR);
++
++	/* Put watchdog in active state */
++	wdtcr = (WDTCR_WDKEY_SEQ1 << WDTCR_WDKEY_SHIFT) |
++		(WDTCR_WDEN_ENABLE << WDTCR_WDEN_SHIFT);
++	davinci_writel(wdtcr, base + WDTCR);
++
++	/*
++	 * Write an invalid value to the WDKEY field to trigger
++	 * a watchdog reset.
++	 */
++	wdtcr = 0xDEADBEEF;
++	davinci_writel(wdtcr, base + WDTCR);
++}
+Index: linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/hardware.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+@@ -21,6 +21,9 @@
+ #define DAVINCI_DMA_3PTC0_BASE			(0x01C10000)
+ #define DAVINCI_DMA_3PTC1_BASE			(0x01C10400)
+ #define DAVINCI_I2C_BASE			(0x01C21000)
++#define DAVINCI_TIMER0_BASE			(0x01C21400)
++#define DAVINCI_TIMER1_BASE			(0x01C21800)
++#define DAVINCI_WDOG_BASE			(0x01C21C00)
+ #define DAVINCI_PWM0_BASE			(0x01C22000)
+ #define DAVINCI_PWM1_BASE			(0x01C22400)
+ #define DAVINCI_PWM2_BASE			(0x01C22800)
+Index: linux-2.6.18/include/asm-arm/arch-davinci/system.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/system.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/system.h
+@@ -14,7 +14,7 @@
+ #include <asm/io.h>
+ #include <asm/hardware.h>
+ 
+-extern void davinci_watchdog_reset(void);
++void davinci_watchdog_reset(u32 base);
+ 
+ static void arch_idle(void)
+ {
+@@ -23,7 +23,7 @@ static void arch_idle(void)
+ 
+ static void arch_reset(char mode)
+ {
+-	davinci_watchdog_reset();
++	davinci_watchdog_reset(DAVINCI_WDOG_BASE);
+ }
+ 
+ #endif /* __ASM_ARCH_SYSTEM_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/time.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/time.h
+@@ -0,0 +1,66 @@
++/*
++ * DaVinci timer definitions
++ *
++ * Author: Kevin Hilman, MontaVista Software, Inc.
++ * (C) 2007-2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++#ifndef __ASM_ARCH_TIME_H
++#define __ASM_ARCH_TIME_H
++
++/* Timer register offsets */
++#define PID12				0x0
++#define TIM12				0x10
++#define TIM34				0x14
++#define PRD12				0x18
++#define PRD34				0x1c
++#define TCR				0x20
++#define TGCR				0x24
++#define WDTCR				0x28
++
++/* Timer register bitfields */
++#define ENAMODE12_SHIFT 		6
++#define ENAMODE34_SHIFT 		22
++#define TCR_ENAMODE_DISABLE		0x0
++#define TCR_ENAMODE_ONESHOT		0x1
++#define TCR_ENAMODE_PERIODIC		0x2
++#define TCR_ENAMODE_MASK		0x3
++
++#define TGCR_TIMMODE_SHIFT		2
++#define TGCR_TIMMODE_64BIT_GP		0x0
++#define TGCR_TIMMODE_32BIT_UNCHAINED	0x1
++#define TGCR_TIMMODE_64BIT_WDOG 	0x2
++#define TGCR_TIMMODE_32BIT_CHAINED	0x3
++
++#define TGCR_TIM12RS_SHIFT		0
++#define TGCR_TIM34RS_SHIFT		1
++#define TGCR_RESET			0x0
++#define TGCR_UNRESET			0x1
++#define TGCR_RESET_MASK 		0x3
++
++#define WDTCR_WDEN_SHIFT		14
++#define WDTCR_WDEN_DISABLE		0x0
++#define WDTCR_WDEN_ENABLE		0x1
++#define WDTCR_WDKEY_SHIFT		16
++#define WDTCR_WDKEY_SEQ0		0xA5C6
++#define WDTCR_WDKEY_SEQ1		0xDA7E
++
++enum {
++	T0_BOT,
++	T0_TOP,
++	T1_BOT,
++	T1_TOP,
++	NUM_TIMERS
++};
++
++#define IS_TIMER_TOP(id) ((id) & 0x1)
++#define IS_TIMER_BOT(id) (!IS_TIMER_TOP(id))
++
++void davinci_common_timer_init(u32 *bases, int num_timers64,
++			       int timer_irqs[NUM_TIMERS],
++			       int system, int freerun);
++
++#endif /* __ASM_ARCH_TIME_H__ */
+Index: linux-2.6.18/mvl_patches/pro50-2101.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2101.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2101);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

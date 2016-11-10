@@ -1,0 +1,4687 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_remove_old_video_drivers
+# Date: Fri Sep 19 14:00:47 2008
+# Source: MontaVista Software, Inc. 
+# MR: 28149
+# Type:  Integration
+# Disposition: local
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description: Davinci video drivers in pro_50 are outdated. 
+# Remove them.
+# 
+#  drivers/media/video/ccdc_davinci.c |  124 --
+#  drivers/media/video/davinci_vpfe.c | 1136 ------------------------
+#  drivers/media/video/tvp5146.c      |  649 -------------
+#  drivers/video/davincifb.c          | 1733 -------------------------------------
+#  include/media/davinci_vpfe.h       |  121 --
+#  include/media/tvp5146.h            |  104 --
+#  include/video/davincifb.h          |  445 ---------
+#  drivers/media/video/Kconfig        |   19 
+#  drivers/media/video/Makefile       |    5 
+#  drivers/video/Kconfig              |    8 
+#  drivers/video/Makefile             |    1 
+#  11 files changed, 4345 deletions(-)
+# 
+
+PATCHNUM=1577
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc. 
+MR: 28149
+Type:  Integration
+Disposition: local
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description: Davinci video drivers in pro_50 are outdated. 
+Remove them.
+
+ drivers/media/video/Kconfig        |   19 
+ drivers/media/video/Makefile       |    5 
+ drivers/media/video/ccdc_davinci.c |  124 --
+ drivers/media/video/davinci_vpfe.c | 1136 ------------------------
+ drivers/media/video/tvp5146.c      |  649 -------------
+ drivers/video/Kconfig              |    8 
+ drivers/video/Makefile             |    1 
+ drivers/video/davincifb.c          | 1733 -------------------------------------
+ include/media/davinci_vpfe.h       |  121 --
+ include/media/tvp5146.h            |  104 --
+ include/video/davincifb.h          |  445 ---------
+ mvl_patches/pro50-1577.c           |   16 
+ 12 files changed, 16 insertions(+), 4345 deletions(-)
+
+Index: linux-2.6.18/drivers/video/davincifb.c
+===================================================================
+--- linux-2.6.18.orig/drivers/video/davincifb.c
++++ /dev/null
+@@ -1,1733 +0,0 @@
+-/*
+- * drivers/video/davincifb.c
+- *
+- * Framebuffer driver for Texas Instruments DaVinci display controller.
+- *
+- * Copyright (C) 2006 Texas Instruments, Inc.
+- * Rishi Bhattacharya <support@ti.com>
+- *
+- * Leveraged from the framebuffer driver for OMAP24xx
+- * written by Andy Lowe (source@mvista.com)
+- * Copyright (C) 2004 MontaVista Software, Inc.
+- *
+- * This file is licensed under the terms of the GNU General Public License
+- * version 2. This program is licensed "as is" without any warranty of any
+- * kind, whether express or implied.
+- */
+-
+-#include <linux/module.h>
+-#include <linux/kernel.h>
+-#include <linux/errno.h>
+-#include <linux/string.h>
+-#include <linux/mm.h>
+-#include <linux/tty.h>
+-#include <linux/slab.h>
+-#include <linux/delay.h>
+-#include <linux/fb.h>
+-#include <linux/init.h>
+-#include <linux/dma-mapping.h>
+-#include <linux/interrupt.h>
+-#include <linux/platform_device.h>
+-
+-#include <asm/irq.h>
+-#include <asm/uaccess.h>
+-
+-#include <video/davincifb.h>
+-#include <asm/system.h>
+-
+-#define MODULE_NAME "davincifb"
+-
+-/* Output Format Selection  */
+-#define MULTIPLE_BUFFERING	1
+-
+-#ifdef MULTIPLE_BUFFERING
+-#define DOUBLE_BUF	2
+-#define TRIPLE_BUF	3
+-#else
+-#define DOUBLE_BUF	1
+-#define TRIPLE_BUF	1
+-#endif
+-
+-/*
+- * display controller register I/O routines
+- */
+-static __inline__ u32 dispc_reg_in(u32 offset)
+-{
+-	return (inl(offset));
+-}
+-static __inline__ u32 dispc_reg_out(u32 offset, u32 val)
+-{
+-	outl(val, offset);
+-	return (val);
+-}
+-static __inline__ u32 dispc_reg_merge(u32 offset, u32 val, u32 mask)
+-{
+-	u32 addr = offset;
+-	u32 new_val = (inl(addr) & ~mask) | (val & mask);
+-	outl(new_val, addr);
+-	return (new_val);
+-}
+-
+-/* There are 4 framebuffers, each represented by an fb_info and
+- * a dm_win_info structure */
+-#define OSD0_FBNAME	"dm_osd0_fb"
+-#define OSD1_FBNAME	"dm_osd1_fb"
+-#define VID0_FBNAME	"dm_vid0_fb"
+-#define VID1_FBNAME	"dm_vid1_fb"
+-
+-/* usage:	if (is_win(info->fix.id, OSD0)) ... */
+-#define is_win(name, x) ((strcmp(name, x ## _FBNAME) == 0) ? 1 : 0)
+-
+-struct dm_win_info {
+-	struct fb_info info;
+-
+-	/* X and Y position */
+-	unsigned int x, y;
+-
+-	/* framebuffer area */
+-	dma_addr_t fb_base_phys;
+-	unsigned long fb_base;
+-	unsigned long fb_size;
+-
+-	u32 pseudo_palette[17];
+-
+-	/* flag to identify if framebuffer area is fixed already or not */
+-	int alloc_fb_mem;
+-	unsigned long sdram_address;
+-	struct dm_info *dm;
+-};
+-
+-static struct dm_info {
+-	struct dm_win_info *osd0;
+-	struct dm_win_info *osd1;
+-	struct dm_win_info *vid0;
+-	struct dm_win_info *vid1;
+-
+-	/* to map the registers */
+-	dma_addr_t mmio_base_phys;
+-	unsigned long mmio_base;
+-	unsigned long mmio_size;
+-
+-	wait_queue_head_t vsync_wait;
+-	unsigned long vsync_cnt;
+-	int timeout;
+-
+-	/* this is the function that configures the output device (NTSC/PAL/LCD)
+-	 * for the required output format (composite/s-video/component/rgb)
+-	 */
+-	void (*output_device_config) (int on);
+-
+-	struct device *dev;
+-} dm_static;
+-static struct dm_info *dm = &dm_static;
+-
+-static struct fb_ops davincifb_ops;
+-
+-#define BASEX		0x80
+-#define BASEY		0x12
+-
+-#define DISP_XRES	720
+-#define DISP_YRES	480
+-#define DISP_MEMY	576
+-
+-/* Random value chosen for now. Should be within the panel's supported range */
+-#define LCD_PANEL_CLOCK	180000
+-
+-/* All window widths have to be rounded up to a multiple of 32 bytes */
+-
+-/* The OSD0 window has to be always within VID0. Plus, since it is in RGB565
+- * mode, it _cannot_ overlap with VID1.
+- * For defaults, we are setting the OSD0 window to be displayed in the top
+- * left quadrant of the screen, and the VID1 in the bottom right quadrant.
+- * So the default 'xres' and 'yres' are set to  half of the screen width and
+- * height respectively. Note however that the framebuffer size is allocated
+- * for the full screen size so the user can change the 'xres' and 'yres' by
+- * using the FBIOPUT_VSCREENINFO ioctl within the limits of the screen size.
+- */
+-#define round_32(width)	((((width) + 31) / 32) * 32 )
+-
+-#define OSD0_XRES	round_32((DISP_XRES)*16/8) * 8/16	/* pixels */
+-#define OSD0_YRES	DISP_YRES
+-#define OSD0_FB_PHY	0
+-#define OSD0_FB_SIZE	(round_32((DISP_XRES)*16/8) * DISP_MEMY * DOUBLE_BUF)
+-
+-			/* 16 bpp, Double buffered */
+-static struct fb_var_screeninfo osd0_default_var = {
+-	.xres = OSD0_XRES,
+-	.yres = OSD0_YRES,
+-	.xres_virtual = OSD0_XRES,
+-	.yres_virtual = OSD0_YRES * DOUBLE_BUF,
+-	.xoffset = 0,
+-	.yoffset = 0,
+-	.bits_per_pixel = 16,
+-	.grayscale = 0,
+-	.red = {11, 5, 0},
+-	.green = {5, 6, 0},
+-	.blue = {0, 5, 0},
+-	.transp = {0, 0, 0},
+-	.nonstd = 0,
+-	.activate = FB_ACTIVATE_NOW,
+-	.height = -1,
+-	.width = -1,
+-	.accel_flags = 0,
+-	.pixclock = LCD_PANEL_CLOCK,	/* picoseconds */
+-	.left_margin = 40,	/* pixclocks */
+-	.right_margin = 4,	/* pixclocks */
+-	.upper_margin = 8,	/* line clocks */
+-	.lower_margin = 2,	/* line clocks */
+-	.hsync_len = 4,		/* pixclocks */
+-	.vsync_len = 2,		/* line clocks */
+-	.sync = 0,
+-	.vmode = FB_VMODE_INTERLACED,
+-};
+-
+-/* Using the full screen for OSD1 by default */
+-#define OSD1_XRES	round_32(DISP_XRES*4/8) * 8/4	/* pixels */
+-#define OSD1_YRES	DISP_YRES
+-#define OSD1_FB_PHY	0
+-#define OSD1_FB_SIZE	(round_32(DISP_XRES*4/8) * DISP_MEMY * DOUBLE_BUF)
+-
+-static struct fb_var_screeninfo osd1_default_var = {
+-	.xres = DISP_XRES,
+-	.yres = OSD1_YRES,
+-	.xres_virtual = OSD1_XRES,
+-	.yres_virtual = OSD1_YRES * DOUBLE_BUF,
+-	.xoffset = 0,
+-	.yoffset = 0,
+-	.bits_per_pixel = 4,
+-	.activate = FB_ACTIVATE_NOW,
+-	.accel_flags = 0,
+-	.pixclock = LCD_PANEL_CLOCK,	/* picoseconds */
+-	.vmode = FB_VMODE_INTERLACED,
+-};
+-
+-/* Using the full screen for OSD0 by default */
+-#define VID0_XRES	round_32(DISP_XRES*16/8) * 8/16	/* pixels */
+-#define VID0_YRES	DISP_YRES
+-#define VID0_FB_PHY	0
+-#define VID0_FB_SIZE	(round_32(DISP_XRES*16/8) * DISP_MEMY * TRIPLE_BUF)
+-static struct fb_var_screeninfo vid0_default_var = {
+-	.xres = VID0_XRES,
+-	.yres = VID0_YRES,
+-	.xres_virtual = VID0_XRES,
+-	.yres_virtual = VID0_YRES * TRIPLE_BUF,
+-	.xoffset = 0,
+-	.yoffset = 0,
+-	.bits_per_pixel = 16,
+-	.activate = FB_ACTIVATE_NOW,
+-	.accel_flags = 0,
+-	.pixclock = LCD_PANEL_CLOCK,	/* picoseconds */
+-	.vmode = FB_VMODE_INTERLACED,
+-};
+-
+-/* Using the bottom right quadrant of the screen screen for VID1 by default,
+- * but keeping the framebuffer allocated for the full screen, so the user can
+- * change the 'xres' and 'yres' later using the FBIOPUT_VSCREENINFO ioctl.
+- */
+-#define VID1_BPP	16	/* Video1 can be in YUV or RGB888 format */
+-#define VID1_XRES round_32(DISP_XRES*16/8) * 8/16	/* pixels */
+-#define VID1_YRES DISP_YRES
+-#define VID1_FB_PHY	0
+-#define VID1_FB_SIZE (round_32(DISP_XRES*16/8) * DISP_MEMY * TRIPLE_BUF)
+-static struct fb_var_screeninfo vid1_default_var = {
+-	.xres = VID1_XRES,
+-	.yres = VID1_YRES,
+-	.xres_virtual = VID1_XRES,
+-	.yres_virtual = VID1_YRES * TRIPLE_BUF,
+-	.xoffset = 0,
+-	.yoffset = 0,
+-	.bits_per_pixel = VID1_BPP,
+-	.activate = FB_ACTIVATE_NOW,
+-	.accel_flags = 0,
+-	.pixclock = LCD_PANEL_CLOCK,	/* picoseconds */
+-	.vmode = FB_VMODE_INTERLACED,
+-};
+-
+-#define	x_pos(w)	((w)->x)
+-#define	y_pos(w)	((w)->y)
+-
+-static struct dmparams_t {
+-	u8 output;
+-	u8 format;
+-	u8 windows;		/* bitmap flag based on VID0, VID1, OSD0, OSD1
+-				 * definitions in header file */
+-	u32 vid0_xres;
+-	u32 vid0_yres;
+-	u32 vid0_xpos;
+-	u32 vid0_ypos;
+-
+-	u32 vid1_xres;
+-	u32 vid1_yres;
+-	u32 vid1_xpos;
+-	u32 vid1_ypos;
+-
+-	u32 osd0_xres;
+-	u32 osd0_yres;
+-	u32 osd0_xpos;
+-	u32 osd0_ypos;
+-
+-	u32 osd1_xres;
+-	u32 osd1_yres;
+-	u32 osd1_xpos;
+-	u32 osd1_ypos;
+-} dmparams = {
+-	NTSC,		/* output */
+-	    COMPOSITE,		/* format */
+-	    (1 << VID0) | (1 << VID1) | (1 << OSD0) | (1 << OSD1),
+-	    /* windows registered */
+-	    720, 480, 0, 0,	/* vid0 size and position */
+-	    720, 480, 0, 0,	/* vid1 size and position */
+-	    720, 480, 0, 0,	/* osd0 size and position */
+-	    720, 480, 0, 0,	/* osd1 size and position */
+-};
+-
+-/* Must do checks against the limits of the output device */
+-static int davincifb_venc_check_mode(const struct dm_win_info *w,
+-				     const struct fb_var_screeninfo *var)
+-{
+-	return 0;
+-}
+-
+-static void set_sdram_params(char *id, u32 addr, u32 line_length);
+-static irqreturn_t davincifb_isr(int irq, void *arg, struct pt_regs *regs)
+-{
+-	struct dm_info *dm = (struct dm_info *)arg;
+-	unsigned long addr=0;
+-
+-	if ((dispc_reg_in(VENC_VSTAT) & 0x00000010) == 0x10) {
+-		xchg(&addr, dm->osd0->sdram_address);
+-		if (addr) {
+-			set_sdram_params(dm->osd0->info.fix.id,
+-					 dm->osd0->sdram_address,
+-					 dm->osd0->info.fix.line_length);
+-			dm->osd0->sdram_address = 0;
+-		}
+-		addr = 0;
+-		xchg(&addr, dm->osd1->sdram_address);
+-		if (addr) {
+-			set_sdram_params(dm->osd1->info.fix.id,
+-					 dm->osd1->sdram_address,
+-					 dm->osd1->info.fix.line_length);
+-			dm->osd1->sdram_address = 0;
+-		}
+-		addr = 0;
+-		xchg(&addr, dm->vid0->sdram_address);
+-		if (addr) {
+-			set_sdram_params(dm->vid0->info.fix.id,
+-					 dm->vid0->sdram_address,
+-					 dm->vid0->info.fix.line_length);
+-			dm->vid0->sdram_address = 0;
+-		}
+-		addr = 0;
+-		xchg(&addr, dm->vid1->sdram_address);
+-		if (addr) {
+-			set_sdram_params(dm->vid1->info.fix.id,
+-					 dm->vid1->sdram_address,
+-					 dm->vid1->info.fix.line_length);
+-			dm->vid1->sdram_address = 0;
+-		}
+-		return IRQ_HANDLED;
+-	} else {
+-		++dm->vsync_cnt;
+-		wake_up_interruptible(&dm->vsync_wait);
+-		return IRQ_HANDLED;
+-  	}
+-
+-	return IRQ_HANDLED;
+-}
+-
+-/* Wait for a vsync interrupt.  This routine sleeps so it can only be called
+- * from process context.
+- */
+-static int davincifb_wait_for_vsync(struct dm_win_info *w)
+-{
+-	struct dm_info *dm = w->dm;
+-	wait_queue_t wq;
+-	unsigned long cnt;
+-	int ret;
+-
+-	init_waitqueue_entry(&wq, current);
+-
+-	cnt = dm->vsync_cnt;
+-	ret = wait_event_interruptible_timeout(dm->vsync_wait,
+-					       cnt != dm->vsync_cnt,
+-					       dm->timeout);
+-	if (ret < 0)
+-		return (ret);
+-	if (ret == 0)
+-		return (-ETIMEDOUT);
+-
+-	return (0);
+-}
+-
+-/* Sets a uniform attribute value over a rectangular area on the attribute
+- * window. The attribute value (0 to 7) is passed through the fb_fillrect's
+- * color parameter.
+- */
+-static int davincifb_set_attr_blend(struct fb_fillrect *r)
+-{
+-	struct fb_info *info = &dm->osd1->info;
+-	struct fb_var_screeninfo *var = &dm->osd1->info.var;
+-	unsigned long start = 0;
+-	u8 blend;
+-	u32 width_bytes;
+-
+-	if (r->dx + r->width > var->xres_virtual)
+-		return -EINVAL;
+-	if (r->dy + r->height > var->yres_virtual)
+-		return -EINVAL;
+-	if (r->color < 0 || r->color > 7)
+-		return -EINVAL;
+-
+-	/* since bits_per_pixel = 4, this will truncate the width if it is
+-	 * not even. Similarly r->dx will be rounded down to an even pixel.
+-	 * ... Do we want to return an error otherwise?
+-	 */
+-	width_bytes = r->width * var->bits_per_pixel / 8;
+-	start = dm->osd1->fb_base + r->dy * info->fix.line_length
+-	    + r->dx * var->bits_per_pixel / 8;
+-
+-	blend = (((u8) r->color & 0xf) << 4) | ((u8) r->color);
+-	while (r->height--) {
+-		start += info->fix.line_length;
+-		memset((void *)start, blend, width_bytes);
+-	}
+-
+-	return 0;
+-}
+-
+-/* These position parameters are given through fb_var_screeninfo.
+- * xp = var.reserved[0], yp = var.reserved[1],
+- * xl = var.xres, yl = var.yres
+- */
+-static void set_win_position(char *id, u32 xp, u32 yp, u32 xl, u32 yl)
+-{
+-	int i = 0;
+-
+-	if (is_win(id, VID0)) {
+-		i = 0;
+-	} else if (is_win(id, VID1)) {
+-		i = 1;
+-	} else if (is_win(id, OSD0)) {
+-		i = 2;
+-	} else if (is_win(id, OSD1)) {
+-		i = 3;
+-	}
+-
+-	dispc_reg_out(OSD_WINXP(i), xp);
+-	dispc_reg_out(OSD_WINYP(i), yp);
+-	dispc_reg_out(OSD_WINXL(i), xl);
+-	dispc_reg_out(OSD_WINYL(i), yl);
+-}
+-
+-static inline void get_win_position(struct dm_win_info *w,
+-				    u32 * xp, u32 * yp, u32 * xl, u32 * yl)
+-{
+-	struct fb_var_screeninfo *v = &w->info.var;
+-
+-	*xp = x_pos(w);
+-	*yp = y_pos(w);
+-	*xl = v->xres;
+-	*yl = v->yres;
+-}
+-
+-/* Returns 1 if the windows overlap, 0 otherwise */
+-static int window_overlap(struct dm_win_info *w, u32 xp, u32 yp, u32 xl, u32 yl)
+-{
+-	u32 _xp = 0, _yp = 0, _xl = 0, _yl = 0;
+-
+-#define OVERLAP(x1, y1, x2, y2, x3, y3, x4, y4)		\
+-(!(	((x1)<(x3) && (x2)<(x3)) || ((x1)>(x4) && (x2)>(x4)) ||	\
+-	((y1)<(y3) && (y2)<(y3)) || ((y1)>(y4) && (y2)>(y4)) )	\
+-)
+-
+-	if (!w)
+-		return (0);
+-
+-	get_win_position(w, &_xp, &_yp, &_xl, &_yl);
+-
+-	return (OVERLAP(xp, yp, xp + xl, yp + yl,
+-		       _xp, _yp, _xp + _xl, _yp + _yl));
+-#undef OVERLAP
+-}
+-
+-/* Returns 1 if the window parameters are within VID0, 0 otherwise */
+-static int within_vid0_limits(u32 xp, u32 yp, u32 xl, u32 yl)
+-{
+-	u32 vid0_xp = 0, vid0_yp = 0, vid0_xl = 0, vid0_yl = 0;
+-
+-	if (!dm->vid0)
+-		return (1);
+-	get_win_position(dm->vid0, &vid0_xp, &vid0_yp, &vid0_xl, &vid0_yl);
+-	if ((xp >= vid0_xp) && (yp >= vid0_yp) &&
+-	    (xp + xl <= vid0_xp + vid0_xl) && (yp + yl <= vid0_yp + vid0_yl))
+-		return (1);
+-	return (0);
+-}
+-
+-/* VID0 must be large enough to hold all other windows */
+-static int check_new_vid0_size(u32 xp0, u32 yp0, u32 xl0, u32 yl0)
+-{
+-	u32 _xp = 0, _yp = 0, _xl = 0, _yl = 0;
+-#define WITHIN_LIMITS 				\
+-	((_xp >= xp0) && (_yp >= yp0) &&	\
+-	(_xp + _xl <= xp0 + xl0) && (_yp + _yl <= yp0 + yl0))
+-
+-	if (dm->osd0) {
+-		get_win_position(dm->osd0, &_xp, &_yp, &_xl, &_yl);
+-		if (!WITHIN_LIMITS)
+-			return (-EINVAL);
+-	}
+-	if (dm->osd1) {
+-		get_win_position(dm->osd1, &_xp, &_yp, &_xl, &_yl);
+-		if (!WITHIN_LIMITS)
+-			return (-EINVAL);
+-	}
+-	if (dm->vid1) {
+-		get_win_position(dm->vid1, &_xp, &_yp, &_xl, &_yl);
+-		if (!WITHIN_LIMITS)
+-			return (-EINVAL);
+-	}
+-	return (0);
+-
+-#undef WITHIN_LIMITS
+-}
+-
+-/**
+- *      davincifb_check_var - Validates a var passed in.
+- *      @var: frame buffer variable screen structure
+- *      @info: frame buffer structure that represents a single frame buffer
+- *
+- *	Checks to see if the hardware supports the state requested by
+- *	var passed in. This function does not alter the hardware state!!!
+- *	This means the data stored in struct fb_info and struct xxx_par do
+- *      not change. This includes the var inside of struct fb_info.
+- *	Do NOT change these. This function can be called on its own if we
+- *	intent to only test a mode and not actually set it.
+- *	If the var passed in is slightly off by what the hardware can support
+- *	then we alter the var PASSED in to what we can do.
+- *
+- *	Returns negative errno on error, or zero on success.
+- */
+-static int davincifb_check_var(struct fb_var_screeninfo *var,
+-			       struct fb_info *info)
+-{
+-	const struct dm_win_info *w = (const struct dm_win_info *)info->par;
+-	struct fb_var_screeninfo v;
+-
+-/* Rules:
+- * 1) Vid1, OSD0, OSD1 and Cursor must be fully contained inside of Vid0.
+- * 2) Vid0 and Vid1 are both set to accept YUV 4:2:2 (for now).
+- * 3) OSD window data is always packed into 32-bit words and left justified.
+- * 4) Each horizontal line of window data must be a multiple of 32 bytes.
+- *    32 bytes = 32 bytes / 2 bytes per pixel = 16 pixels.
+- *    This implies that 'xres' must be a multiple of 32 bytes.
+- * 5) The offset registers hold the distance between the start of one line and
+- *    the start of the next. This offset value must be a multiple of 32 bytes.
+- *    This implies that 'xres_virtual' is also a multiple of 32 bytes. Note
+- *    that 'xoffset' needn't be a multiple of 32 bytes.
+- * 6) OSD0 is set to accept RGB565.
+- * 	dispc_reg_merge(OSD_OSDWIN0ND, OSD_OSDWIN0ND_RGB0E, OSD_OSDWIN0ND_RGB0E)
+- * 7) OSD1 is set to be the attribute window.
+- * 8) Vid1 startX = Vid0 startX + N * 16 pixels (32 bytes)
+- * 9) Vid1 width = (16*N - 8) pixels
+- * 10) When one of the OSD windows is in RGB565, it cannot overlap with Vid1.
+- * 11) Vid1 start X position must be offset a multiple of 16 pixels from the
+- * left edge of Vid0.
+- */
+-
+-	memcpy(&v, var, sizeof(v));
+-	return (0);
+-
+-	/* do board-specific checks on the var */
+-	if (davincifb_venc_check_mode(w, &v))
+-		return (-EINVAL);
+-
+-	if (v.xres_virtual < v.xres || v.yres_virtual < v.yres)
+-		return (-EINVAL);
+-	if (v.xoffset > v.xres_virtual - v.xres)
+-		return (-EINVAL);
+-	if (v.yoffset > v.yres_virtual - v.yres)
+-		return (-EINVAL);
+-	if ((v.xres * v.bits_per_pixel / 8) % 32 || (v.xres_virtual * v.bits_per_pixel / 8) % 32)	/* Rules 4, 5 */
+-		return (-EINVAL);
+-	if (v.xres_virtual * v.yres_virtual * v.bits_per_pixel / 8 > w->fb_size)
+-		return (-EINVAL);
+-
+-	if (!is_win(info->fix.id, VID0)) {
+-		/* Rule 1 */
+-		if (!within_vid0_limits(x_pos(w), y_pos(w), v.xres, v.yres))
+-			return (-EINVAL);
+-	}
+-	if (is_win(info->fix.id, OSD0)) {
+-		/* Rule 10 */
+-		if (window_overlap(w->dm->vid1,
+-				   x_pos(w), y_pos(w), v.xres, v.yres))
+-			return (-EINVAL);
+-		/* Rule 5 */
+-		v.bits_per_pixel = 16;
+-		v.red.offset = 11;
+-		v.green.offset = 5;
+-		v.blue.offset = 0;
+-		v.red.length = 5;
+-		v.green.length = 6;
+-		v.blue.length = 5;
+-		v.transp.offset = v.transp.length = 0;
+-		v.red.msb_right = v.green.msb_right = v.blue.msb_right
+-		    = v.transp.msb_right = 0;
+-		v.nonstd = 0;
+-		v.accel_flags = 0;
+-	} else if (is_win(info->fix.id, OSD1)) {
+-		v.bits_per_pixel = 4;
+-	} else if (is_win(info->fix.id, VID0)) {
+-		if (check_new_vid0_size(x_pos(w), y_pos(w), v.xres, v.yres))
+-			return (-EINVAL);
+-		v.bits_per_pixel = 16;
+-	} else if (is_win(info->fix.id, VID1)) {
+-		/* Rule 11 */
+-		if ((x_pos(w->dm->vid0) - x_pos(w)) % 16)
+-			return (-EINVAL);
+-		/* Video1 may be in YUV or RGB888 format */
+-		if ((v.bits_per_pixel != 16) && (v.bits_per_pixel != 32))
+-			return (-EINVAL);
+-	} else
+-		return (-EINVAL);
+-
+-	memcpy(var, &v, sizeof(v));
+-	return (0);
+-}
+-
+-/* Interlaced = Frame mode, Non-interlaced = Field mode */
+-static void set_interlaced(char *id, unsigned int on)
+-{
+-	on = (on == 0) ? 0 : ~0;
+-
+-	if (is_win(id, VID0))
+-		dispc_reg_merge(OSD_VIDWINMD, on, OSD_VIDWINMD_VFF0);
+-	else if (is_win(id, VID1))
+-		dispc_reg_merge(OSD_VIDWINMD, on, OSD_VIDWINMD_VFF1);
+-	else if (is_win(id, OSD0))
+-		dispc_reg_merge(OSD_OSDWIN0MD, on, OSD_OSDWIN0MD_OFF0);
+-	else if (is_win(id, OSD1))
+-		dispc_reg_merge(OSD_OSDWIN1MD, on, OSD_OSDWIN1MD_OFF1);
+-}
+-
+-/* For zooming, we just have to set the start of framebuffer, the zoom factors
+- * and the display size. The hardware will then read only
+- * (display size / zoom factor) area of the framebuffer and  zoom and
+- * display it. In the following function, we assume that the start of
+- * framebuffer and the display size parameters are set already.
+- */
+-static void set_zoom(int WinID, int h_factor, int v_factor)
+-{
+-	switch (WinID) {
+-	case 0:		//VID0
+-		dispc_reg_merge(OSD_VIDWINMD,
+-				h_factor << OSD_VIDWINMD_VHZ0_SHIFT,
+-				OSD_VIDWINMD_VHZ0);
+-		dispc_reg_merge(OSD_VIDWINMD,
+-				v_factor << OSD_VIDWINMD_VVZ0_SHIFT,
+-				OSD_VIDWINMD_VVZ0);
+-		break;
+-	case 1:		//VID1
+-		dispc_reg_merge(OSD_VIDWINMD,
+-				h_factor << OSD_VIDWINMD_VHZ1_SHIFT,
+-				OSD_VIDWINMD_VHZ1);
+-		dispc_reg_merge(OSD_VIDWINMD,
+-				v_factor << OSD_VIDWINMD_VVZ1_SHIFT,
+-				OSD_VIDWINMD_VVZ1);
+-		break;
+-	case 2:		//OSD0
+-		dispc_reg_merge(OSD_OSDWIN0MD,
+-				h_factor << OSD_OSDWIN0MD_OHZ0_SHIFT,
+-				OSD_OSDWIN0MD_OHZ0);
+-		dispc_reg_merge(OSD_OSDWIN0MD,
+-				v_factor << OSD_OSDWIN0MD_OVZ0_SHIFT,
+-				OSD_OSDWIN0MD_OVZ0);
+-		break;
+-	case 3:
+-		dispc_reg_merge(OSD_OSDWIN1MD,
+-				h_factor << OSD_OSDWIN1MD_OHZ1_SHIFT,
+-				OSD_OSDWIN1MD_OHZ1);
+-		dispc_reg_merge(OSD_OSDWIN1MD,
+-				v_factor << OSD_OSDWIN1MD_OVZ1_SHIFT,
+-				OSD_OSDWIN1MD_OVZ1);
+-		break;
+-	}
+-}
+-
+-/* Chooses the ROM CLUT for now. Can be extended later. */
+-static void set_bg_color(u8 clut, u8 color_offset)
+-{
+-	clut = 0;		/* 0 = ROM, 1 = RAM */
+-
+-	dispc_reg_merge(OSD_MODE, OSD_MODE_BCLUT & clut, OSD_MODE_BCLUT);
+-	dispc_reg_merge(OSD_MODE, color_offset << OSD_MODE_CABG_SHIFT,
+-			OSD_MODE_CABG);
+-}
+-
+-static void set_sdram_params(char *id, u32 addr, u32 line_length)
+-{
+-	/* The parameters to be written to the registers should be in
+-	 * multiple of 32 bytes
+-	 */
+-	addr = addr;		/* div by 32 */
+-	line_length = line_length / 32;
+-
+-	if (is_win(id, VID0)) {
+-		dispc_reg_out(OSD_VIDWIN0ADR, addr);
+-		dispc_reg_out(OSD_VIDWIN0OFST, line_length);
+-	} else if (is_win(id, VID1)) {
+-		dispc_reg_out(OSD_VIDWIN1ADR, addr);
+-		dispc_reg_out(OSD_VIDWIN1OFST, line_length);
+-	} else if (is_win(id, OSD0)) {
+-		dispc_reg_out(OSD_OSDWIN0ADR, addr);
+-		dispc_reg_out(OSD_OSDWIN0OFST, line_length);
+-	} else if (is_win(id, OSD1)) {
+-		dispc_reg_out(OSD_OSDWIN1ADR, addr);
+-		dispc_reg_out(OSD_OSDWIN1OFST, line_length);
+-	}
+-}
+-
+-static void set_win_enable(char *id, unsigned int on)
+-{
+-	on = (on == 0) ? 0 : ~0;
+-
+-	if (is_win(id, VID0))
+-		/* Turning off VID0 use due to field inversion issue */
+-		dispc_reg_merge(OSD_VIDWINMD, 0, OSD_VIDWINMD_ACT0);
+-	else if (is_win(id, VID1))
+-		dispc_reg_merge(OSD_VIDWINMD, on, OSD_VIDWINMD_ACT1);
+-	else if (is_win(id, OSD0))
+-		dispc_reg_merge(OSD_OSDWIN0MD, on, OSD_OSDWIN0MD_OACT0);
+-	else if (is_win(id, OSD1)) {
+-		/* The OACT1 bit is applicable only if OSD1 is not used as
+-		 * the attribute window
+-		 */
+-		if (!(dispc_reg_in(OSD_OSDWIN1MD) & OSD_OSDWIN1MD_OASW))
+-			dispc_reg_merge(OSD_OSDWIN1MD, on, OSD_OSDWIN1MD_OACT1);
+-	}
+-}
+-
+-static void set_win_mode(char *id)
+-{
+-	if (is_win(id, VID0)) ;
+-	else if (is_win(id, VID1)) {
+-		if (dm->vid1->info.var.bits_per_pixel == 32)
+-			dispc_reg_merge(OSD_MISCCT, ~0,
+-					OSD_MISCCT_RGBWIN | OSD_MISCCT_RGBEN);
+-	} else if (is_win(id, OSD0))
+-		/* Set RGB565 mode */
+-		dispc_reg_merge(OSD_OSDWIN0MD, OSD_OSDWIN0MD_RGB0E,
+-				OSD_OSDWIN0MD_RGB0E);
+-	else if (is_win(id, OSD1)) {
+-		/* Set as attribute window */
+-		dispc_reg_merge(OSD_OSDWIN1MD, OSD_OSDWIN1MD_OASW,
+-				OSD_OSDWIN1MD_OASW);
+-	}
+-
+-}
+-
+-/**
+- *      davincifb_set_par - Optional function. Alters the hardware state.
+- *      @info: frame buffer structure that represents a single frame buffer
+- *
+- *	Using the fb_var_screeninfo in fb_info we set the resolution of the
+- *	this particular framebuffer. This function alters the par AND the
+- *	fb_fix_screeninfo stored in fb_info. It doesn't not alter var in
+- *	fb_info since we are using that data. This means we depend on the
+- *	data in var inside fb_info to be supported by the hardware.
+- *	davincifb_check_var is always called before dmfb_set_par to ensure this.
+- *	Again if you can't can't the resolution you don't need this function.
+- *
+- */
+-static int davincifb_set_par(struct fb_info *info)
+-{
+-	struct dm_win_info *w = (struct dm_win_info *)info->par;
+-	struct fb_var_screeninfo *v = &info->var;
+-	u32 start = 0, offset = 0;
+-
+-	info->fix.line_length = v->xres_virtual * v->bits_per_pixel / 8;
+-
+-	offset = v->yoffset * info->fix.line_length +
+-	    v->xoffset * v->bits_per_pixel / 8;
+-	start = (u32) w->fb_base_phys + offset;
+-	set_sdram_params(info->fix.id, start, info->fix.line_length);
+-
+-	set_interlaced(info->fix.id, 1);
+-	set_win_position(info->fix.id,
+-			 x_pos(w), y_pos(w), v->xres, v->yres / 2);
+-	set_win_mode(info->fix.id);
+-	set_win_enable(info->fix.id, 1);
+-
+-	return (0);
+-}
+-
+-/**
+- *	davincifb_ioctl - handler for private ioctls.
+- */
+-static int davincifb_ioctl(struct fb_info *info, unsigned int cmd,
+-			   unsigned long arg)
+-{
+-	struct dm_win_info *w = (struct dm_win_info *)info->par;
+-	void __user *argp = (void __user *)arg;
+-	struct fb_fillrect rect;
+-	struct zoom_params zoom;
+-	long std = 0;
+-
+-	switch (cmd) {
+-	case FBIO_WAITFORVSYNC:
+-		/* This ioctl accepts an integer argument to specify a
+-		 * display.  We only support one display, so we will
+-		 * simply ignore the argument.
+-		 */
+-		return (davincifb_wait_for_vsync(w));
+-		break;
+-	case FBIO_SETATTRIBUTE:
+-		if (copy_from_user(&rect, argp, sizeof(rect)))
+-			return -EFAULT;
+-		return (davincifb_set_attr_blend(&rect));
+-		break;
+-	case FBIO_SETPOSX:
+-		if (arg >= 0 && arg <= DISP_XRES) {
+-			w->x = arg;
+-			davincifb_check_var(&w->info.var, &w->info);
+-			davincifb_set_par(&w->info);
+-			return 0;
+-		} else
+-			return -EINVAL;
+-		break;
+-	case FBIO_SETPOSY:
+-		if (arg >= 0 && arg <= DISP_YRES) {
+-			w->y = arg;
+-			davincifb_check_var(&w->info.var, &w->info);
+-			davincifb_set_par(&w->info);
+-			return 0;
+-		} else
+-			return -EINVAL;
+-		break;
+-	case FBIO_SETZOOM:
+-		if (copy_from_user(&zoom, argp, sizeof(zoom)))
+-			return -EFAULT;
+-		if ((zoom.zoom_h == 2) || (zoom.zoom_h == 0)
+-		    || (zoom.zoom_h == 1) || (zoom.zoom_v == 2)
+-		    || (zoom.zoom_v == 0) || (zoom.zoom_v == 1)) {
+-			set_zoom(zoom.window_id, zoom.zoom_h, zoom.zoom_v);
+-			return 0;
+-		} else {
+-			return -EINVAL;
+-		}
+-		break;
+-	case FBIO_GETSTD:
+-		std = ((dmparams.output << 16) | (dmparams.format));	//(NTSC <<16) | (COPOSITE);
+-		copy_to_user(argp, &std, sizeof(u_int32_t));
+-		return 0;
+-		break;
+-	}
+-	return (-EINVAL);
+-}
+-
+-/**
+- *  	davincifb_setcolreg - Optional function. Sets a color register.
+- *      @regno: Which register in the CLUT we are programming
+- *      @red: The red value which can be up to 16 bits wide
+- *	@green: The green value which can be up to 16 bits wide
+- *	@blue:  The blue value which can be up to 16 bits wide.
+- *	@transp: If supported the alpha value which can be up to 16 bits wide.
+- *      @info: frame buffer info structure
+- *
+- *  	Set a single color register. The values supplied have a 16 bit
+- *  	magnitude which needs to be scaled in this function for the hardware.
+- *	Things to take into consideration are how many color registers, if
+- *	any, are supported with the current color visual. With truecolor mode
+- *	no color palettes are supported. Here a psuedo palette is created
+- *	which we store the value in pseudo_palette in struct fb_info. For
+- *	pseudocolor mode we have a limited color palette. To deal with this
+- *	we can program what color is displayed for a particular pixel value.
+- *	DirectColor is similar in that we can program each color field. If
+- *	we have a static colormap we don't need to implement this function.
+- *
+- *	Returns negative errno on error, or zero on success.
+- */
+-static int davincifb_setcolreg(unsigned regno, unsigned red, unsigned green,
+-			       unsigned blue, unsigned transp,
+-			       struct fb_info *info)
+-{
+-	/* only pseudo-palette (16 bpp) allowed */
+-	if (regno >= 16)	/* maximum number of palette entries */
+-		return (1);
+-
+-	if (info->var.grayscale) {
+-		/* grayscale = 0.30*R + 0.59*G + 0.11*B */
+-		red = green = blue = (red * 77 + green * 151 + blue * 28) >> 8;
+-	}
+-
+-	/* Truecolor has hardware-independent 16-entry pseudo-palette */
+-	if (info->fix.visual == FB_VISUAL_TRUECOLOR) {
+-		u32 v;
+-
+-		if (regno >= 16)
+-			return (1);
+-
+-		red >>= (16 - info->var.red.length);
+-		green >>= (16 - info->var.green.length);
+-		blue >>= (16 - info->var.blue.length);
+-
+-		v = (red << info->var.red.offset) |
+-		    (green << info->var.green.offset) |
+-		    (blue << info->var.blue.offset);
+-
+-		switch (info->var.bits_per_pixel) {
+-		case 16:
+-			((u16 *) (info->pseudo_palette))[regno] = v;
+-			break;
+-		default:
+-			return (1);
+-		}
+-		return (0);
+-	}
+-	return (0);
+-}
+-
+-/**
+- *      davincifb_pan_display - NOT a required function. Pans the display.
+- *      @var: frame buffer variable screen structure
+- *      @info: frame buffer structure that represents a single frame buffer
+- *
+- *	Pan (or wrap, depending on the `vmode' field) the display using the
+- *  	`xoffset' and `yoffset' fields of the `var' structure.
+- *  	If the values don't fit, return -EINVAL.
+- *
+- *      Returns negative errno on error, or zero on success.
+- */
+-static int davincifb_pan_display(struct fb_var_screeninfo *var,
+-				 struct fb_info *info)
+-{
+-	struct dm_win_info *w = (struct dm_win_info *)info->par;
+-	u32 start = 0, offset = 0;
+-
+-	if (var->xoffset > var->xres_virtual - var->xres)
+-		return (-EINVAL);
+-	if (var->yoffset > var->yres_virtual - var->yres)
+-		return (-EINVAL);
+-	if ((var->xres_virtual * var->bits_per_pixel / 8) % 32)
+-		return (-EINVAL);
+-
+-	offset = var->yoffset * info->fix.line_length +
+-	    var->xoffset * var->bits_per_pixel / 8;
+-	start = (u32) w->fb_base_phys + offset;
+-
+-	if ((dispc_reg_in(VENC_VSTAT) & 0x00000010)==0x10)
+-		set_sdram_params(info->fix.id, start, info->fix.line_length);
+-	else
+-		w->sdram_address = start;
+-
+-	return (0);
+-}
+-
+-/**
+- *      davincifb_blank - NOT a required function. Blanks the display.
+- *      @blank_mode: the blank mode we want.
+- *      @info: frame buffer structure that represents a single frame buffer
+- *
+- *      Blank the screen if blank_mode != 0, else unblank. Return 0 if
+- *      blanking succeeded, != 0 if un-/blanking failed due to e.g. a
+- *      video mode which doesn't support it. Implements VESA suspend
+- *      and powerdown modes on hardware that supports disabling hsync/vsync:
+- *      blank_mode == 2: suspend vsync
+- *      blank_mode == 3: suspend hsync
+- *      blank_mode == 4: powerdown
+- *
+- *      Returns negative errno on error, or zero on success.
+- *
+- */
+-static int davincifb_blank(int blank_mode, struct fb_info *info)
+-{
+-	return 0;
+-}
+-
+-static int parse_win_params(char *wp,
+-			    int *xres, int *yres, int *xpos, int *ypos)
+-{
+-	char *s;
+-
+-	if ((s = strsep(&wp, "x")) == NULL)
+-		return -EINVAL;
+-	*xres = simple_strtoul(s, NULL, 0);
+-
+-	if ((s = strsep(&wp, "@")) == NULL)
+-		return -EINVAL;
+-	*yres = simple_strtoul(s, NULL, 0);
+-
+-	if ((s = strsep(&wp, ",")) == NULL)
+-		return -EINVAL;
+-	*xpos = simple_strtoul(s, NULL, 0);
+-
+-	if ((s = strsep(&wp, ":")) == NULL)
+-		return -EINVAL;
+-	*ypos = simple_strtoul(s, NULL, 0);
+-
+-	return 0;
+-}
+-
+-/*
+- * Pass boot-time options by adding the following string to the boot params:
+- * 	video=davincifb:[option[:option]]
+- * Valid options:
+- * 	output=[lcd|ntsc|pal]
+- * 	format=[composite|s-video|component|rgb]
+- * 	vid0=[off|MxN@X,Y]
+- * 	vid1=[off|MxN@X,Y]
+- * 	osd0=[off|MxN@X,Y]
+- * 	osd1=[off|MxN@X,Y]
+- * 		MxN specify the window resolution (displayed size)
+- * 		X,Y specify the window position
+- * 		M, N, X, Y are integers
+- * 		M, X should be multiples of 16
+- */
+-
+-#ifndef MODULE
+-int __init davincifb_setup(char *options)
+-{
+-	char *this_opt;
+-	u32 xres, yres, xpos, ypos;
+-	int format_yres = 480;
+-
+-	pr_debug("davincifb: Options \"%s\"\n", options);
+-
+-	if (!options || !*options)
+-		return 0;
+-
+-	while ((this_opt = strsep(&options, ":")) != NULL) {
+-
+-		if (!*this_opt)
+-			continue;
+-
+-		if (!strncmp(this_opt, "output=", 7)) {
+-			if (!strncmp(this_opt + 7, "lcd", 3)) {
+-				dmparams.output = LCD;
+-				dmparams.format = 0;
+-			} else if (!strncmp(this_opt + 7, "ntsc", 4))
+-				dmparams.output = NTSC;
+-			else if (!strncmp(this_opt + 7, "pal", 3))
+-				dmparams.output = PAL;
+-		} else if (!strncmp(this_opt, "format=", 7)) {
+-			if (dmparams.output == LCD)
+-				continue;
+-			if (!strncmp(this_opt + 7, "composite", 9))
+-				dmparams.format = COMPOSITE;
+-			else if (!strncmp(this_opt + 7, "s-video", 7))
+-				dmparams.format = SVIDEO;
+-			else if (!strncmp(this_opt + 7, "component", 9))
+-				dmparams.format = COMPONENT;
+-			else if (!strncmp(this_opt + 7, "rgb", 3))
+-				dmparams.format = RGB;
+-		} else if (!strncmp(this_opt, "vid0=", 5)) {
+-			if (!strncmp(this_opt + 5, "off", 3))
+-				dmparams.windows &= ~(1 << VID0);
+-			else if (!parse_win_params(this_opt + 5,
+-						   &xres, &yres, &xpos,
+-						   &ypos)) {
+-				dmparams.vid0_xres = xres;
+-				dmparams.vid0_yres = yres;
+-				dmparams.vid0_xpos = xpos;
+-				dmparams.vid0_ypos = ypos;
+-			}
+-		} else if (!strncmp(this_opt, "vid1=", 5)) {
+-			if (!strncmp(this_opt + 5, "off", 3))
+-				dmparams.windows &= ~(1 << VID1);
+-			else if (!parse_win_params(this_opt + 5,
+-						   &xres, &yres, &xpos,
+-						   &ypos)) {
+-				dmparams.vid1_xres = xres;
+-				dmparams.vid1_yres = yres;
+-				dmparams.vid1_xpos = xpos;
+-				dmparams.vid1_ypos = ypos;
+-			}
+-		} else if (!strncmp(this_opt, "osd0=", 5)) {
+-			if (!strncmp(this_opt + 5, "off", 3))
+-				dmparams.windows &= ~(1 << OSD0);
+-			else if (!parse_win_params(this_opt + 5,
+-						   &xres, &yres, &xpos,
+-						   &ypos)) {
+-				dmparams.osd0_xres = xres;
+-				dmparams.osd0_yres = yres;
+-				dmparams.osd0_xpos = xpos;
+-				dmparams.osd0_ypos = ypos;
+-			}
+-		} else if (!strncmp(this_opt, "osd1=", 5)) {
+-			if (!strncmp(this_opt + 5, "off", 3))
+-				dmparams.windows &= ~(1 << OSD1);
+-			else if (!parse_win_params(this_opt + 5,
+-						   &xres, &yres, &xpos,
+-						   &ypos)) {
+-				dmparams.osd1_xres = xres;
+-				dmparams.osd1_yres = yres;
+-				dmparams.osd1_xpos = xpos;
+-				dmparams.osd1_ypos = ypos;
+-			}
+-		}
+-	}
+-	printk(KERN_INFO "DaVinci: "
+-	       "Output on %s%s, Enabled windows: %s %s %s %s\n",
+-	       (dmparams.output == LCD) ? "LCD" :
+-	       (dmparams.output == NTSC) ? "NTSC" :
+-	       (dmparams.output == PAL) ? "PAL" : "unknown device!",
+-	       (dmparams.format == 0) ? "" :
+-	       (dmparams.format == COMPOSITE) ? " in COMPOSITE format" :
+-	       (dmparams.format == SVIDEO) ? " in SVIDEO format" :
+-	       (dmparams.format == COMPONENT) ? " in COMPONENT format" :
+-	       (dmparams.format == RGB) ? " in RGB format" : "",
+-	       (dmparams.windows & (1 << VID0)) ? "Video0" : "",
+-	       (dmparams.windows & (1 << VID1)) ? "Video1" : "",
+-	       (dmparams.windows & (1 << OSD0)) ? "OSD0" : "",
+-	       (dmparams.windows & (1 << OSD1)) ? "OSD1" : "");
+-	if (dmparams.output == NTSC) {
+-		format_yres = 480;
+-	} else if (dmparams.output == PAL) {
+-		format_yres = 576;
+-	} else {
+-		printk(KERN_INFO
+-		       "DaVinci:invalid format..defaulting width to 480\n");
+-	}
+-	dmparams.osd0_yres = osd0_default_var.yres = format_yres;
+-	dmparams.osd1_yres = osd1_default_var.yres = format_yres;
+-	dmparams.vid0_yres = vid0_default_var.yres = format_yres;
+-	dmparams.vid1_yres = vid1_default_var.yres = format_yres;
+-
+-	osd0_default_var.yres_virtual = format_yres * DOUBLE_BUF;
+-	osd1_default_var.yres_virtual = format_yres * DOUBLE_BUF;
+-	vid0_default_var.yres_virtual = format_yres * TRIPLE_BUF;
+-	vid1_default_var.yres_virtual = format_yres * TRIPLE_BUF;
+-
+-	if (dmparams.windows & (1 << VID0))
+-		printk(KERN_INFO "Setting Video0 size %dx%d, "
+-		       "position (%d,%d)\n",
+-		       dmparams.vid0_xres, dmparams.vid0_yres,
+-		       dmparams.vid0_xpos, dmparams.vid0_ypos);
+-	if (dmparams.windows & (1 << VID1))
+-		printk(KERN_INFO "Setting Video1 size %dx%d, "
+-		       "position (%d,%d)\n",
+-		       dmparams.vid1_xres, dmparams.vid1_yres,
+-		       dmparams.vid1_xpos, dmparams.vid1_ypos);
+-	if (dmparams.windows & (1 << OSD0))
+-		printk(KERN_INFO "Setting OSD0 size %dx%d, "
+-		       "position (%d,%d)\n",
+-		       dmparams.osd0_xres, dmparams.osd0_yres,
+-		       dmparams.osd0_xpos, dmparams.osd0_ypos);
+-	if (dmparams.windows & (1 << OSD1))
+-		printk(KERN_INFO "Setting OSD1 size %dx%d, "
+-		       "position (%d,%d)\n",
+-		       dmparams.osd1_xres, dmparams.osd1_yres,
+-		       dmparams.osd1_xpos, dmparams.osd1_ypos);
+-	return (0);
+-}
+-#endif
+-
+-static int mem_release(struct dm_win_info *w)
+-{
+-	if (!w->alloc_fb_mem) {
+-		iounmap((void *)w->fb_base);
+-		release_mem_region(w->fb_base_phys, w->fb_size);
+-	} else
+-		dma_free_coherent(NULL, w->fb_size, (void *)w->fb_base,
+-				  w->fb_base_phys);
+-	kfree(w);
+-	return (0);
+-}
+-
+-static int mem_alloc(struct dm_win_info **win, dma_addr_t fb_base_phys,
+-		     unsigned long fb_size, char *fbname)
+-{
+-	struct dm_win_info *w;
+-	struct device *dev = dm->dev;
+-
+-	w = kmalloc(sizeof(struct dm_win_info), GFP_KERNEL);
+-	if (!w) {
+-		dev_err(dev, "%s: could not allocate memory\n", fbname);
+-		return (-ENOMEM);
+-	}
+-	memset(w, 0, sizeof(struct dm_win_info));
+-
+-	w->fb_base_phys = fb_base_phys;
+-	w->fb_size = fb_size;
+-
+-	/* A null base address indicates that the framebuffer memory should be
+-	 * dynamically allocated.
+-	 */
+-	if (!w->fb_base_phys)
+-		w->alloc_fb_mem = 1;
+-
+-	if (!w->alloc_fb_mem) {
+-		if (!request_mem_region(w->fb_base_phys, w->fb_size, fbname)) {
+-			dev_err(dev, "%s: cannot reserve FB region\n", fbname);
+-			goto free_par;
+-		}
+-		w->fb_base =
+-		    (unsigned long)ioremap(w->fb_base_phys, w->fb_size);
+-		if (!w->fb_base) {
+-			dev_err(dev, "%s: cannot map framebuffer\n", fbname);
+-			goto release_fb;
+-		}
+-	} else {
+-		/* allocate coherent memory for the framebuffer */
+-		w->fb_base = (unsigned long)dma_alloc_coherent(dev,
+-							       w->fb_size,
+-							       &w->fb_base_phys,
+-							       GFP_KERNEL |
+-							       GFP_DMA);
+-		if (!w->fb_base) {
+-			dev_err(dev, "%s: cannot allocate framebuffer\n",
+-				fbname);
+-			goto free_par;
+-		}
+-
+-		dev_dbg(dev, "Framebuffer allocated at 0x%x "
+-			"mapped to 0x%x, size %dk\n",
+-			(unsigned)w->fb_base_phys, (unsigned)w->fb_base,
+-			(unsigned)w->fb_size / 1024);
+-	}
+-
+-	*win = w;
+-	return (0);
+-
+-      release_fb:
+-	if (!w->alloc_fb_mem)
+-		release_mem_region(w->fb_base_phys, w->fb_size);
+-      free_par:
+-	kfree(w);
+-	return (-ENOMEM);
+-}
+-
+-static struct fb_info *init_fb_info(struct dm_win_info *w,
+-				    struct fb_var_screeninfo *var, char *id)
+-{
+-	struct fb_info *info = &(w->info);
+-	struct dm_info *dm = w->dm;
+-
+-	/* initialize the fb_info structure */
+-	info->flags = FBINFO_DEFAULT;
+-	info->fbops = &davincifb_ops;
+-	info->screen_base = (char *)(w->fb_base);
+-	info->pseudo_palette = w->pseudo_palette;
+-	info->par = w;
+-
+-	/* Initialize variable screeninfo.
+-	 * The variable screeninfo can be directly specified by the user
+-	 * via an ioctl.
+-	 */
+-	memcpy(&info->var, var, sizeof(info->var));
+-	info->var.activate = FB_ACTIVATE_NOW;
+-
+-	/* Initialize fixed screeninfo.
+-	 * The fixed screeninfo cannot be directly specified by the user, but
+-	 * it may change to reflect changes to the var info.
+-	 */
+-	strlcpy(info->fix.id, id, sizeof(info->fix.id));
+-	info->fix.smem_start = w->fb_base_phys;
+-	info->fix.line_length =
+-	    (info->var.xres_virtual * info->var.bits_per_pixel) / 8;
+-	info->fix.smem_len = w->fb_size;
+-	info->fix.type = FB_TYPE_PACKED_PIXELS;
+-	info->fix.visual = (info->var.bits_per_pixel <= 8) ?
+-	    FB_VISUAL_PSEUDOCOLOR : FB_VISUAL_TRUECOLOR;
+-	info->fix.xpanstep = 0;
+-	info->fix.ypanstep = 1;
+-	info->fix.ywrapstep = 0;
+-	info->fix.type_aux = 0;
+-	info->fix.mmio_start = dm->mmio_base_phys;
+-	info->fix.mmio_len = dm->mmio_size;
+-	info->fix.accel = FB_ACCEL_NONE;
+-	w->sdram_address = 0;
+-
+-	return info;
+-}
+-
+-static void davincifb_ntsc_composite_config(int on)
+-{
+-	if (on) {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-
+-		/* Enable Composite output and start video encoder */
+-		dispc_reg_out(VENC_VMOD, (VENC_VMOD_VIE | VENC_VMOD_VENC));
+-
+-		/* Set REC656 Mode */
+-		dispc_reg_out(VENC_YCCCTL, 0x1);
+-
+-		/* Enable output mode and NTSC  */
+-		dispc_reg_out(VENC_VMOD, 0x1003);
+-
+-		/* Enable all DACs  */
+-		dispc_reg_out(VENC_DACTST, 0);
+-	} else {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-	}
+-}
+-
+-static void davincifb_ntsc_svideo_config(int on)
+-{
+-	if (on) {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-
+-		/* Enable Composite output and start video encoder */
+-		dispc_reg_out(VENC_VMOD, (VENC_VMOD_VIE | VENC_VMOD_VENC));
+-
+-		/* Set REC656 Mode */
+-		dispc_reg_out(VENC_YCCCTL, 0x1);
+-
+-		/* Enable output mode and NTSC  */
+-		dispc_reg_out(VENC_VMOD, 0x1003);
+-
+-		/* Enable S-Video Output; DAC B: S-Video Y, DAC C: S-Video C  */
+-		dispc_reg_out(VENC_DACSEL, 0x210);
+-
+-		/* Enable all DACs  */
+-		dispc_reg_out(VENC_DACTST, 0);
+-	} else {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-	}
+-}
+-
+-static void davincifb_ntsc_component_config(int on)
+-{
+-	if (on) {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-
+-		/* Enable Composite output and start video encoder */
+-		dispc_reg_out(VENC_VMOD, (VENC_VMOD_VIE | VENC_VMOD_VENC));
+-
+-		/* Set REC656 Mode */
+-		dispc_reg_out(VENC_YCCCTL, 0x1);
+-
+-		/* Enable output mode and NTSC  */
+-		dispc_reg_out(VENC_VMOD, 0x1003);
+-
+-		/* Enable Component output; DAC A: Y, DAC B: Pb, DAC C: Pr  */
+-		dispc_reg_out(VENC_DACSEL, 0x543);
+-
+-		/* Enable all DACs  */
+-		dispc_reg_out(VENC_DACTST, 0);
+-	} else {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-	}
+-}
+-
+-static void davincifb_pal_composite_config(int on)
+-{
+-	if (on) {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-
+-		/* Enable Composite output and start video encoder */
+-		dispc_reg_out(VENC_VMOD, (VENC_VMOD_VIE | VENC_VMOD_VENC));
+-
+-		/* Set REC656 Mode */
+-		dispc_reg_out(VENC_YCCCTL, 0x1);
+-
+-		/* Enable output mode and PAL  */
+-		dispc_reg_out(VENC_VMOD, 0x1043);
+-
+-		/* Enable all DACs  */
+-		dispc_reg_out(VENC_DACTST, 0);
+-	} else {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-	}
+-}
+-
+-static void davincifb_pal_svideo_config(int on)
+-{
+-	if (on) {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-
+-		/* Enable Composite output and start video encoder */
+-		dispc_reg_out(VENC_VMOD, (VENC_VMOD_VIE | VENC_VMOD_VENC));
+-
+-		/* Set REC656 Mode */
+-		dispc_reg_out(VENC_YCCCTL, 0x1);
+-
+-		/* Enable output mode and PAL  */
+-		dispc_reg_out(VENC_VMOD, 0x1043);
+-
+-		/* Enable S-Video Output; DAC B: S-Video Y, DAC C: S-Video C  */
+-		dispc_reg_out(VENC_DACSEL, 0x210);
+-
+-		/* Enable all DACs  */
+-		dispc_reg_out(VENC_DACTST, 0);
+-	} else {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-	}
+-}
+-
+-static void davincifb_pal_component_config(int on)
+-{
+-	if (on) {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-
+-		/* Enable Composite output and start video encoder */
+-		dispc_reg_out(VENC_VMOD, (VENC_VMOD_VIE | VENC_VMOD_VENC));
+-
+-		/* Set REC656 Mode */
+-		dispc_reg_out(VENC_YCCCTL, 0x1);
+-
+-		/* Enable output mode and PAL  */
+-		dispc_reg_out(VENC_VMOD, 0x1043);
+-
+-		/* Enable Component output; DAC A: Y, DAC B: Pb, DAC C: Pr  */
+-		dispc_reg_out(VENC_DACSEL, 0x543);
+-
+-		/* Enable all DACs  */
+-		dispc_reg_out(VENC_DACTST, 0);
+-	} else {
+-		/* Reset video encoder module */
+-		dispc_reg_out(VENC_VMOD, 0);
+-	}
+-}
+-
+-static inline void fix_default_var(struct dm_win_info *w,
+-				   u32 xres, u32 yres, u32 xpos, u32 ypos,
+-				   int n_buf)
+-{
+-	struct fb_var_screeninfo *v = &w->info.var;
+-
+-	v->xres = xres;
+-	v->yres = yres;
+-	v->xres_virtual = v->xres;
+-	v->yres_virtual = v->yres * n_buf;
+-	x_pos(w) = xpos;
+-	y_pos(w) = ypos;
+-}
+-
+-/*
+- *  Cleanup
+- */
+-static int davincifb_remove(struct platform_device *pdev)
+-{
+-	free_irq(IRQ_VENCINT, &dm);
+-
+-	/* Cleanup all framebuffers */
+-	if (dm->osd0) {
+-		unregister_framebuffer(&dm->osd0->info);
+-		mem_release(dm->osd0);
+-	}
+-	if (dm->osd1) {
+-		unregister_framebuffer(&dm->osd1->info);
+-		mem_release(dm->osd1);
+-	}
+-	if (dm->vid0) {
+-		unregister_framebuffer(&dm->vid0->info);
+-		mem_release(dm->vid0);
+-	}
+-	if (dm->vid1) {
+-		unregister_framebuffer(&dm->vid1->info);
+-		mem_release(dm->vid1);
+-	}
+-
+-	/* Turn OFF the output device */
+-	dm->output_device_config(0);
+-
+-	if (dm->mmio_base)
+-		iounmap((void *)dm->mmio_base);
+-	release_mem_region(dm->mmio_base_phys, dm->mmio_size);
+-
+-	return 0;
+-}
+-
+-/*
+- *  Initialization
+- */
+-static int davincifb_probe(struct platform_device *pdev)
+-{
+-	struct fb_info *info;
+-
+-	if (dmparams.windows == 0)
+-		return 0;	/* user disabled all windows through bootargs */
+-	dm->dev = &pdev->dev;
+-	dm->mmio_base_phys = OSD_REG_BASE;
+-	dm->mmio_size = OSD_REG_SIZE;
+-
+-	if (!request_mem_region
+-	    (dm->mmio_base_phys, dm->mmio_size, MODULE_NAME)) {
+-		dev_err(dm->dev, ": cannot reserve MMIO region\n");
+-		return (-ENODEV);
+-	}
+-
+-	/* map the regions */
+-	dm->mmio_base =
+-	    (unsigned long)ioremap(dm->mmio_base_phys, dm->mmio_size);
+-	if (!dm->mmio_base) {
+-		dev_err(dm->dev, ": cannot map MMIO\n");
+-		goto release_mmio;
+-	}
+-
+-	/* initialize the vsync wait queue */
+-	init_waitqueue_head(&dm->vsync_wait);
+-	dm->timeout = HZ / 5;
+-
+-	if ((dmparams.output == NTSC) && (dmparams.format == COMPOSITE))
+-		dm->output_device_config = davincifb_ntsc_composite_config;
+-	else if ((dmparams.output == NTSC) && (dmparams.format == SVIDEO))
+-		dm->output_device_config = davincifb_ntsc_svideo_config;
+-	else if ((dmparams.output == NTSC) && (dmparams.format == COMPONENT))
+-		dm->output_device_config = davincifb_ntsc_component_config;
+-	else if ((dmparams.output == PAL) && (dmparams.format == COMPOSITE))
+-		dm->output_device_config = davincifb_pal_composite_config;
+-	else if ((dmparams.output == PAL) && (dmparams.format == SVIDEO))
+-		dm->output_device_config = davincifb_pal_svideo_config;
+-	else if ((dmparams.output == PAL) && (dmparams.format == COMPONENT))
+-		dm->output_device_config = davincifb_pal_component_config;
+-	/* Add support for other displays here */
+-	else {
+-		printk(KERN_WARNING "Unsupported output device!\n");
+-		dm->output_device_config = NULL;
+-	}
+-
+-	printk(KERN_NOTICE "Setting Up Clocks for DM420 OSD\n");
+-
+-	/* Initialize the VPSS Clock Control register */
+-	dispc_reg_out(VPSS_CLKCTL, 0x18);
+-
+-	/* Set Base Pixel X and Base Pixel Y */
+-	dispc_reg_out(OSD_BASEPX, BASEX);
+-	dispc_reg_out(OSD_BASEPY, BASEY);
+-
+-	/* Reset OSD registers to default. */
+-	dispc_reg_out(OSD_MODE, 0);
+-	dispc_reg_out(OSD_OSDWIN0MD, 0);
+-
+-	/* Set blue background color */
+-	set_bg_color(0, 162);
+-
+-	/* Field Inversion Workaround */
+-	dispc_reg_out(OSD_MODE, 0x200);
+-
+-	/* Setup VID0 framebuffer */
+-	if (!(dmparams.windows & (1 << VID0))) {
+-		printk(KERN_WARNING "No video/osd windows will be enabled "
+-		       "because Video0 is disabled\n");
+-		return 0;	/* background will still be shown */
+-	}
+-	/* Setup VID0 framebuffer */
+-	if (!mem_alloc(&dm->vid0, VID0_FB_PHY, VID0_FB_SIZE, VID0_FBNAME)) {
+-		dm->vid0->dm = dm;
+-		fix_default_var(dm->vid0,
+-				dmparams.vid0_xres, dmparams.vid0_yres,
+-				dmparams.vid0_xpos, dmparams.vid0_ypos,
+-				TRIPLE_BUF);
+-		info = init_fb_info(dm->vid0, &vid0_default_var, VID0_FBNAME);
+-		if (davincifb_check_var(&info->var, info)) {
+-			dev_err(dm->dev, ": invalid default video mode\n");
+-			goto exit;
+-		}
+-		memset((void *)dm->vid0->fb_base, 0x88, dm->vid0->fb_size);
+-	} else
+-		goto exit;
+-
+-	/* Setup OSD0 framebuffer */
+-	if ((dmparams.windows & (1 << OSD0)) &&
+-	    (!mem_alloc(&dm->osd0, OSD0_FB_PHY, OSD0_FB_SIZE, OSD0_FBNAME))) {
+-		dm->osd0->dm = dm;
+-		fix_default_var(dm->osd0,
+-				dmparams.osd0_xres, dmparams.osd0_yres,
+-				dmparams.osd0_xpos, dmparams.osd0_ypos,
+-				DOUBLE_BUF);
+-		info = init_fb_info(dm->osd0, &osd0_default_var, OSD0_FBNAME);
+-		if (davincifb_check_var(&info->var, info)) {
+-			dev_err(dm->dev, ": invalid default video mode\n");
+-			mem_release(dm->osd0);
+-		} else
+-			memset((void *)dm->osd0->fb_base, 0, dm->osd0->fb_size);
+-	}
+-
+-	/* Setup OSD1 framebuffer */
+-	if ((dmparams.windows & (1 << OSD1)) &&
+-	    (!mem_alloc(&dm->osd1, OSD1_FB_PHY, OSD1_FB_SIZE, OSD1_FBNAME))) {
+-		dm->osd1->dm = dm;
+-		fix_default_var(dm->osd1,
+-				dmparams.osd1_xres, dmparams.osd1_yres,
+-				dmparams.osd1_xpos, dmparams.osd1_ypos,
+-				DOUBLE_BUF);
+-		info = init_fb_info(dm->osd1, &osd1_default_var, OSD1_FBNAME);
+-		if (davincifb_check_var(&info->var, info)) {
+-			dev_err(dm->dev, ": invalid default video mode\n");
+-			mem_release(dm->osd1);
+-		} else
+-			/* Set blend factor to show OSD windows */
+-			memset((void *)dm->osd1->fb_base, 0xff,
+-			       dm->osd1->fb_size);
+-	}
+-
+-	/* Setup VID1 framebuffer */
+-	if ((dmparams.windows & (1 << VID1)) &&
+-	    (!mem_alloc(&dm->vid1, VID1_FB_PHY, VID1_FB_SIZE, VID1_FBNAME))) {
+-		dm->vid1->dm = dm;
+-		fix_default_var(dm->vid1,
+-				dmparams.vid1_xres, dmparams.vid1_yres,
+-				dmparams.vid1_xpos, dmparams.vid1_ypos,
+-				TRIPLE_BUF);
+-		info = init_fb_info(dm->vid1, &vid1_default_var, VID1_FBNAME);
+-		if (davincifb_check_var(&info->var, info)) {
+-			dev_err(dm->dev,
+-				VID1_FBNAME ": invalid default video mode\n");
+-			mem_release(dm->vid1);
+-		} else
+-			memset((void *)dm->vid1->fb_base, 0x88,
+-			       dm->vid1->fb_size);
+-	}
+-
+-	/* Register OSD0 framebuffer */
+-	if (dm->osd0) {
+-		info = &dm->osd0->info;
+-		if (register_framebuffer(info) < 0) {
+-			dev_err(dm->dev, OSD0_FBNAME
+-				"Unable to register OSD0 framebuffer\n");
+-			mem_release(dm->osd0);
+-		} else {
+-			printk(KERN_INFO "fb%d: %s frame buffer device\n",
+-			       info->node, info->fix.id);
+-			davincifb_set_par(info);
+-		}
+-	}
+-
+-	/* Register VID0 framebuffer */
+-	info = &dm->vid0->info;
+-	if (register_framebuffer(info) < 0) {
+-		dev_err(dm->dev,
+-			VID0_FBNAME "Unable to register VID0 framebuffer\n");
+-		goto exit;
+-	} else {
+-		printk(KERN_INFO "fb%d: %s frame buffer device\n",
+-		       info->node, info->fix.id);
+-		davincifb_set_par(info);
+-	}
+-
+-	/* Register OSD1 framebuffer */
+-	if (dm->osd1) {
+-		info = &dm->osd1->info;
+-		if (register_framebuffer(info) < 0) {
+-			dev_err(dm->dev, OSD1_FBNAME
+-				"Unable to register OSD1 framebuffer\n");
+-			mem_release(dm->osd1);
+-		} else {
+-			printk(KERN_INFO "fb%d: %s frame buffer device\n",
+-			       info->node, info->fix.id);
+-			davincifb_set_par(info);
+-		}
+-	}
+-
+-	/* Register VID1 framebuffer */
+-	if (dm->vid1) {
+-		info = &dm->vid1->info;
+-		if (register_framebuffer(info) < 0) {
+-			mem_release(dm->vid1);
+-			dev_err(dm->dev, VID1_FBNAME
+-				"Unable to register VID1 framebuffer\n");
+-			mem_release(dm->vid1);
+-		} else {
+-			printk(KERN_INFO "fb%d: %s frame buffer device\n",
+-			       info->node, info->fix.id);
+-			davincifb_set_par(info);
+-		}
+-	}
+-
+-	/* install our interrupt service routine */
+-	if (request_irq(IRQ_VENCINT, davincifb_isr, SA_SHIRQ, MODULE_NAME,
+-			dm)) {
+-		dev_err(dm->dev, MODULE_NAME
+-			": could not install interrupt service routine\n");
+-		goto exit;
+-	}
+-
+-	/* Turn ON the output device */
+-	dm->output_device_config(1);
+-
+-	return (0);
+-
+-      exit:
+-	davincifb_remove(pdev);
+-	iounmap((void *)dm->mmio_base);
+-      release_mmio:
+-	release_mem_region(dm->mmio_base_phys, dm->mmio_size);
+-	return (-ENODEV);
+-}
+-
+-/* ------------------------------------------------------------------------- */
+-
+-    /*
+-     *  Frame buffer operations
+-     */
+-static struct fb_ops davincifb_ops = {
+-	.owner = THIS_MODULE,
+-	.fb_check_var = davincifb_check_var,
+-	.fb_set_par = davincifb_set_par,
+-	.fb_setcolreg = davincifb_setcolreg,
+-	.fb_blank = davincifb_blank,
+-	.fb_pan_display = davincifb_pan_display,
+-	.fb_fillrect = cfb_fillrect,
+-	.fb_copyarea = cfb_copyarea,
+-	.fb_imageblit = cfb_imageblit,
+-	.fb_rotate = NULL,
+-	.fb_sync = NULL,
+-	.fb_ioctl = davincifb_ioctl,
+-};
+-
+-static struct platform_driver davincifb_driver = {
+-	.probe		= davincifb_probe,
+-	.remove		= davincifb_remove,
+-	.driver		= {
+-		.name	= MODULE_NAME,
+-		.owner	= THIS_MODULE,
+-	},
+-};
+-
+-/* Register both the driver and the device */
+-int __init davincifb_init(void)
+-{
+-#ifndef MODULE
+-	/* boot-line options */
+-	/* handle options for "dm64xxfb" for backwards compatability */
+-	char *option;
+-	char *names[] = { "davincifb", "dm64xxfb" };
+-	int i, num_names = 2, done = 0;
+-
+-	for (i = 0; i < num_names && !done; i++) {
+-		if (fb_get_options(names[i], &option)) {
+-			printk(KERN_ERR
+-			       "%s: Disabled on command-line.\n", MODULE_NAME);
+-			return -ENODEV;
+-		} else if (option) {
+-			davincifb_setup(option);
+-				done = 1;
+-		}
+-	}
+-#endif
+-
+-	/* Register the driver with LDM */
+-	if (platform_driver_register(&davincifb_driver)) {
+-		pr_debug("failed to register omapfb driver\n");
+-		return -ENODEV;
+-	}
+-
+-	return 0;
+-}
+-
+-static void __exit davincifb_cleanup(void)
+-{
+-	platform_driver_unregister(&davincifb_driver);
+-}
+-
+-module_init(davincifb_init);
+-module_exit(davincifb_cleanup);
+-
+-MODULE_DESCRIPTION("Framebuffer driver for TI DaVinci");
+-MODULE_AUTHOR("Texas Instruments");
+-MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/video/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/video/Kconfig
++++ linux-2.6.18/drivers/video/Kconfig
+@@ -1607,14 +1607,6 @@ config FB_PNX4008_DUM_RGB
+ 	---help---
+ 	  Say Y here to enable support for PNX4008 RGB Framebuffer
+ 
+-config FB_DAVINCI
+-        bool "Davinci Framebuffer support"
+-        depends on FB && ARCH_DAVINCI
+-        help
+-          This is the frame buffer device driver for the DaVinci video
+-          hardware found on the TI DaVinci EVM.  If
+-          unsure, say N.
+-
+ config FB_VIRTUAL
+ 	tristate "Virtual Frame Buffer support (ONLY FOR TESTING!)"
+ 	depends on FB
+Index: linux-2.6.18/drivers/video/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/video/Makefile
++++ linux-2.6.18/drivers/video/Makefile
+@@ -107,7 +107,6 @@ obj-$(CONFIG_FB_IMAC)             += ima
+ obj-$(CONFIG_FB_VGA16)            += vga16fb.o vgastate.o
+ obj-$(CONFIG_FB_OF)               += offb.o
+ obj-$(CONFIG_FB_OMAP)		  += omap/ cfbcopyarea.o cfbfillrect.o cfbimgblt.o
+-obj-$(CONFIG_FB_DAVINCI)          += davincifb.o cfbfillrect.o cfbcopyarea.o cfbimgblt.o
+ 
+ # the test framebuffer is last
+ obj-$(CONFIG_FB_VIRTUAL)          += vfb.o
+Index: linux-2.6.18/drivers/media/video/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/Makefile
++++ linux-2.6.18/drivers/media/video/Makefile
+@@ -10,8 +10,6 @@ tuner-objs	:=	tuner-core.o tuner-types.o
+ 
+ msp3400-objs	:=	msp3400-driver.o msp3400-kthreads.o
+ 
+-davinci-vpfe-objs   :=  ccdc_davinci.o davinci_vpfe.o
+-
+ obj-$(CONFIG_VIDEO_DEV) += videodev.o v4l2-common.o compat_ioctl32.o
+ 
+ ifeq ($(CONFIG_VIDEO_V4L1_COMPAT),y)
+@@ -98,9 +96,6 @@ obj-$(CONFIG_USB_KONICAWC)      += usbvi
+ obj-$(CONFIG_USB_VICAM)         += usbvideo/
+ obj-$(CONFIG_USB_QUICKCAM_MESSENGER)	+= usbvideo/
+ 
+-obj-$(CONFIG_VIDEO_DAVINCI)     += davinci-vpfe.o
+-obj-$(CONFIG_VIDEO_TVP5146)     += tvp5146.o
+-
+ obj-$(CONFIG_VIDEO_VIVI) += vivi.o
+ 
+ EXTRA_CFLAGS += -Idrivers/media/dvb/dvb-core
+Index: linux-2.6.18/drivers/media/video/davinci_vpfe.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci_vpfe.c
++++ /dev/null
+@@ -1,1136 +0,0 @@
+-/*
+- *
+- *
+- * Copyright (C) 2006 Texas Instruments Inc
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+- */
+-/* davinci_vpfe.c */
+-
+-#include <linux/init.h>
+-#include <linux/module.h>
+-#include <linux/delay.h>
+-#include <linux/errno.h>
+-#include <linux/fs.h>
+-#include <linux/kernel.h>
+-#include <linux/sched.h>
+-#include <linux/interrupt.h>
+-#include <linux/kdev_t.h>
+-#include <linux/string.h>
+-#include <linux/videodev.h>
+-#include <linux/wait.h>
+-#include <linux/dma-mapping.h>
+-#include <linux/platform_device.h>
+-
+-#include <asm/irq.h>
+-#include <asm/page.h>
+-#include <asm/io.h>
+-#include <asm/dma-mapping.h>
+-
+-#include <media/davinci_vpfe.h>
+-
+-#define debug_print(x...)	//printk(x)
+-
+-MODULE_LICENSE("GPL");
+-
+-static struct v4l2_rect ntsc_bounds = VPFE_WIN_NTSC;
+-static struct v4l2_rect pal_bounds = VPFE_WIN_PAL;
+-static struct v4l2_fract ntsc_aspect = VPFE_PIXELASPECT_NTSC;
+-static struct v4l2_fract pal_aspect = VPFE_PIXELASPECT_PAL;
+-static struct v4l2_rect ntscsp_bounds = VPFE_WIN_NTSC_SP;
+-static struct v4l2_rect palsp_bounds = VPFE_WIN_PAL_SP;
+-static struct v4l2_fract sp_aspect = VPFE_PIXELASPECT_NTSC_SP;
+-
+-static vpfe_obj vpfe_device = {	/* the default format is NTSC */
+-	.usrs = 0,
+-	.io_usrs = 0,
+-	.std = VPFE_STD_AUTO,
+-	.vwin = VPFE_WIN_PAL,
+-	.bounds = VPFE_WIN_PAL,
+-	.pixelaspect = VPFE_PIXELASPECT_NTSC,
+-	.pixelfmt = V4L2_PIX_FMT_UYVY,
+-	.field = V4L2_FIELD_INTERLACED,
+-	.numbuffers = VPFE_DEFNUM_FBUFS,
+-	.ccdc_params = {
+-		.pix_fmt = CCDC_PIXFMT_YCBCR_8BIT,
+-		.frm_fmt = CCDC_FRMFMT_INTERLACED,
+-		.win = VPFE_WIN_PAL,
+-		.fid_pol = CCDC_PINPOL_POSITIVE,
+-		.vd_pol = CCDC_PINPOL_POSITIVE,
+-		.hd_pol = CCDC_PINPOL_POSITIVE,
+-		.bt656_enable = TRUE,
+-		.pix_order = CCDC_PIXORDER_CBYCRY,
+-		.buf_type = CCDC_BUFTYPE_FLD_INTERLEAVED
+-	},
+-	.tvp5146_params = {
+-		.mode = TVP5146_MODE_AUTO,
+-		.amuxmode = TVP5146_AMUX_COMPOSITE,
+-		.enablebt656sync = TRUE
+-	},
+-        .irqlock = SPIN_LOCK_UNLOCKED
+-};
+-
+-struct v4l2_capability vpfe_drvcap = {
+-	.driver = "vpfe driver",
+-	.card = "DaVinci EVM",
+-	.bus_info = "Platform",
+-	.version = VPFE_VERSION_CODE,
+-	.capabilities = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING
+-};
+-
+-static int sense_std(v4l2_std_id* std_id)
+-{
+-	v4l2_std_id id = 0;
+-	tvp5146_mode mode;
+-	int ret;
+-	ret = tvp5146_ctrl(TVP5146_GET_STD, &mode);
+-	if(ret < 0)
+-		return ret;
+-	switch (mode & 0x7) {
+-	case TVP5146_MODE_NTSC:
+-		id = V4L2_STD_NTSC;
+-		break;
+-	case TVP5146_MODE_PAL:
+-		id = V4L2_STD_PAL;
+-		break;
+-	case TVP5146_MODE_PAL_M:
+-		id = V4L2_STD_PAL_M;
+-		break;
+-	case TVP5146_MODE_PAL_CN:
+-		id = V4L2_STD_PAL_N;
+-		break;
+-	case TVP5146_MODE_SECAM:
+-		id = V4L2_STD_SECAM;
+-		break;
+-	case TVP5146_MODE_PAL_60:
+-		id = V4L2_STD_PAL_60;
+-		break;
+-	}
+-	if (mode & 0x8) {	/* square pixel mode */
+-		id <<= 32;
+-	}
+-	if (mode == TVP5146_MODE_AUTO) {
+-		id = VPFE_STD_AUTO;	/* auto-detection for all other modes */
+-	} else if (mode == TVP5146_MODE_AUTO_SQP) {
+-		id = VPFE_STD_AUTO_SQP;
+-	}
+-	if(id == 0)
+-		return -EINVAL;
+-	*std_id =  id;
+-	return 0;
+-}
+-
+-static irqreturn_t vpfe_isr(int irq, void *dev_id, struct pt_regs *regs)
+-{
+-	vpfe_obj *vpfe = &vpfe_device;
+-	int fid;
+-
+-	/* check which field we are in hardware */
+-	fid = ccdc_getfid();
+-	vpfe->field_id ^= 1;	/* switch the software maintained field id */
+-	debug_print(KERN_INFO "field id = %x:%x.\n", fid, vpfe->field_id);
+-	if (fid == vpfe->field_id) {	/* we are in-sync here, continue */
+-		if (fid == 0) {
+-			/*  One frame is just being captured. If the next frame
+-			is available, release the current frame and move on */
+-			if (vpfe->curFrm != vpfe->nextFrm) {
+-				vpfe->curFrm->state = STATE_DONE;
+-				wake_up_interruptible(&vpfe->curFrm->done);
+-				vpfe->curFrm = vpfe->nextFrm;
+-			}
+-			/* based on whether the two fields are stored interleavely      */
+-			/* or separately in memory, reconfigure the CCDC memory address */
+-			if (vpfe->field == V4L2_FIELD_SEQ_TB) {
+-				u32 addr =
+-				    vpfe->curFrm->boff + vpfe->field_offset;
+-				ccdc_setfbaddr((unsigned long)addr);
+-			}
+-	} else if (fid == 1) {
+-			/* if one field is just being captured */
+-			/* configure the next frame */
+-			/* get the next frame from the empty queue */
+-			/* if no frame is available, hold on to the current buffer */
+-			if (!list_empty(&vpfe->dma_queue)
+-			    && vpfe->curFrm == vpfe->nextFrm) {
+-				vpfe->nextFrm = list_entry(vpfe->dma_queue.next,
+-					struct videobuf_buffer, queue);
+-				list_del(&vpfe->nextFrm->queue);
+-				vpfe->nextFrm->state = STATE_ACTIVE;
+-				ccdc_setfbaddr(
+-					(unsigned long)vpfe->nextFrm->boff);
+-			}
+-			if (vpfe->mode_changed) {
+-				ccdc_setwin(&vpfe->ccdc_params);
+-				/* update the field offset */
+-				vpfe->field_offset =
+-				    (vpfe->vwin.height - 2) * vpfe->vwin.width;
+-				vpfe->mode_changed = FALSE;
+-			}
+-		}
+-	} else if (fid == 0) {
+-		/* recover from any hardware out-of-sync due to */
+-		/* possible switch of video source              */
+-		/* for fid == 0, sync up the two fids           */
+-		/* for fid == 1, no action, one bad frame will  */
+-		/* go out, but it is not a big deal             */
+-		vpfe->field_id = fid;
+-	}
+-	debug_print(KERN_INFO "interrupt returned.\n");
+-	return IRQ_RETVAL(1);
+-}
+-
+-/* this is the callback function called from videobuf_qbuf() function */
+-/* the buffer is prepared and queued into the dma queue */
+-static int buffer_prepare(struct videobuf_queue *q,
+-			  struct videobuf_buffer *vb,
+-			  enum v4l2_field field)
+-{
+-	vpfe_obj *vpfe = &vpfe_device;
+-
+-
+-	if (vb->state == STATE_NEEDS_INIT) {
+-		vb->width  = vpfe->vwin.width;
+-		vb->height = vpfe->vwin.height;
+-		vb->size   = VPFE_MAX_FBUF_SIZE;
+-		vb->field  = field;
+-	}
+-	vb->state = STATE_PREPARED;
+-
+-	return 0;
+-
+-}
+-static void
+-buffer_config(struct videobuf_queue *q, unsigned int count)
+-{
+-	vpfe_obj *vpfe = &vpfe_device;
+-	int i;
+-	for(i = 0; i < count; i++) {
+-		q->bufs[i]->boff = virt_to_phys(vpfe->fbuffers[i]);
+-		debug_print(KERN_INFO "buffer address: %x\n", q->bufs[i]->boff);
+-	}
+-}
+-
+-static int
+-buffer_setup(struct videobuf_queue *q, unsigned int *count, unsigned int *size)
+-{
+-	vpfe_obj *vpfe = &vpfe_device;
+-	int i;
+-	*size = VPFE_MAX_FBUF_SIZE;
+-
+-
+-	for (i = VPFE_DEFNUM_FBUFS; i < *count; i++) {
+-		u32 size = PAGE_SIZE << VPFE_MAX_FBUF_ORDER;
+-		void *mem = (void *)__get_free_pages(GFP_KERNEL |GFP_DMA,
+-						     VPFE_MAX_FBUF_ORDER);
+-		if (mem) {
+-			unsigned long adr = (unsigned long)mem;
+-			while (size > 0) {
+-				/* make sure the frame buffers are never
+-				   swapped out of memory */
+-				SetPageReserved(virt_to_page(adr));
+-				adr += PAGE_SIZE;
+-				size -= PAGE_SIZE;
+-			}
+-			vpfe->fbuffers[i] = mem;
+-		} else {
+-			break;
+-		}
+-	}
+-	*count = vpfe->numbuffers = i;
+-
+-	return 0;
+-}
+-
+-static void buffer_queue(struct videobuf_queue *q, struct videobuf_buffer *vb)
+-{
+-	vpfe_obj *vpfe = &vpfe_device;
+-        /* add the buffer to the DMA queue */
+-	list_add_tail(&vb->queue, &vpfe->dma_queue);
+-	vb->state = STATE_QUEUED;
+-}
+-
+-static void buffer_release(struct videobuf_queue *q, struct videobuf_buffer *vb)
+-{
+-	/* free the buffer if it is not one of the 3 allocated at initializaiton time */
+-	if(vb->i < vpfe_device.numbuffers
+-	 && vb->i >= VPFE_DEFNUM_FBUFS
+-	 && vpfe_device.fbuffers[vb->i]){
+-		free_pages((unsigned long)vpfe_device.fbuffers[vb->i],
+-			   VPFE_MAX_FBUF_ORDER);
+-		vpfe_device.fbuffers[vb->i] = NULL;
+-	}
+-}
+-
+-
+-static struct videobuf_queue_ops video_qops = {
+-	.buf_setup    = buffer_setup,
+-	.buf_prepare  = buffer_prepare,
+-	.buf_queue    = buffer_queue,
+-	.buf_release  = buffer_release,
+-	.buf_config   = buffer_config,
+-};
+-
+-
+-
+-
+-static int vpfe_doioctl(struct inode *inode, struct file *file,
+-			unsigned int cmd, void *arg)
+-{
+-	vpfe_obj *vpfe = &vpfe_device;
+-	vpfe_fh *fh = file->private_data;
+-	int ret = 0;
+-	switch (cmd) {
+-	case VIDIOC_S_CTRL:
+-	case VIDIOC_S_FMT:
+-	case VIDIOC_S_STD:
+-	case VIDIOC_S_CROP:
+-		ret = v4l2_prio_check(&vpfe->prio, &fh->prio);
+-		if (0 != ret) {
+-			return ret;
+-		}
+-		break;
+-	}
+-
+-	switch (cmd) {
+-	case VIDIOC_QUERYCAP:
+-	{
+-		struct v4l2_capability *cap =
+-		    (struct v4l2_capability *)arg;
+-		memset(cap, 0, sizeof(*cap));
+-		*cap = vpfe_drvcap;
+-		break;
+-	}
+-	case VIDIOC_ENUM_FMT:
+-	{
+-		struct v4l2_fmtdesc *fmt = (struct v4l2_fmtdesc *)arg;
+-		u32 index = fmt->index;
+-		memset(fmt, 0, sizeof(*fmt));
+-		fmt->index = index;
+-		if (index == 0) {
+-			/* only yuv4:2:2 format is supported at this point */
+-			fmt->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+-			strcpy(fmt->description,
+-			       "YCbCr4:2:2 Interleaved UYUV");
+-			fmt->pixelformat = V4L2_PIX_FMT_UYVY;
+-		} else if (index == 1) {
+-			fmt->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+-			strcpy(fmt->description,
+-			       "YCbCr4:2:2 Interleaved YUYV");
+-			fmt->pixelformat = V4L2_PIX_FMT_YUYV;
+-		} else {
+-			ret = -EINVAL;
+-		}
+-		break;
+-	}
+-	case VIDIOC_G_FMT:
+-	{
+-		struct v4l2_format *fmt = (struct v4l2_format *)arg;
+-		if (fmt->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+-			ret = -EINVAL;
+-		} else {
+-			struct v4l2_pix_format *pixfmt = &fmt->fmt.pix;
+-			down_interruptible(&vpfe->lock);
+-			pixfmt->width = vpfe->vwin.width;
+-			pixfmt->height = vpfe->vwin.height;
+-			pixfmt->field = vpfe->field;
+-			pixfmt->pixelformat = vpfe->pixelfmt;
+-			pixfmt->bytesperline = pixfmt->width * 2;
+-			pixfmt->sizeimage =
+-			    pixfmt->bytesperline * pixfmt->height;
+-			pixfmt->colorspace = V4L2_COLORSPACE_SMPTE170M;
+-			up(&vpfe->lock);
+-		}
+-		break;
+-	}
+-	case VIDIOC_S_FMT:
+-	{
+-		struct v4l2_format *fmt = (struct v4l2_format *)arg;
+-		struct v4l2_pix_format *pixfmt = &fmt->fmt.pix;
+-		ccdc_params_ycbcr *params = &vpfe->ccdc_params;
+-		if (vpfe->started) {	/* make sure streaming is not started */
+-			ret = -EBUSY;
+-			break;
+-		}
+-
+-		down_interruptible(&vpfe->lock);
+-		if (fmt->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+-			ret = -EINVAL;
+-			up(&vpfe->lock);
+-			break;
+-		}
+-		if ((pixfmt->width + vpfe->vwin.left <=
+-		     vpfe->bounds.width)
+-		    & (pixfmt->height + vpfe->vwin.top <=
+-		       vpfe->bounds.height)) {
+-			/* this is the case when no scaling is supported */
+-			/* crop window is directed modified */
+-			vpfe->vwin.height = pixfmt->height;
+-			vpfe->vwin.width = pixfmt->width;
+-			params->win.width = pixfmt->width;
+-			params->win.height = pixfmt->height;
+-		} else {
+-			ret = -EINVAL;
+-			up(&vpfe->lock);
+-			break;
+-		}
+-		/* setup the CCDC parameters accordingly */
+-		if (pixfmt->pixelformat == V4L2_PIX_FMT_YUYV) {
+-			params->pix_order = CCDC_PIXORDER_YCBYCR;
+-			vpfe->pixelfmt = pixfmt->pixelformat;
+-		} else if (pixfmt->pixelformat == V4L2_PIX_FMT_UYVY) {
+-			params->pix_order = CCDC_PIXORDER_CBYCRY;
+-			vpfe->pixelfmt = pixfmt->pixelformat;
+-		} else {
+-			ret = -EINVAL;	/* not supported format */
+-			up(&vpfe->lock);
+-			break;
+-		}
+-		if (pixfmt->field == V4L2_FIELD_NONE
+-		    || pixfmt->field == V4L2_FIELD_INTERLACED) {
+-			params->buf_type = CCDC_BUFTYPE_FLD_INTERLEAVED;
+-			vpfe->field = pixfmt->field;
+-		} else if (pixfmt->field == V4L2_FIELD_SEQ_TB) {
+-			params->buf_type = CCDC_BUFTYPE_FLD_SEPARATED;
+-			vpfe->field = pixfmt->field;
+-		} else {
+-			ret = -EINVAL;
+-		}
+-		up(&vpfe->lock);
+-		break;
+-	}
+-	case VIDIOC_TRY_FMT:
+-	{
+-		struct v4l2_format *fmt = (struct v4l2_format *)arg;
+-		if (fmt->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+-			ret = -EINVAL;
+-		} else {
+-			struct v4l2_pix_format *pixfmt = &fmt->fmt.pix;
+-			if (pixfmt->width > vpfe->bounds.width
+-			    || pixfmt->height > vpfe->bounds.height
+-			    || (pixfmt->pixelformat != V4L2_PIX_FMT_UYVY
+-				&& pixfmt->pixelformat !=
+-				V4L2_PIX_FMT_YUYV)) {
+-				ret = -EINVAL;
+-			}
+-		}
+-		break;
+-	}
+-	case VIDIOC_G_STD:
+-	{
+-		v4l2_std_id *id = (v4l2_std_id *) arg;
+-		*id = vpfe->std;
+-		break;
+-	}
+-	case VIDIOC_S_STD:
+-	{
+-		v4l2_std_id id = *(v4l2_std_id *) arg;
+-		tvp5146_mode mode = TVP5146_MODE_INV;
+-		int sqp = 0;
+-
+-		if (vpfe->started) {	/* make sure streaming is not started */
+-			ret = -EBUSY;
+-			break;
+-		}
+-		down_interruptible(&vpfe->lock);
+-		if (id & V4L2_STD_625_50) {
+-			vpfe->std = id;
+-			vpfe->bounds = vpfe->vwin = pal_bounds;
+-			vpfe->pixelaspect = pal_aspect;
+-			vpfe->ccdc_params.win = pal_bounds;
+-
+-		} else if (id & V4L2_STD_525_60) {
+-			vpfe->std = id;
+-			vpfe->bounds = vpfe->vwin = ntsc_bounds;
+-			vpfe->pixelaspect = ntsc_aspect;
+-			vpfe->ccdc_params.win = ntsc_bounds;
+-		} else if (id & VPFE_STD_625_50_SQP) {
+-			vpfe->std = id;
+-			vpfe->bounds = vpfe->vwin = palsp_bounds;
+-			vpfe->pixelaspect = sp_aspect;
+-			sqp = 1;
+-			id >>= 32;
+-		} else if (id & VPFE_STD_525_60_SQP) {
+-			vpfe->std = id;
+-			sqp = 1;
+-			vpfe->std = id;
+-			id >>= 32;
+-			vpfe->bounds = vpfe->vwin = ntscsp_bounds;
+-			vpfe->pixelaspect = sp_aspect;
+-			vpfe->ccdc_params.win = ntscsp_bounds;
+-		} else if (id & VPFE_STD_AUTO) {
+-			mode = TVP5146_MODE_AUTO;
+-			vpfe->bounds = vpfe->vwin = pal_bounds;
+-			vpfe->pixelaspect = pal_aspect;
+-			vpfe->ccdc_params.win = pal_bounds;
+-			vpfe->std = id;
+-		} else if (id & VPFE_STD_AUTO_SQP) {
+-			vpfe->std = id;
+-			vpfe->bounds = vpfe->vwin = palsp_bounds;
+-			vpfe->pixelaspect = sp_aspect;
+-			sqp = 1;
+-			mode = TVP5146_MODE_AUTO_SQP;
+-			vpfe->pixelaspect = sp_aspect;
+-		} else {
+-			ret = -EINVAL;
+-		}
+-		if (id == V4L2_STD_PAL_60) {
+-			mode = TVP5146_MODE_PAL_60;
+-		} else if (id == V4L2_STD_PAL_M) {
+-			mode = TVP5146_MODE_PAL_M;
+-		} else if (id == V4L2_STD_PAL_Nc
+-			   || id == V4L2_STD_PAL_N) {
+-			mode = TVP5146_MODE_PAL_CN;
+-		} else if (id & V4L2_STD_PAL) {
+-			mode = TVP5146_MODE_PAL;
+-		} else if (id & V4L2_STD_NTSC) {
+-			mode = TVP5146_MODE_NTSC;
+-		} else if (id & V4L2_STD_SECAM) {
+-			mode = TVP5146_MODE_SECAM;
+-		}
+-		vpfe->tvp5146_params.mode = mode | (sqp << 3);
+-		tvp5146_ctrl(TVP5146_CONFIG, &vpfe->tvp5146_params);
+-
+-		up(&vpfe->lock);
+-		break;
+-	}
+-	case VIDIOC_ENUMSTD:
+-	{
+-		struct v4l2_standard *std = (struct v4l2_standard *)arg;
+-		u32 index = std->index;
+-		memset(std, 0, sizeof(*std));
+-		std->index = index;
+-		if (index == 0) {
+-			std->id = V4L2_STD_525_60;
+-			strcpy(std->name, "SD-525line-30fps");
+-			std->framelines = 525;
+-			std->frameperiod.numerator = 1001;
+-			std->frameperiod.denominator = 30000;
+-		} else if (index == 1) {
+-			std->id = V4L2_STD_625_50;
+-			strcpy(std->name, "SD-625line-25fps");
+-			std->framelines = 625;
+-			std->frameperiod.numerator = 1;
+-			std->frameperiod.denominator = 25;
+-		} else if (index == 2) {
+-			std->id = VPFE_STD_625_50_SQP;
+-			strcpy(std->name,
+-			       "SD-625line-25fps square pixel");
+-			std->framelines = 625;
+-			std->frameperiod.numerator = 1;
+-			std->frameperiod.denominator = 25;
+-		} else if (index == 3) {
+-			std->id = VPFE_STD_525_60_SQP;
+-			strcpy(std->name,
+-			       "SD-525line-25fps square pixel");
+-			std->framelines = 525;
+-			std->frameperiod.numerator = 1001;
+-			std->frameperiod.denominator = 30000;
+-		} else if (index == 4) {
+-			std->id = VPFE_STD_AUTO;
+-			strcpy(std->name, "automatic detect");
+-			std->framelines = 625;
+-			std->frameperiod.numerator = 1;
+-			std->frameperiod.denominator = 1;
+-		} else if (index == 5) {
+-			std->id = VPFE_STD_AUTO_SQP;
+-			strcpy(std->name,
+-			       "automatic detect square pixel");
+-			std->framelines = 625;
+-			std->frameperiod.numerator = 1;
+-			std->frameperiod.denominator = 1;
+-		} else {
+-			ret = -EINVAL;
+-		}
+-		break;
+-	}
+-	case VIDIOC_ENUMINPUT:
+-	{
+-		u32 index=0;
+-		struct v4l2_input *input = (struct v4l2_input *)arg;
+-		if (input->index > 1) 	/* only two inputs are available */
+-			ret = -EINVAL;
+-		index = input->index;
+-		memset(input, 0, sizeof(*input));
+-                input->index = index;
+-		input->type = V4L2_INPUT_TYPE_CAMERA;
+-		input->std = V4L2_STD_ALL;
+-		if(input->index == 0){
+-			sprintf(input->name, "COMPOSITE");
+-		}else if(input->index == 1) {
+-			sprintf(input->name, "S-VIDEO");
+-		}
+-		break;
+-	}
+-	case VIDIOC_G_INPUT:
+-	{
+-		int *index = (int *)arg;
+-		*index = vpfe->tvp5146_params.amuxmode;
+-		break;
+-	}
+-	case VIDIOC_S_INPUT:
+-	{
+-		int *index = (int *)arg;
+-		if (*index > 1 || *index < 0) {
+-			ret = -EINVAL;
+-		}
+-		vpfe->tvp5146_params.amuxmode = *index;
+-		tvp5146_ctrl(TVP5146_SET_AMUXMODE, index);
+-		break;
+-	}
+-	case VIDIOC_CROPCAP:
+-	{
+-		struct v4l2_cropcap *cropcap =
+-		    (struct v4l2_cropcap *)arg;
+-		cropcap->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+-		down_interruptible(&vpfe->lock);
+-		cropcap->bounds = cropcap->defrect = vpfe->vwin;
+-		cropcap->pixelaspect = vpfe->pixelaspect;
+-		up(&vpfe->lock);
+-		break;
+-	}
+-	case VIDIOC_G_PARM:
+-	{
+-		struct v4l2_streamparm *parm =
+-		    (struct v4l2_streamparm *)arg;
+-		if (parm->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+-			/* only capture is supported */
+-			ret = -EINVAL;
+-		} else {
+-			struct v4l2_captureparm *capparm =
+-			    &parm->parm.capture;
+-			memset(capparm, 0,
+-			       sizeof(struct v4l2_captureparm));
+-			down_interruptible(&vpfe->lock);
+-			if (vpfe->std & V4L2_STD_625_50) {
+-				capparm->timeperframe.numerator = 1;
+-				capparm->timeperframe.denominator = 25;	/* PAL 25fps */
+-			} else {
+-				capparm->timeperframe.numerator = 1001;
+-				capparm->timeperframe.denominator = 30000;	/*NTSC 29.97fps */
+-			}
+-			capparm->readbuffers = vpfe->numbuffers;
+-			up(&vpfe->lock);
+-		}
+-		break;
+-	}
+-	case VIDIOC_G_CTRL:
+-		down_interruptible(&vpfe->lock);
+-		tvp5146_ctrl(VIDIOC_G_CTRL, arg);
+-		up(&vpfe->lock);
+-		break;
+-	case VIDIOC_S_CTRL:
+-		down_interruptible(&vpfe->lock);
+-		tvp5146_ctrl(VIDIOC_S_CTRL, arg);
+-		up(&vpfe->lock);
+-		break;
+-	case VIDIOC_QUERYCTRL:
+-		down_interruptible(&vpfe->lock);
+-		tvp5146_ctrl(VIDIOC_QUERYCTRL, arg);
+-		up(&vpfe->lock);
+-		break;
+-	case VIDIOC_G_CROP:
+-	{
+-		struct v4l2_crop *crop = arg;
+-		if (crop->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+-			ret = -EINVAL;
+-		} else {
+-			crop->c = vpfe->vwin;
+-		}
+-		break;
+-	}
+-	case VIDIOC_S_CROP:
+-	{
+-		struct v4l2_crop *crop = arg;
+-		ccdc_params_ycbcr *params = &vpfe->ccdc_params;
+-		if (vpfe->started) {	/* make sure streaming is not started */
+-			ret = -EBUSY;
+-			break;
+-		}
+-		/*adjust the width to 16 pixel boundry */
+-                crop->c.width = ((crop->c.width + 15 )/16 ) * 16;
+-
+-		/* make sure parameters are valid */
+-		if (crop->type == V4L2_BUF_TYPE_VIDEO_CAPTURE
+-		    && (crop->c.left + crop->c.width
+-			<= vpfe->bounds.left + vpfe->bounds.width)
+-		    && (crop->c.top + crop->c.height
+-			<= vpfe->bounds.top + vpfe->bounds.height)) {
+-
+-			down_interruptible(&vpfe->lock);
+-			vpfe->vwin = crop->c;
+-			params->win = vpfe->vwin;
+-			up(&vpfe->lock);
+-		} else {
+-			ret = -EINVAL;
+-		}
+-		break;
+-	}
+-	case VIDIOC_QUERYSTD:
+-	{
+-		v4l2_std_id *id = (v4l2_std_id *) arg;
+-		down_interruptible(&vpfe->lock);
+-		ret = sense_std(id);
+-		up(&vpfe->lock);
+-		break;
+-	}
+-	case VIDIOC_G_PRIORITY:
+-	{
+-		enum v4l2_priority *p = arg;
+-		*p = v4l2_prio_max(&vpfe->prio);
+-		break;
+-	}
+-	case VIDIOC_S_PRIORITY:
+-	{
+-		enum v4l2_priority *p = arg;
+-		ret = v4l2_prio_change(&vpfe->prio, &fh->prio, *p);
+-		break;
+-	}
+-
+-	case VIDIOC_REQBUFS:
+-		if (vpfe->io_usrs != 0) {
+-			ret = -EBUSY;
+-			break;
+-		}
+-		down_interruptible(&vpfe->lock);
+-		videobuf_queue_init(&vpfe->bufqueue, &video_qops, NULL,
+-		&vpfe->irqlock, V4L2_BUF_TYPE_VIDEO_CAPTURE, vpfe->field,
+-		sizeof(struct videobuf_buffer), fh);
+-
+-		videobuf_set_buftype(&vpfe->bufqueue, VIDEOBUF_BUF_LINEAR);
+-
+-		fh->io_allowed = TRUE;
+-		vpfe->io_usrs = 1;
+-		INIT_LIST_HEAD(&vpfe->dma_queue);
+-		ret = videobuf_reqbufs(&vpfe->bufqueue, arg);
+-		up(&vpfe->lock);
+-		break;
+-	case VIDIOC_QUERYBUF:
+-		ret = videobuf_querybuf(&vpfe->bufqueue, arg);
+-		break;
+-	case VIDIOC_QBUF:
+-		if (!fh->io_allowed)
+-			ret = -EACCES;
+-		else
+-			ret = videobuf_qbuf(&vpfe->bufqueue, arg);
+-		break;
+-	case VIDIOC_DQBUF:
+-		if (!fh->io_allowed)
+-			ret = -EACCES;
+-		else
+-			ret =  videobuf_dqbuf(&vpfe->bufqueue, arg, 0);
+-		break;
+-	case VIDIOC_STREAMON:
+-		if (!fh->io_allowed) {
+-			ret = -EACCES;
+-			break;
+-		}
+-		if(vpfe->started){
+-			ret = -EBUSY;
+-			break;
+-		}
+-		ret = videobuf_streamon(&vpfe->bufqueue);
+-		if(ret) break;
+-
+-		down_interruptible(&vpfe->lock);
+-		/* get the current and next frame buffers */
+-		/* we expect at least one buffer is in driver at this point */
+-		/* if not, error is returned */
+-		if (list_empty(&vpfe->dma_queue)) {
+-			ret = -EIO;
+-			break;
+-		}
+-		debug_print(KERN_INFO "cur frame %x.\n",
+-			    vpfe->dma_queue.next);
+-		vpfe->nextFrm = vpfe->curFrm =
+-		    list_entry(vpfe->dma_queue.next,
+-			       struct videobuf_buffer, queue);
+-		/* remove the buffer from the queue */
+-		list_del(&vpfe->curFrm->queue);
+-		vpfe->curFrm->state = STATE_ACTIVE;
+-
+-		/* sense the current video input standard */
+-		tvp5146_ctrl(TVP5146_CONFIG, &vpfe->tvp5146_params);
+-		/* configure the ccdc and resizer as needed   */
+-		/* start capture by enabling CCDC and resizer */
+-		ccdc_config_ycbcr(&vpfe->ccdc_params);
+-		/* setup the memory address for the frame buffer */
+-		ccdc_setfbaddr(((unsigned long)(vpfe->curFrm->boff)));
+-		/* enable CCDC */
+-		vpfe->field_id = 0;
+-		vpfe->started = TRUE;
+-		vpfe->mode_changed = FALSE;
+-		vpfe->field_offset =
+-		    (vpfe->vwin.height - 2) * vpfe->vwin.width;
+-		ccdc_enable(TRUE);
+-		up(&vpfe->lock);
+-		debug_print(KERN_INFO "started video streaming.\n");
+-		break;
+-	case VIDIOC_STREAMOFF:
+-	{
+-		if (!fh->io_allowed) {
+-			ret = -EACCES;
+-			break;
+-		}
+-		if(!vpfe->started){
+-			ret = -EINVAL;
+-			break;
+-		}
+-		/* disable CCDC */
+-		down_interruptible(&vpfe->lock);
+-		ccdc_enable(FALSE);
+-		vpfe->started = FALSE;
+-		up(&vpfe->lock);
+-		ret = videobuf_streamoff(&vpfe->bufqueue);
+-		break;
+-	}
+-	case VPFE_CMD_CONFIG_CCDC:
+-	{
+-		/* this can be used directly and bypass the V4L2 APIs */
+-		ccdc_params_ycbcr *params = &vpfe->ccdc_params;
+-		if(vpfe->started){
+-		/* only allowed if streaming is not started */
+-			ret = -EBUSY;
+-			break;
+-		}
+-		down_interruptible(&vpfe->lock);
+-		/* make sure the other v4l2 related fields
+-		   have consistant settings */
+-		*params = (*(ccdc_params_ycbcr *) arg);
+-		vpfe->vwin = params->win;
+-		if (params->buf_type == CCDC_BUFTYPE_FLD_INTERLEAVED) {
+-			vpfe->field = V4L2_FIELD_INTERLACED;
+-		} else if (params->buf_type ==
+-		   CCDC_BUFTYPE_FLD_SEPARATED) {
+-			vpfe->field = V4L2_FIELD_SEQ_TB;
+-		}
+-		if (params->pix_order == CCDC_PIXORDER_YCBYCR) {
+-			vpfe->pixelfmt = V4L2_PIX_FMT_YUYV;
+-		} else if (params->pix_order == CCDC_PIXORDER_CBYCRY) {
+-			vpfe->pixelfmt = V4L2_PIX_FMT_UYVY;
+-		}
+-		up(&vpfe->lock);
+-		break;
+-	}
+-	case VPFE_CMD_CONFIG_TVP5146:
+-	/* this can be used directly and bypass the V4L2 APIs */
+-	{
+-		/* the settings here must be consistant with that of the CCDC's,
+-		   driver does not check the consistancy */
+-		tvp5146_params *params = (tvp5146_params *) arg;
+-		v4l2_std_id std = 0;
+-		if(vpfe->started){
+-		/* only allowed if streaming is not started */
+-			ret = -EBUSY;
+-			break;
+-		}
+-		down_interruptible(&vpfe->lock);
+-		/*make sure the other v4l2 related fields have consistant settings */
+-		switch (params->mode & 0x7) {
+-		case TVP5146_MODE_NTSC:
+-			std = V4L2_STD_NTSC;
+-			break;
+-		case TVP5146_MODE_PAL:
+-			std = V4L2_STD_PAL;
+-			break;
+-		case TVP5146_MODE_PAL_M:
+-			std = V4L2_STD_PAL_M;
+-			break;
+-		case TVP5146_MODE_PAL_CN:
+-			std = V4L2_STD_PAL_N;
+-			break;
+-		case TVP5146_MODE_SECAM:
+-			std = V4L2_STD_SECAM;
+-			break;
+-		case TVP5146_MODE_PAL_60:
+-			std = V4L2_STD_PAL_60;
+-			break;
+-		}
+-
+-		if (params->mode & 0x8) {	/* square pixel mode */
+-			std <<= 32;
+-		}
+-
+-		if (params->mode == TVP5146_MODE_AUTO) {	/* auto-detection modes */
+-			std = VPFE_STD_AUTO;
+-		} else if (params->mode == TVP5146_MODE_AUTO_SQP) {
+-			std = VPFE_STD_AUTO_SQP;
+-		}
+-
+-		if (std & V4L2_STD_625_50) {
+-			vpfe->bounds = pal_bounds;
+-			vpfe->pixelaspect = pal_aspect;
+-		} else if (std & V4L2_STD_525_60) {
+-			vpfe->bounds = ntsc_bounds;
+-			vpfe->pixelaspect = ntsc_aspect;
+-		} else if (std & VPFE_STD_625_50_SQP) {
+-			vpfe->bounds = palsp_bounds;
+-			vpfe->pixelaspect = sp_aspect;
+-		} else if (std & VPFE_STD_525_60_SQP) {
+-			vpfe->bounds = ntscsp_bounds;
+-			vpfe->pixelaspect = sp_aspect;
+-		}
+-		vpfe->std = std;
+-		tvp5146_ctrl(TVP5146_CONFIG, params);
+-		vpfe->tvp5146_params = *params;
+-		up(&vpfe->lock);
+-		break;
+-	}
+-	default:
+-		ret = -ENOIOCTLCMD;
+-		break;
+-	}			/* end switch(cmd) */
+-	return ret;
+-}
+-
+-static int vpfe_ioctl(struct inode *inode, struct file *file,
+-		      unsigned int cmd, unsigned long arg)
+-{
+-	int ret;
+-	ret =  video_usercopy(inode, file, cmd, arg, vpfe_doioctl);
+-	if( cmd == VIDIOC_S_FMT || cmd == VIDIOC_TRY_FMT ){
+-		ret = video_usercopy(inode, file, VIDIOC_G_FMT,
+-			arg, vpfe_doioctl);
+-	}
+-	return ret;
+-}
+-
+-static int vpfe_mmap(struct file *file, struct vm_area_struct *vma)
+-{
+-	return videobuf_mmap_mapper(&vpfe_device.bufqueue, vma);
+-}
+-
+-static int vpfe_open(struct inode *inode, struct file *filep)
+-{
+-	int minor = iminor(inode);
+-	vpfe_obj *vpfe = NULL;
+-	vpfe_fh *fh = NULL;
+-
+-	debug_print(KERN_INFO "vpfe: open minor=%d\n", minor);
+-
+-	/* check to make sure the minor numbers match */
+-	if (vpfe_device.video_dev && vpfe_device.video_dev->minor == minor) {
+-		vpfe = &vpfe_device;
+-	} else {		/* device not found here */
+-		return -ENODEV;
+-	}
+-
+-	/* allocate per filehandle data */
+-	if ((fh = kmalloc(sizeof(*fh), GFP_KERNEL)) == NULL) {
+-		return -ENOMEM;
+-	}
+-	filep->private_data = fh;
+-	fh->dev = vpfe;
+-	fh->io_allowed = FALSE;
+-	fh->prio = V4L2_PRIORITY_UNSET;
+-	v4l2_prio_open(&vpfe->prio, &fh->prio);
+-	vpfe->usrs++;
+-
+-	return 0;
+-}
+-
+-static int vpfe_release(struct inode *inode, struct file *filep)
+-{
+-	vpfe_fh *fh = filep->private_data;
+-	vpfe_obj *vpfe = fh->dev;
+-
+-	down_interruptible(&vpfe->lock);
+-	if (fh->io_allowed) {
+-		vpfe->io_usrs = 0;
+-		ccdc_enable(FALSE);
+-		vpfe->started = FALSE;
+-		videobuf_queue_cancel(&vpfe->bufqueue);
+-		vpfe->numbuffers = VPFE_DEFNUM_FBUFS;
+-	}
+-	vpfe->usrs--;
+-	v4l2_prio_close(&vpfe->prio, &fh->prio);
+-	filep->private_data = NULL;
+-	kfree(fh);
+-	up(&vpfe->lock);
+-
+-	return 0;
+-}
+-
+-static struct file_operations vpfe_fops = {
+-	.owner = THIS_MODULE,
+-	.open = vpfe_open,
+-	.release = vpfe_release,
+-	.ioctl = vpfe_ioctl,
+-	.mmap = vpfe_mmap
+-};
+-
+-static struct video_device vpfe_video_template = {
+-	.name = "vpfe",
+-	.type = VID_TYPE_CAPTURE | VID_TYPE_CLIPPING | VID_TYPE_SCALES,
+-	.hardware = 0,
+-	.fops = &vpfe_fops,
+-	.minor = -1,
+-};
+-
+-static void vpfe_platform_release(struct device *device)
+-{
+-	/* This is called when the reference count goes to zero. */
+-}
+-
+-static int __init vpfe_probe(struct device *device)
+-{
+-	struct video_device *vfd;
+-	vpfe_obj *vpfe = &vpfe_device;
+-
+-	/* alloc video device */
+-	if ((vfd = video_device_alloc()) == NULL) {
+-		return -ENOMEM;
+-	}
+-	*vfd = vpfe_video_template;
+-	vfd->dev = device;
+-	vfd->release = video_device_release;
+-	snprintf(vfd->name, sizeof(vfd->name), "DM644X_VPFE_DRIVER_V%d.%d.%d",
+-		 (VPFE_VERSION_CODE >> 16) & 0xff,
+-		 (VPFE_VERSION_CODE >> 8) & 0xff, (VPFE_VERSION_CODE) & 0xff);
+-
+-	vpfe->video_dev = vfd;
+-	vpfe->usrs = 0;
+-	vpfe->io_usrs = 0;
+-	vpfe->started = FALSE;
+-	vpfe->latest_only = TRUE;
+-
+-	v4l2_prio_init(&vpfe->prio);
+-	init_MUTEX(&vpfe->lock);
+-	/* register video device */
+-	debug_print(KERN_INFO "trying to register vpfe device.\n");
+-	debug_print(KERN_INFO "vpfe=%x,vpfe->video_dev=%x\n", (int)vpfe,
+-		    (int)&vpfe->video_dev);
+-	if (video_register_device(vpfe->video_dev, VFL_TYPE_GRABBER, -1) < 0) {
+-		video_device_release(vpfe->video_dev);
+-		vpfe->video_dev = NULL;
+-		return -1;
+-	}
+-
+-	debug_print(KERN_INFO "DM644X vpfe: driver version V%d.%d.%d loaded\n",
+-		    (VPFE_VERSION_CODE >> 16) & 0xff,
+-		    (VPFE_VERSION_CODE >> 8) & 0xff,
+-		    (VPFE_VERSION_CODE) & 0xff);
+-
+-	debug_print(KERN_INFO "vpfe: registered device video%d\n",
+-		    vpfe->video_dev->minor & 0x1f);
+-
+-	/* all done */
+-	return 0;
+-}
+-
+-static int vpfe_remove(struct device *device)
+-{
+-	/* un-register device */
+-	video_unregister_device(vpfe_device.video_dev);
+-
+-	return 0;
+-}
+-
+-#ifdef NEW
+-static struct platform_driver vpfe_driver = {
+-	.driver = {
+-		.name		= "VPFE",
+-		.owner		= THIS_MODULE,
+-	},
+-	.probe			= vpfe_probe,
+-	.remove			= vpfe_remove,
+-};
+-
+-#else
+-static struct device_driver vpfe_driver = {
+-	.name = "vpfe",
+-	.bus = &platform_bus_type,
+-	.probe = vpfe_probe,
+-	.remove = vpfe_remove,
+-};
+-#endif
+-
+-static struct platform_device _vpfe_device = {
+-	.name = "vpfe",
+-	.id = 1,
+-	.dev = {
+-		.release = vpfe_platform_release,
+-		}
+-};
+-
+-static int vpfe_init(void)
+-{
+-	int i = 0;
+-	void *mem;
+-	/* allocate memory at initialization time to guarentee availability */
+-	for (i = 0; i < VPFE_DEFNUM_FBUFS; i++) {
+-		mem = (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
+-					       VPFE_MAX_FBUF_ORDER);
+-		if (mem) {
+-			unsigned long adr = (unsigned long)mem;
+-			u32 size = PAGE_SIZE << VPFE_MAX_FBUF_ORDER;
+-			while (size > 0) {
+-				/* make sure the frame buffers
+-				   are never swapped out of memory */
+-				SetPageReserved(virt_to_page(adr));
+-				adr += PAGE_SIZE;
+-				size -= PAGE_SIZE;
+-			}
+-			vpfe_device.fbuffers[i] = (u8 *) mem;
+-			debug_print(KERN_INFO "memory address %d\t%x\n", i,
+-				    mem);
+-		} else {
+-			while (--i >= 0) {
+-				free_pages((unsigned long)vpfe_device.fbuffers[i],
+-					   VPFE_MAX_FBUF_ORDER);
+-			}
+-			debug_print(KERN_INFO
+-				    "frame buffer memory allocation failed.\n");
+-			return -ENOMEM;
+-		}
+-	}
+-	if (driver_register(&vpfe_driver) != 0) {
+-		debug_print(KERN_INFO "driver registration failed\n");
+-		return -1;
+-	}
+-	if (platform_device_register(&_vpfe_device) != 0) {
+-		driver_unregister(&vpfe_driver);
+-		debug_print(KERN_INFO "device registration failed\n");
+-		return -1;
+-	}
+-
+-	ccdc_reset();
+-	tvp5146_ctrl(TVP5146_RESET, NULL);
+-	/* configure the tvp5146 to default parameters */
+-	tvp5146_ctrl(TVP5146_CONFIG, &vpfe_device.tvp5146_params);
+-	/* setup interrupt handling */
+-	request_irq(IRQ_VDINT0, vpfe_isr, SA_INTERRUPT,
+-		    "dm644xv4l2", (void *)&vpfe_device);
+-
+-	printk(KERN_INFO "DaVinci v4l2 capture driver V1.0 loaded\n");
+-	return 0;
+-}
+-
+-static void vpfe_cleanup(void)
+-{
+-	int i = vpfe_device.numbuffers;
+-	platform_device_unregister(&_vpfe_device);
+-	driver_unregister(&vpfe_driver);
+-	/* disable interrupt */
+-	free_irq(IRQ_VDINT0, &vpfe_device);
+-
+-	while (--i >= 0) {
+-		free_pages((unsigned long)vpfe_device.fbuffers[i],
+-			   VPFE_MAX_FBUF_ORDER);
+-	}
+-	debug_print(KERN_INFO "vpfe: un-registered device video.\n");
+-}
+-
+-module_init(vpfe_init);
+-module_exit(vpfe_cleanup);
+Index: linux-2.6.18/drivers/media/video/tvp5146.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/tvp5146.c
++++ /dev/null
+@@ -1,649 +0,0 @@
+-/*
+- *
+- *
+- * Copyright (C) 2006 Texas Instruments Inc
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+- */
+-/* tvp5146.c */
+-
+-#include <linux/init.h>
+-#include <linux/fs.h>
+-#include <linux/vmalloc.h>
+-#include <linux/slab.h>
+-#include <linux/proc_fs.h>
+-#include <linux/ctype.h>
+-#include <linux/delay.h>
+-#include <linux/i2c.h>
+-#include <linux/videodev.h>
+-#include <media/tvp5146.h>
+-
+-#define debug_print(x...)	//printk(x)
+-
+-static struct i2c_client tvp5146_i2c_client;
+-static struct i2c_driver tvp5146_i2c_driver;
+-
+-static int i2c_read_reg(struct i2c_client *client, u8 reg, u8 * val);
+-static int i2c_write_reg(struct i2c_client *client, u8 reg, u8 val);
+-
+-static int configtvp5146(void *arg);
+-static int clrtvp5146lostlock(void);
+-static int enabletvp5146agc(int arg);
+-static int getctrl(void *arg);
+-static int gettvp5146status(void *arg);
+-static int powerdowntvp5146(int powerdownenable);
+-static int queryctrl(void *arg);
+-static int resettvp5146(void);
+-static int setctrl(void *arg);
+-static int settvp5146amuxmode(int mode);
+-static int settvp5146brightness(int arg);
+-static int settvp5146contrast(int arg);
+-static int settvp5146hue(int arg);
+-static int settvp5146saturation(int arg);
+-static int settvp5146std(int arg);
+-static int setup656sync(int enable);
+-
+-/*
+- * ======== configtvp5146 ========
+- */
+-static int configtvp5146(void *arg)
+-{
+-	tvp5146_params *tvp5146params = (tvp5146_params *) arg;
+-	int ret = 0;
+-
+-	ret |= setup656sync(tvp5146params->enablebt656sync);
+-	ret |= settvp5146amuxmode(tvp5146params->amuxmode);
+-	ret |= settvp5146std(tvp5146params->mode);
+-
+-	return ret;
+-}
+-
+-/*
+- * ======== clrtvp5146lostlock  ========
+- */
+-static int clrtvp5146lostlock(void)
+-{
+-	int ret = 0;
+-	u8 clr = 1;
+-	ret = i2c_write_reg(&tvp5146_i2c_client, 0x39, clr);
+-	return ret;
+-}
+-
+-/*
+- * ========  enabletvp5146agc ========
+- */
+-static int enabletvp5146agc(int arg)
+-{
+-	int ret = 0;
+-	int agc;
+-	if (arg == TRUE) {
+-		agc = 0xF;
+-	} else {
+-		agc = 0xC;
+-	}
+-	ret = i2c_write_reg(&tvp5146_i2c_client, 0x01, agc);
+-	return ret;
+-}
+-
+-/*
+- * ========  gettvpctrl ========
+- */
+-static int getctrl(void *arg)
+-{
+-	struct v4l2_control *ctrl = arg;
+-	int ret = 0;
+-	u8 value;
+-
+-	switch (ctrl->id) {
+-	case V4L2_CID_BRIGHTNESS:
+-		ret = i2c_read_reg(&tvp5146_i2c_client, 0x09, &value);
+-		ctrl->value = value;
+-		break;
+-	case V4L2_CID_CONTRAST:
+-		ret = i2c_read_reg(&tvp5146_i2c_client, 0x0A, &value);
+-		ctrl->value = value;
+-		break;
+-	case V4L2_CID_SATURATION:
+-		ret = i2c_read_reg(&tvp5146_i2c_client, 0x0B, &value);
+-		ctrl->value = value;
+-		break;
+-	case V4L2_CID_HUE:
+-		ret = i2c_read_reg(&tvp5146_i2c_client, 0x0C, &value);
+-		ctrl->value = value;
+-		break;
+-	case V4L2_CID_AUTOGAIN:
+-		ret = i2c_read_reg(&tvp5146_i2c_client, 0x01, &value);
+-		if ((value & 0x3) == 3) {
+-			ctrl->value = TRUE;
+-		} else {
+-			ctrl->value = FALSE;
+-		}
+-		break;
+-	default:
+-		ret = -EINVAL;
+-		break;
+-	}
+-	return ret;
+-}
+-
+-/*
+- * ========  gettvp5146std ========
+- */
+-static int gettvp5146std(tvp5146_mode * mode)
+-{
+-	int ret = 0;
+-	u8 output1;
+-	u8 std;
+-	u8 lock_status;
+-
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x2, &std);
+-	std &= 0x7;
+-	if(std == TVP5146_MODE_AUTO){
+-		ret |= i2c_read_reg(&tvp5146_i2c_client, 0x3F, &std);
+-	}
+-	std &= 0x7;
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x33, &output1);
+-	*mode = std  | ((output1 & 0x80) >> 4);	/* square pixel status */
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x3A, &lock_status);
+-	if ((lock_status & 0xe) != 0xe) {
+-		/* not quite locked */
+-		ret = -EAGAIN;
+-	}
+-
+-	return ret;
+-}
+-
+-/*
+- * ========  gettvp5146status ========
+- */
+-static int gettvp5146status(void *arg)
+-{
+-	int ret = 0;
+-	tvp5146_status *status = (tvp5146_status *) arg;
+-	u8 agc, brightness, contrast, hue, saturation;
+-	u8 status_byte;
+-	u8 std;
+-	u8 output1;
+-
+-	ret = i2c_read_reg(&tvp5146_i2c_client, 0x01, &agc);
+-	if ((agc & 0x3) == 3) {
+-		status->agc_enable = TRUE;
+-	} else {
+-		status->agc_enable = FALSE;
+-	}
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x09, &brightness);
+-	status->brightness = brightness;
+-
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x0A, &contrast);
+-	status->contrast = contrast;
+-
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x0B, &saturation);
+-	status->saturation = saturation;
+-
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x0C, &hue);
+-	status->hue = hue;
+-
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x3A, &status_byte);
+-	status->field_rate = (status_byte & 0x20) ? 50 : 60;
+-	status->lost_lock = (status_byte & 0x10) >> 4;
+-	status->csubc_lock = (status_byte & 0x8) >> 3;
+-	status->v_lock = (status_byte & 0x4) >> 2;
+-	status->h_lock = (status_byte & 0x2) >> 1;
+-
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x3F, &std);
+-	ret |= i2c_read_reg(&tvp5146_i2c_client, 0x33, &output1);
+-	if (std | 0x80) {	/* auto switch mode */
+-		status->video_std = TVP5146_MODE_AUTO;
+-	} else {
+-		status->video_std = std;
+-	}
+-	status->video_std |= ((output1 & 0x80) >> 4);	/* square pixel status */
+-	return ret;
+-}
+-
+-/*
+- * ======== powerdowntvp5146 ========
+- */
+-static int powerdowntvp5146(int powerdownenable)
+-{
+-	u8 powerdownsettings = 0x01;
+-
+-	/*Put _tvp5146 in power down mode */
+-	if (!powerdownenable) {
+-		powerdownsettings = 0x00;
+-	}
+-	return i2c_write_reg(&tvp5146_i2c_client, 0x03, powerdownsettings);
+-}
+-
+-/*
+- * ======== resettvp5146========
+- */
+-static int resettvp5146(void)
+-{
+-	setup656sync(TRUE);
+-	settvp5146amuxmode(TVP5146_AMUX_COMPOSITE);
+-	return powerdowntvp5146(FALSE);
+-}
+-
+-/*
+- * ======== queryctrl ========
+- */
+-static int queryctrl(void *arg)
+-{
+-	struct v4l2_queryctrl *queryctrl = arg;
+-	int ret = 0;
+-	int id = queryctrl->id;
+-
+-	memset(queryctrl, 0, sizeof(*queryctrl));
+-	queryctrl->id = id;
+-	switch (id) {
+-	case V4L2_CID_BRIGHTNESS:
+-		strcpy(queryctrl->name, "BRIGHTNESS");
+-		queryctrl->type = V4L2_CTRL_TYPE_INTEGER;
+-		queryctrl->minimum = 0;
+-		queryctrl->maximum = 255;
+-		queryctrl->step = 1;
+-		queryctrl->default_value = 128;
+-		break;
+-	case V4L2_CID_CONTRAST:
+-		strcpy(queryctrl->name, "CONTRAST");
+-		queryctrl->type = V4L2_CTRL_TYPE_INTEGER;
+-		queryctrl->minimum = 0;
+-		queryctrl->maximum = 255;
+-		queryctrl->step = 1;
+-		queryctrl->default_value = 128;
+-		break;
+-
+-	case V4L2_CID_SATURATION:
+-		strcpy(queryctrl->name, "SATURATION");
+-		queryctrl->type = V4L2_CTRL_TYPE_INTEGER;
+-		queryctrl->minimum = 0;
+-		queryctrl->maximum = 255;
+-		queryctrl->step = 1;
+-		queryctrl->default_value = 128;
+-		break;
+-	case V4L2_CID_HUE:
+-		strcpy(queryctrl->name, "HUE");
+-		queryctrl->type = V4L2_CTRL_TYPE_INTEGER;
+-		queryctrl->minimum = -128;	/* -180 DEGREE */
+-		queryctrl->maximum = 127;	/* 180  DEGREE */
+-		queryctrl->step = 1;
+-		queryctrl->default_value = 0;	/* 0 DEGREE */
+-		break;
+-
+-	case V4L2_CID_AUTOGAIN:
+-		strcpy(queryctrl->name, "Automatic Gain Control");
+-		queryctrl->type = V4L2_CTRL_TYPE_BOOLEAN;
+-		queryctrl->minimum = 0;
+-		queryctrl->maximum = 1;
+-		queryctrl->step = 1;
+-		queryctrl->default_value = 1;
+-		break;
+-	default:
+-		if (id < V4L2_CID_LASTP1)
+-			queryctrl->flags = V4L2_CTRL_FLAG_DISABLED;
+-		else
+-			ret = -EINVAL;
+-		break;
+-	}			/* end switch (id) */
+-	return ret;
+-}
+-
+-/*
+- * ======== setctrl ========
+- */
+-static int setctrl(void *arg)
+-{
+-	struct v4l2_control *ctrl = arg;
+-	int ret = 0;
+-
+-	switch (ctrl->id) {
+-	case V4L2_CID_BRIGHTNESS:
+-		ret = settvp5146brightness(ctrl->value);
+-		break;
+-	case V4L2_CID_CONTRAST:
+-		ret = settvp5146contrast(ctrl->value);
+-		break;
+-	case V4L2_CID_SATURATION:
+-		ret = settvp5146saturation(ctrl->value);
+-		break;
+-	case V4L2_CID_HUE:
+-		ret = settvp5146hue(ctrl->value);
+-		break;
+-	case V4L2_CID_AUTOGAIN:
+-		ret = enabletvp5146agc(ctrl->value);
+-		break;
+-	default:
+-		ret = -EINVAL;
+-		break;
+-	}
+-	return ret;
+-}
+-
+-/*
+- * ======== settvp5146amuxmode ========
+- */
+-static int settvp5146amuxmode(int arg)
+-{
+-	u8 input_sel;
+-
+-	if (arg == TVP5146_AMUX_COMPOSITE) {	/* composite */
+-		input_sel = 0x05;
+-	} else if (arg == TVP5146_AMUX_SVIDEO) {	/* s-video */
+-		input_sel = 0x46;
+-	} else {
+-		return -EINVAL;
+-	}
+-	return i2c_write_reg(&tvp5146_i2c_client, 0x00, input_sel);
+-}
+-
+-/*
+- * ======== settvp5146brightness ========
+- */
+-static int settvp5146brightness(int arg)
+-{
+-	int ret = 0;
+-	u8 brightness = (u8) arg;
+-	ret = i2c_write_reg(&tvp5146_i2c_client, 0x09, brightness);
+-	return ret;
+-}
+-
+-/*
+-* ======== settvp5146contrast ========
+-*/
+-static int settvp5146contrast(int arg)
+-{
+-	int ret = 0;
+-	u8 contrast = (u8) arg;
+-	ret = i2c_write_reg(&tvp5146_i2c_client, 0x0A, contrast);
+-	return ret;
+-}
+-
+-/*
+-* ======== settvp5146hue ========
+-*/
+-static int settvp5146hue(int arg)
+-{
+-	int ret = 0;
+-	u8 hue = (u8) arg;
+-	ret = i2c_write_reg(&tvp5146_i2c_client, 0x0C, hue);
+-	return ret;
+-}
+-
+-static int settvp5146saturation(int arg)
+-{
+-	int ret = 0;
+-	u8 saturation = (u8) arg;
+-	ret = i2c_write_reg(&tvp5146_i2c_client, 0x0B, saturation);
+-	return ret;
+-}
+-
+-static int settvp5146std(int arg)
+-{
+-	int ret = 0;
+-	u8 std = (u8) arg & 0x7;	/* the 4th-bit is for squre pixel sampling */
+-	u8 output1;
+-
+-	/* setup the sampling rate: 601 or square pixel */
+-	debug_print(KERN_INFO "reading i2c registers.\n");
+-	ret = i2c_read_reg(&tvp5146_i2c_client, 0x33, &output1);
+-	output1 |= ((arg & 0x8) << 4);
+-	ret = i2c_write_reg(&tvp5146_i2c_client, 0x33, output1);
+-
+-	/* setup the video standard */
+-	ret |= i2c_write_reg(&tvp5146_i2c_client, 0x02, std);
+-	/* if autoswitch mode, enable all modes for autoswitch */
+-	if (std == TVP5146_MODE_AUTO) {
+-		u8 mask = 0x3F;	/* enable autoswitch for  all standards */
+-		ret = i2c_write_reg(&tvp5146_i2c_client, 0x04, mask);
+-	}
+-
+-	return ret;
+-}
+-
+-/*
+- * ======== setup656sync ========
+- */
+-static int setup656sync(int enable)
+-{
+-	int output1, output2, output3, output4;
+-	int output5, output6;
+-	int ret = 0;
+-
+-	if (enable) {
+-		output1 = 0x40;
+-		output4 = 0xFF;
+-		output6 = 0;
+-	} else {
+-		output1 = 0x43;
+-		output4 = 0xAF;
+-		output6 = 0x1E;
+-	}
+-
+-	output2 = 0x11;		/* enable clock, enable Y[9:0] */
+-	output3 = 0x0;
+-	output5 = 0x4;
+-
+-	ret |= i2c_write_reg(&tvp5146_i2c_client, 0x33, output1);
+-	ret |= i2c_write_reg(&tvp5146_i2c_client, 0x34, output2);
+-	ret |= i2c_write_reg(&tvp5146_i2c_client, 0x36, output4);
+-	ret |= i2c_write_reg(&tvp5146_i2c_client, 0x08, output3);
+-	ret |= i2c_write_reg(&tvp5146_i2c_client, 0x0e, output5);
+-	ret |= i2c_write_reg(&tvp5146_i2c_client, 0x32, output6);
+-	return ret;
+-}
+-
+-/*
+- * ======== tvp5146_ctrl ========
+- */
+-int tvp5146_ctrl(tvp5146_cmd cmd, void *arg)
+-{
+-	int ret = 0;
+-	switch (cmd) {
+-	case TVP5146_CONFIG:
+-		ret = configtvp5146(arg);
+-		break;
+-	case TVP5146_RESET:
+-		ret = resettvp5146();
+-		break;
+-	case TVP5146_POWERDOWN:
+-		ret = powerdowntvp5146(*(int *)arg);
+-		break;
+-	case TVP5146_SET_AMUXMODE:
+-		ret = settvp5146amuxmode(*(int *)arg);
+-		break;
+-	case TVP5146_SET_BRIGHTNESS:
+-		ret = settvp5146brightness(*(int *)arg);
+-		break;
+-	case TVP5146_SET_CONTRAST:
+-		ret = settvp5146contrast(*(int *)arg);
+-		break;
+-	case TVP5146_SET_HUE:
+-		ret = settvp5146hue(*(int *)arg);
+-		break;
+-	case TVP5146_SET_SATURATION:
+-		ret = settvp5146saturation(*(int *)arg);
+-		break;
+-	case TVP5146_SET_AGC:
+-		ret = enabletvp5146agc(*(int *)arg);
+-		break;
+-	case TVP5146_SET_VIDEOSTD:
+-		ret = settvp5146std(*(int *)arg);
+-		break;
+-	case TVP5146_CLR_LOSTLOCK:
+-		ret = clrtvp5146lostlock();
+-		break;
+-	case TVP5146_GET_STATUS:
+-		ret = gettvp5146status(arg);
+-		break;
+-	case TVP5146_GET_STD:
+-		ret = gettvp5146std(arg);
+-		break;
+-	case VIDIOC_QUERYCTRL:
+-		ret = queryctrl(arg);
+-		break;
+-	case VIDIOC_G_CTRL:
+-		ret = getctrl(arg);
+-		break;
+-	case VIDIOC_S_CTRL:
+-		ret = setctrl(arg);
+-		break;
+-	default:
+-		ret = -EINVAL;
+-	}
+-	return ret;
+-}
+-
+-static int i2c_read_reg(struct i2c_client *client, u8 reg, u8 * val)
+-{
+-	int err = 0;
+-
+-	struct i2c_msg msg[1];
+-	unsigned char data[1];
+-
+-	if (!client->adapter) {
+-		err = -ENODEV;
+-	} else {
+-		msg->addr = client->addr;
+-		msg->flags = 0;
+-		msg->len = 1;
+-		msg->buf = data;
+-		data[0] = reg;
+-		err = i2c_transfer(client->adapter, msg, 1);
+-		if (err >= 0) {
+-			msg->flags = I2C_M_RD;
+-			err = i2c_transfer(client->adapter, msg, 1);
+-			if (err >= 0) {
+-				*val = data[0];
+-			}
+-		}
+-	}
+-	return err;
+-}
+-
+-static int i2c_write_reg(struct i2c_client *client, u8 reg, u8 val)
+-{
+-	int err = 0;
+-
+-	struct i2c_msg msg[1];
+-	unsigned char data[2];
+-
+-	if (!client->adapter) {
+-		err = -ENODEV;
+-	} else {
+-		msg->addr = client->addr;
+-		msg->flags = 0;
+-		msg->len = 2;
+-		msg->buf = data;
+-		data[0] = reg;
+-		data[1] = val;
+-		err = i2c_transfer(client->adapter, msg, 1);
+-	}
+-	debug_print(KERN_INFO " i2c data write \n");
+-
+-	return err;
+-}
+-
+-static int _i2c_attach_client(struct i2c_client *client,
+-			      struct i2c_driver *driver,
+-			      struct i2c_adapter *adap, int addr)
+-{
+-	int err = 0;
+-
+-	if (client->adapter) {
+-		err = -EBUSY;	/* our client is already attached */
+-	} else {
+-		client->addr = addr;
+-/* 		client->flags = I2C_CLIENT_ALLOW_USE; */
+-		client->driver = driver;
+-		client->adapter = adap;
+-
+-		err = i2c_attach_client(client);
+-		if (err) {
+-			client->adapter = NULL;
+-		}
+-	}
+-	return err;
+-}
+-
+-static int _i2c_detach_client(struct i2c_client *client)
+-{
+-	int err = 0;
+-
+-	if (!client->adapter) {
+-		return -ENODEV;	/* our client isn't attached */
+-	} else {
+-		err = i2c_detach_client(client);
+-		client->adapter = NULL;
+-	}
+-	return err;
+-}
+-
+-static int tvp5146_i2c_probe_adapter(struct i2c_adapter *adap)
+-{
+-	return _i2c_attach_client(&tvp5146_i2c_client, &tvp5146_i2c_driver,
+-				  adap, TVP5146_I2C_ADDR);
+-}
+-
+-static struct i2c_driver tvp5146_i2c_driver = {
+-	.driver = {
+-		.name = "tvp5146",
+-	},
+-	.id = I2C_DRIVERID_TVP5150,
+-
+-	.attach_adapter = tvp5146_i2c_probe_adapter,
+-	.detach_client = _i2c_detach_client,
+-};
+-
+-static int tvp5146_i2c_init(void)
+-{
+-	int err;
+-	struct i2c_driver *driver = &tvp5146_i2c_driver;
+-
+-/* 	driver->owner = THIS_MODULE; */
+-/* 	strlcpy(driver->name, "TVP5146 Video Decoder I2C driver", */
+-/* 		sizeof(driver->name)); */
+-/* 	driver->id = I2C_DRIVERID_EXP0; */
+-/* 	driver->flags = I2C_DF_NOTIFY; */
+-/* 	driver->attach_adapter = tvp5146_i2c_probe_adapter; */
+-/* 	driver->detach_client = _i2c_detach_client; */
+-
+-	err = i2c_add_driver(driver);
+-	if (err) {
+-		debug_print(KERN_ERR
+-			"Failed to register TVP5146 I2C client.\n");
+-	}
+-	debug_print(KERN_INFO "tvp5146 driver registered.\n");
+-	return err;
+-}
+-
+-static void tvp5146_i2c_cleanup(void)
+-{
+-	struct i2c_driver *driver = &tvp5146_i2c_driver;
+-
+-	i2c_detach_client(&tvp5146_i2c_client);
+-	i2c_del_driver(driver);
+-	tvp5146_i2c_client.adapter = NULL;
+-}
+-
+-module_init(tvp5146_i2c_init);
+-module_exit(tvp5146_i2c_cleanup);
+-
+-EXPORT_SYMBOL(tvp5146_ctrl);
+-MODULE_LICENSE("GPL");
+-
+-/**************************************************************************/
+-/* End of file                                                                            */
+-/**************************************************************************/
+Index: linux-2.6.18/include/media/davinci_vpfe.h
+===================================================================
+--- linux-2.6.18.orig/include/media/davinci_vpfe.h
++++ /dev/null
+@@ -1,121 +0,0 @@
+-/*
+- * Copyright (C) 2006 Texas Instruments Inc
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+- */
+-/* davinci_vpfe.h */
+-
+-#ifndef DAVINCI_VPFE_H
+-#define DAVINCI_VPFE_H
+-#ifdef __KERNEL__
+-#include <media/v4l2-dev.h>
+-#endif
+-
+-#include <media/ccdc_davinci.h>
+-#include <media/tvp5146.h>
+-
+-#define TRUE 1
+-#define FALSE 0
+-
+-/* vpfe specific video standards */
+-#define VPFE_STD_625_50_SQP ((V4L2_STD_625_50)<<32)
+-#define VPFE_STD_525_60_SQP ((V4L2_STD_525_60)<<32)
+-#define VPFE_STD_AUTO ((v4l2_std_id)(0x1000000000000000ULL))
+-#define VPFE_STD_AUTO_SQP ((v4l2_std_id)(0x2000000000000000ULL))
+-
+-#define VPFE_CMD_CONFIG_CCDC _IOW('V',BASE_VIDIOC_PRIVATE + 1,ccdc_params_ycbcr)
+-#define VPFE_CMD_LATEST_FRM_ONLY   _IOW('V',BASE_VIDIOC_PRIVATE + 2,int)
+-#define VPFE_CMD_CONFIG_TVP5146 _IOW('V',BASE_VIDIOC_PRIVATE + 3,tvp5146_params)
+-
+-/* settings for commonly used video formats */
+-#define VPFE_WIN_NTSC    {0,0,720,480}
+-#define VPFE_WIN_PAL     {0,0,720,576}
+-#define VPFE_WIN_NTSC_SP {0,0,640,480}	/* ntsc square pixel */
+-#define VPFE_WIN_PAL_SP  {0,0,768,576}	/* pal square pixel */
+-#define VPFE_WIN_CIF     {0,0,352,288}
+-#define VPFE_WIN_QCIF    {0,0,176,144}
+-#define VPFE_WIN_QVGA    {0,0,320,240}
+-#define VPFE_WIN_SIF     {0,0,352,240}
+-
+-
+-#ifdef __KERNEL__
+-
+-#include <media/video-buf.h>
+-
+-#define VPFE_MAJOR_RELEASE 0
+-#define VPFE_MINOR_RELEASE 0
+-#define VPFE_BUILD         1
+-
+-#define VPFE_VERSION_CODE \
+-     (VPFE_MAJOR_RELEASE<<16)  | (VPFE_MINOR_RELEASE<<8) | VPFE_BUILD
+-
+-/* By default, the driver is setup for auto-swich mode */
+-#define VPFE_DEFAULT_STD VPFE_STD_AUTO
+-
+-#define VPFE_PIXELASPECT_NTSC {11, 10}
+-#define VPFE_PIXELASPECT_PAL  {54, 59}
+-#define VPFE_PIXELASPECT_NTSC_SP    {1, 1}
+-#define VPFE_PIXELASPECT_PAL_SP     {1, 1}
+-#define VPFE_PIXELASPECT_DEFAULT    {1, 1}
+-
+-#define VPFE_MAX_FRAME_WIDTH      768	/* account for PAL Square pixel mode */
+-#define VPFE_MAX_FRAME_HEIGHT     576	/* account for PAL                   */
+-/* 4:2:2 data */
+-#define VPFE_MAX_FBUF_SIZE       (VPFE_MAX_FRAME_WIDTH*VPFE_MAX_FRAME_HEIGHT*2)
+-/* frame buffers allocate at driver initialization time */
+-#define VPFE_DEFNUM_FBUFS             3
+-
+-#define VPFE_MAX_FBUF_ORDER \
+-   get_order(roundup_pow_of_two(VPFE_MAX_FBUF_SIZE))
+-
+-/* device object */
+-typedef struct vpfe_obj {
+-	struct video_device *video_dev;
+-	struct videobuf_queue bufqueue;/* queue with frame buffers      */
+-	struct list_head dma_queue;
+-	u32 latest_only;		/* indicate whether to return the most */
+-					/* recent captured buffers only        */
+-	u32 usrs;
+-	u32 io_usrs;
+-	struct v4l2_prio_state prio;
+-	v4l2_std_id std;
+-	struct v4l2_rect vwin;
+-	struct v4l2_rect bounds;
+-	struct v4l2_fract pixelaspect;
+-       	spinlock_t irqlock;
+-	struct semaphore lock;
+-	enum v4l2_field field;
+-	u32 pixelfmt;
+-	u32 numbuffers;
+-	u8* fbuffers[VIDEO_MAX_FRAME];
+-	struct videobuf_buffer *curFrm;
+-	struct videobuf_buffer *nextFrm;
+-	int field_id;
+-	int mode_changed;
+-	int started;
+-	int field_offset;
+-	tvp5146_params tvp5146_params;
+-	ccdc_params_ycbcr ccdc_params;
+-} vpfe_obj;
+-
+-/* file handle */
+-typedef struct vpfe_fh {
+-	struct vpfe_obj *dev;
+-	int io_allowed;
+-	enum v4l2_priority prio;
+-} vpfe_fh;
+-#endif
+-
+-#endif /* DAVINCI_VPFE_H */
+Index: linux-2.6.18/include/media/tvp5146.h
+===================================================================
+--- linux-2.6.18.orig/include/media/tvp5146.h
++++ /dev/null
+@@ -1,104 +0,0 @@
+-/*
+- *
+- *
+- * Copyright (C) 2006 Texas Instruments Inc
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+- */
+-/* tvp5146.h file */
+-
+-#ifndef TVP5146_H
+-#define TVP5146_H
+-
+-#ifdef TRUE
+-#undef TRUE
+-#endif
+-#ifdef FALSE
+-#undef FALSE
+-#endif
+-
+-#define TRUE 1
+-#define FALSE 0
+-
+-/* analog muxing mode */
+-#define    TVP5146_AMUX_COMPOSITE  0
+-#define    TVP5146_AMUX_SVIDEO     1
+-
+-typedef enum {
+-	TVP5146_MODE_INV = -1,
+-	TVP5146_MODE_AUTO = 0,	        /* autoswitch mode (default)   */
+-	TVP5146_MODE_NTSC = 1,	        /* (M, J) NTSC      525-line   */
+-	TVP5146_MODE_PAL = 2,	        /* (B, D, G, H, I, N) PAL      */
+-	TVP5146_MODE_PAL_M = 3,	        /* (M) PAL          525-line   */
+-	TVP5146_MODE_PAL_CN = 4,	/* (Combination-N) PAL         */
+-	TVP5146_MODE_NTSC_443 = 5,	/* NTSC 4.43        525-line   */
+-	TVP5146_MODE_SECAM = 6,	        /* SECAM                       */
+-	TVP5146_MODE_PAL_60 = 7,	/* PAL 60          525-line    */
+-	TVP5146_MODE_AUTO_SQP = 8,	/* autoswitch mode (default)   */
+-	TVP5146_MODE_NTSC_SQP = 9,	/* (M, J) NTSC      525-line   */
+-	TVP5146_MODE_PAL_SQP = 0xA,	/* (B, D, G, H, I, N) PAL      */
+-	TVP5146_MODE_PAL_M_SQP = 0xB,	/* (M) PAL          525-line   */
+-	TVP5146_MODE_PAL_CN_SQP = 0xC,	/* (Combination-N) PAL         */
+-	TVP5146_MODE_NTSC_443_SQP = 0xD,/* NTSC 4.43        525-line   */
+-	TVP5146_MODE_SECAM_SQP = 0xE,	/* SECAM                       */
+-	TVP5146_MODE_PAL_60_SQP = 0xF,	/* PAL 60          525-line    */
+-} tvp5146_mode;
+-
+-typedef struct {
+-	tvp5146_mode mode;
+-	int amuxmode;
+-	int enablebt656sync;
+-} tvp5146_params;
+-
+-#ifdef __KERNEL__
+-
+-typedef struct {
+-	int agc_enable;
+-	tvp5146_mode video_std;
+-	int brightness;
+-	int contrast;
+-	int saturation;
+-	int hue;
+-	int field_rate;		/* 50 or 60 in Hz */
+-	int lost_lock;
+-	int csubc_lock;
+-	int v_lock;
+-	int h_lock;
+-} tvp5146_status;
+-
+-typedef unsigned int tvp5146_cmd;
+-
+-/* commands for setup the decoder */
+-#define TVP5146_SET_AMUXMODE        4
+-#define TVP5146_SET_BRIGHTNESS      5
+-#define TVP5146_SET_CONTRAST        6
+-#define TVP5146_SET_HUE             7
+-#define TVP5146_SET_SATURATION      8
+-#define TVP5146_SET_AGC             9
+-#define TVP5146_SET_VIDEOSTD        10
+-#define TVP5146_CLR_LOSTLOCK        11
+-#define TVP5146_CONFIG              12
+-#define TVP5146_RESET               13
+-#define TVP5146_POWERDOWN           14
+-
+-#define TVP5146_GET_STATUS          15
+-#define TVP5146_GET_STD             16
+-
+-#define TVP5146_I2C_ADDR (0xBA >> 1)
+-
+-extern int tvp5146_ctrl(tvp5146_cmd cmd, void *arg);
+-
+-#endif
+-#endif
+Index: linux-2.6.18/include/video/davincifb.h
+===================================================================
+--- linux-2.6.18.orig/include/video/davincifb.h
++++ /dev/null
+@@ -1,445 +0,0 @@
+-/*
+- * include/video/davincifb.h
+- *
+- * Framebuffer driver for Texas Instruments DM644x display controller.
+- *
+- * Copyright (C) 2006 Texas Instruments, Inc.
+- * Rishi Bhattacharya <support@ti.com>
+- *
+- * This file is licensed under the terms of the GNU General Public License
+- * version 2. This program is licensed "as is" without any warranty of any
+- * kind, whether express or implied.
+- */
+-#ifndef _DAVINCIFB_H_
+-#define _DAVINCIFB_H_
+-
+-#ifdef __KERNEL__
+-#include <asm/arch/io.h>
+-#include <asm/arch/hardware.h>
+-#endif /* __KERNEL__ */
+-
+-/* Base registers */
+-#define	VPBE_REG_BASE	  IO_ADDRESS(DAVINCI_VPSS_REGS_BASE + 0x2780)
+-#define	VENC_REG_BASE	  IO_ADDRESS(DAVINCI_VPSS_REGS_BASE + 0x2400)
+-#define	OSD_REG_BASE	  IO_ADDRESS(DAVINCI_VPSS_REGS_BASE + 0x2600)
+-#define OSD_REG_SIZE					 (0x00000180)
+-
+-/* VPBE Global Registers */
+-#define	VPBE_PID				    (VPBE_BASE + 0x0)
+-#define	VPBE_PCR				    (VPBE_BASE + 0x4)
+-
+-/* VPSS Clock Control Register */
+-#define	VPSS_CLKCTL	IO_ADDRESS(DAVINCI_SYSTEM_MODULE_BASE + 0x44)
+-
+-/* VPBE Video Encoder / Digital LCD Subsystem Registers (VENC) */
+-#define	VENC_VMOD				(VENC_REG_BASE + 0x00)
+-#define	VENC_VIDCTL				(VENC_REG_BASE + 0x04)
+-#define	VENC_VDPRO				(VENC_REG_BASE + 0x08)
+-#define	VENC_SYNCCTL				(VENC_REG_BASE + 0x0C)
+-#define	VENC_HSPLS				(VENC_REG_BASE + 0x10)
+-#define	VENC_VSPLS				(VENC_REG_BASE + 0x14)
+-#define	VENC_HINT				(VENC_REG_BASE + 0x18)
+-#define	VENC_HSTART				(VENC_REG_BASE + 0x1C)
+-#define	VENC_HVALID				(VENC_REG_BASE + 0x20)
+-#define	VENC_VINT				(VENC_REG_BASE + 0x24)
+-#define	VENC_VSTART				(VENC_REG_BASE + 0x28)
+-#define	VENC_VVALID				(VENC_REG_BASE + 0x2C)
+-#define	VENC_HSDLY				(VENC_REG_BASE + 0x30)
+-#define	VENC_VSDLY				(VENC_REG_BASE + 0x34)
+-#define	VENC_YCCCTL				(VENC_REG_BASE + 0x38)
+-#define	VENC_RGBCTL				(VENC_REG_BASE + 0x3C)
+-#define	VENC_RGBCLP				(VENC_REG_BASE + 0x40)
+-#define	VENC_LINECTL				(VENC_REG_BASE + 0x44)
+-#define	VENC_CULLLINE				(VENC_REG_BASE + 0x48)
+-#define	VENC_LCDOUT				(VENC_REG_BASE + 0x4C)
+-#define	VENC_BRTS				(VENC_REG_BASE + 0x50)
+-#define	VENC_BRTW				(VENC_REG_BASE + 0x54)
+-#define	VENC_ACCTL				(VENC_REG_BASE + 0x58)
+-#define	VENC_PWMP				(VENC_REG_BASE + 0x5C)
+-#define	VENC_PWMW				(VENC_REG_BASE + 0x60)
+-#define	VENC_DCLKCTL				(VENC_REG_BASE + 0x64)
+-#define	VENC_DCLKPTN0				(VENC_REG_BASE + 0x68)
+-#define	VENC_DCLKPTN1				(VENC_REG_BASE + 0x6C)
+-#define	VENC_DCLKPTN2				(VENC_REG_BASE + 0x70)
+-#define	VENC_DCLKPTN3				(VENC_REG_BASE + 0x74)
+-#define	VENC_DCLKPTN0A				(VENC_REG_BASE + 0x78)
+-#define	VENC_DCLKPTN1A				(VENC_REG_BASE + 0x7C)
+-#define	VENC_DCLKPTN2A				(VENC_REG_BASE + 0x80)
+-#define	VENC_DCLKPTN3A				(VENC_REG_BASE + 0x84)
+-#define	VENC_DCLKHS				(VENC_REG_BASE + 0x88)
+-#define	VENC_DCLKHSA				(VENC_REG_BASE + 0x8C)
+-#define	VENC_DCLKHR				(VENC_REG_BASE + 0x90)
+-#define	VENC_DCLKVS				(VENC_REG_BASE + 0x94)
+-#define	VENC_DCLKVR				(VENC_REG_BASE + 0x98)
+-#define	VENC_CAPCTL				(VENC_REG_BASE + 0x9C)
+-#define	VENC_CAPDO				(VENC_REG_BASE + 0xA0)
+-#define	VENC_CAPDE				(VENC_REG_BASE + 0xA4)
+-#define	VENC_ATR0				(VENC_REG_BASE + 0xA8)
+-#define	VENC_ATR1				(VENC_REG_BASE + 0xAC)
+-#define	VENC_ATR2				(VENC_REG_BASE + 0xB0)
+-#define	VENC_EPSON_LCDCTL			(VENC_REG_BASE + 0xB4)
+-#define	VENC_CASIO_LCDCTL			(VENC_REG_BASE + 0xB4)
+-#define	VENC_UDISP_LCDCT			(VENC_REG_BASE + 0xB4)
+-#define	VENC_STN_LCDCT				(VENC_REG_BASE + 0xB4)
+-#define	VENC_VSTAT				(VENC_REG_BASE + 0xB8)
+-#define	VENC_RAMADR				(VENC_REG_BASE + 0xBC)
+-#define	VENC_RAMPORT				(VENC_REG_BASE + 0xC0)
+-#define	VENC_DACTST				(VENC_REG_BASE + 0xC4)
+-#define	VENC_YCOLVL				(VENC_REG_BASE + 0xC8)
+-#define	VENC_SCPROG				(VENC_REG_BASE + 0xCC)
+-#define	VENC_CVBS				(VENC_REG_BASE + 0xDC)
+-#define	VENC_CMPNT				(VENC_REG_BASE + 0xE0)
+-#define	VENC_ETMG0				(VENC_REG_BASE + 0xE4)
+-#define	VENC_ETMG1				(VENC_REG_BASE + 0xE8)
+-#define	VENC_ETMG2				(VENC_REG_BASE + 0xEC)
+-#define	VENC_ETMG3				(VENC_REG_BASE + 0xF0)
+-#define	VENC_DACSEL				(VENC_REG_BASE + 0xF4)
+-#define	VENC_ARGBX0				(VENC_REG_BASE + 0x100)
+-#define	VENC_ARGBX1				(VENC_REG_BASE + 0x104)
+-#define	VENC_ARGBX2				(VENC_REG_BASE + 0x108)
+-#define	VENC_ARGBX3				(VENC_REG_BASE + 0x10C)
+-#define	VENC_ARGBX4				(VENC_REG_BASE + 0x110)
+-#define	VENC_DRGBX0				(VENC_REG_BASE + 0x114)
+-#define	VENC_DRGBX1				(VENC_REG_BASE + 0x118)
+-#define	VENC_DRGBX2				(VENC_REG_BASE + 0x11C)
+-#define	VENC_DRGBX3				(VENC_REG_BASE + 0x120)
+-#define	VENC_DRGBX4				(VENC_REG_BASE + 0x124)
+-#define	VENC_VSTARTA				(VENC_REG_BASE + 0x128)
+-#define	VENC_OSDCLK0				(VENC_REG_BASE + 0x12C)
+-#define	VENC_OSDCLK1				(VENC_REG_BASE + 0x130)
+-#define	VENC_HVLDCL0				(VENC_REG_BASE + 0x134)
+-#define	VENC_HVLDCL1				(VENC_REG_BASE + 0x138)
+-#define	VENC_OSDHAD				(VENC_REG_BASE + 0x13C)
+-
+-#define VID0	0
+-#define VID1	1
+-#define OSD0	3
+-#define OSD1	4
+-
+-/* VPBE On-Screen Display Subsystem Registers (OSD) */
+-#define	OSD_MODE				(OSD_REG_BASE + 0x00)
+-#define	OSD_VIDWINMD				(OSD_REG_BASE + 0x04)
+-#define	OSD_OSDWIN0MD				(OSD_REG_BASE + 0x08)
+-#define	OSD_OSDWIN1MD				(OSD_REG_BASE + 0x0C)
+-#define	OSD_OSDATRMD				(OSD_REG_BASE + 0x0C)
+-#define	OSD_RECTCUR				(OSD_REG_BASE + 0x10)
+-#define		OSD_WINOFST(i)			(OSD_REG_BASE + 0x18 + (i)*0x4)
+-#define	OSD_VIDWIN0OFST				(OSD_REG_BASE + 0x18)
+-#define	OSD_VIDWIN1OFST				(OSD_REG_BASE + 0x1C)
+-#define	OSD_OSDWIN0OFST				(OSD_REG_BASE + 0x20)
+-#define	OSD_OSDWIN1OFST				(OSD_REG_BASE + 0x24)
+-#define		OSD_WINADR(i)			(OSD_REG_BASE + 0x2C + (i)*0x4)
+-#define	OSD_VIDWIN0ADR				(OSD_REG_BASE + 0x2C)
+-#define	OSD_VIDWIN1ADR				(OSD_REG_BASE + 0x30)
+-#define	OSD_OSDWIN0ADR				(OSD_REG_BASE + 0x38)
+-#define	OSD_OSDWIN1ADR				(OSD_REG_BASE + 0x3C)
+-#define	OSD_BASEPX				(OSD_REG_BASE + 0x40)
+-#define	OSD_BASEPY				(OSD_REG_BASE + 0x44)
+-#define	OSD_WINXP(i)				(OSD_REG_BASE + 0x48 + (i)*0x10)
+-#define	OSD_WINYP(i)				(OSD_REG_BASE + 0x4C + (i)*0x10)
+-#define	OSD_WINXL(i)				(OSD_REG_BASE + 0x50 + (i)*0x10)
+-#define	OSD_WINYL(i)				(OSD_REG_BASE + 0x54 + (i)*0x10)
+-#define	OSD_VIDWIN0XP				(OSD_REG_BASE + 0x48)
+-#define	OSD_VIDWIN0YP				(OSD_REG_BASE + 0x4C)
+-#define	OSD_VIDWIN0XL				(OSD_REG_BASE + 0x50)
+-#define	OSD_VIDWIN0YL				(OSD_REG_BASE + 0x54)
+-#define	OSD_VIDWIN1XP				(OSD_REG_BASE + 0x58)
+-#define	OSD_VIDWIN1YP				(OSD_REG_BASE + 0x5C)
+-#define	OSD_VIDWIN1XL				(OSD_REG_BASE + 0x60)
+-#define	OSD_VIDWIN1YL				(OSD_REG_BASE + 0x64)
+-#define	OSD_OSDWIN0XP				(OSD_REG_BASE + 0x68)
+-#define	OSD_OSDWIN0YP				(OSD_REG_BASE + 0x6C)
+-#define	OSD_OSDWIN0XL				(OSD_REG_BASE + 0x70)
+-#define	OSD_OSDWIN0YL				(OSD_REG_BASE + 0x74)
+-#define	OSD_OSDWIN1XP				(OSD_REG_BASE + 0x78)
+-#define	OSD_OSDWIN1YP				(OSD_REG_BASE + 0x7C)
+-#define	OSD_OSDWIN1XL				(OSD_REG_BASE + 0x80)
+-#define	OSD_OSDWIN1YL				(OSD_REG_BASE + 0x84)
+-#define	OSD_CURXP				(OSD_REG_BASE + 0x88)
+-#define	OSD_CURYP				(OSD_REG_BASE + 0x8C)
+-#define	OSD_CURXL				(OSD_REG_BASE + 0x90)
+-#define	OSD_CURYL				(OSD_REG_BASE + 0x94)
+-#define	OSD_W0BMP01				(OSD_REG_BASE + 0xA0)
+-#define	OSD_W0BMP23				(OSD_REG_BASE + 0xA4)
+-#define	OSD_W0BMP45				(OSD_REG_BASE + 0xA8)
+-#define	OSD_W0BMP67				(OSD_REG_BASE + 0xAC)
+-#define	OSD_W0BMP89				(OSD_REG_BASE + 0xB0)
+-#define	OSD_W0BMPAB				(OSD_REG_BASE + 0xB4)
+-#define	OSD_W0BMPCD				(OSD_REG_BASE + 0xB8)
+-#define	OSD_W0BMPEF				(OSD_REG_BASE + 0xBC)
+-#define	OSD_W1BMP0				(OSD_REG_BASE + 0xC0)
+-#define	OSD_W1BMP2				(OSD_REG_BASE + 0xC4)
+-#define	OSD_W1BMP4				(OSD_REG_BASE + 0xC8)
+-#define	OSD_W1BMP6				(OSD_REG_BASE + 0xCC)
+-#define	OSD_W1BMP8				(OSD_REG_BASE + 0xD0)
+-#define	OSD_W1BMPA				(OSD_REG_BASE + 0xD4)
+-#define	OSD_W1BMPC				(OSD_REG_BASE + 0xD8)
+-#define	OSD_W1BMPE				(OSD_REG_BASE + 0xDC)
+-#define	OSD_TI_TES				(OSD_REG_BASE + 0xE0)
+-#define	OSD_MISCCT				(OSD_REG_BASE + 0xE8)
+-#define	OSD_CLUTRAMYC				(OSD_REG_BASE + 0xEC)
+-#define	OSD_CLUTRAMC				(OSD_REG_BASE + 0xF0)
+-#define	OSD_TRANSPVA				(OSD_REG_BASE + 0xF0)
+-#define	OSD_PPVWIN0AD				(OSD_REG_BASE + 0xFC)
+-
+-/* bit definitions */
+-#define VPBE_PCR_VENC_DIV			(1 << 1)
+-#define VPBE_PCR_CLK_OFF			(1 << 0)
+-#define VENC_VMOD_VDMD_SHIFT			12
+-#define VENC_VMOD_VDMD_YCBCR16			0
+-#define VENC_VMOD_VDMD_YCBCR8			1
+-#define VENC_VMOD_VDMD_RGB666			2
+-#define VENC_VMOD_VDMD_RGB8			3
+-#define VENC_VMOD_VDMD_EPSON			4
+-#define VENC_VMOD_VDMD_CASIO			5
+-#define VENC_VMOD_VDMD_UDISPQVGA		6
+-#define VENC_VMOD_VDMD_STNLCD			7
+-#define VENC_VMOD_VDMD				(7 << 12)
+-#define VENC_VMOD_ITLCL				(1 << 11)
+-#define VENC_VMOD_ITLC				(1 << 10)
+-#define VENC_VMOD_NSIT				(1 << 9)
+-#define VENC_VMOD_HDMD				(1 << 8)
+-#define VENC_VMOD_TVTYP				(3 << 6)
+-#define VENC_VMOD_SLAVE				(1 << 5)
+-#define VENC_VMOD_VMD				(1 << 4)
+-#define VENC_VMOD_BLNK				(1 << 3)
+-#define VENC_VMOD_VIE				(1 << 1)
+-#define VENC_VMOD_VENC				(1 << 0)
+-/* other VENC registers' bit positions not defined yet */
+-
+-#define	OSD_MODE_CS				(1 << 15)
+-#define	OSD_MODE_OVRSZ				(1 << 14)
+-#define	OSD_MODE_OHRSZ				(1 << 13)
+-#define	OSD_MODE_EF				(1 << 12)
+-#define	OSD_MODE_VVRSZ				(1 << 11)
+-#define	OSD_MODE_VHRSZ				(1 << 10)
+-#define	OSD_MODE_FSINV				(1 << 9)
+-#define	OSD_MODE_BCLUT				(1 << 8)
+-#define	OSD_MODE_CABG				(0xff << 0)
+-#define	OSD_MODE_CABG_SHIFT			0
+-
+-#define	OSD_VIDWINMD_VFINV			(1 << 15)
+-#define	OSD_VIDWINMD_V1EFC			(1 << 14)
+-#define	OSD_VIDWINMD_VHZ1			(3 << 12)
+-#define	OSD_VIDWINMD_VHZ1_SHIFT			12
+-#define	OSD_VIDWINMD_VVZ1			(3 << 10)
+-#define	OSD_VIDWINMD_VVZ1_SHIFT			10
+-#define	OSD_VIDWINMD_VFF1			(1 << 9)
+-#define	OSD_VIDWINMD_ACT1			(1 << 8)
+-#define	OSD_VIDWINMD_V0EFC			(1 << 6)
+-#define	OSD_VIDWINMD_VHZ0			(3 << 4)
+-#define	OSD_VIDWINMD_VHZ0_SHIFT			4
+-#define	OSD_VIDWINMD_VVZ0			(3 << 2)
+-#define	OSD_VIDWINMD_VVZ0_SHIFT			2
+-#define	OSD_VIDWINMD_VFF0			(1 << 1)
+-#define	OSD_VIDWINMD_ACT0			(1 << 0)
+-
+-#define	OSD_OSDWIN0MD_ATN0E			(1 << 14)
+-#define	OSD_OSDWIN0MD_RGB0E			(1 << 13)
+-#define	OSD_OSDWIN0MD_CLUTS0			(1 << 12)
+-#define	OSD_OSDWIN0MD_OHZ0			(3 << 10)
+-#define	OSD_OSDWIN0MD_OHZ0_SHIFT		10
+-#define	OSD_OSDWIN0MD_OVZ0			(3 << 8)
+-#define	OSD_OSDWIN0MD_OVZ0_SHIFT		8
+-#define	OSD_OSDWIN0MD_BMW0			(3 << 6)
+-#define	OSD_OSDWIN0MD_BMW0_SHIFT		6
+-#define	OSD_OSDWIN0MD_BLND0			(3 << 3)
+-#define	OSD_OSDWIN0MD_BLND0_SHIFT		3
+-#define	OSD_OSDWIN0MD_TE0			(1 << 2)
+-#define	OSD_OSDWIN0MD_OFF0			(1 << 1)
+-#define	OSD_OSDWIN0MD_OACT0			(1 << 0)
+-
+-#define	OSD_OSDWIN1MD_OASW			(1 << 15)
+-#define	OSD_OSDWIN1MD_ATN1E			(1 << 14)
+-#define	OSD_OSDWIN1MD_RGB1E			(1 << 13)
+-#define	OSD_OSDWIN1MD_CLUTS1			(1 << 12)
+-#define	OSD_OSDWIN1MD_OHZ1			(3 << 10)
+-#define	OSD_OSDWIN1MD_OHZ1_SHIFT		10
+-#define	OSD_OSDWIN1MD_OVZ1			(3 << 8)
+-#define	OSD_OSDWIN1MD_OVZ1_SHIFT		8
+-#define	OSD_OSDWIN1MD_BMW1			(3 << 6)
+-#define	OSD_OSDWIN1MD_BMW1_SHIFT		6
+-#define	OSD_OSDWIN1MD_BLND1			(3 << 3)
+-#define	OSD_OSDWIN1MD_BLND1_SHIFT		3
+-#define	OSD_OSDWIN1MD_TE1			(1 << 2)
+-#define	OSD_OSDWIN1MD_OFF1			(1 << 1)
+-#define	OSD_OSDWIN1MD_OACT1			(1 << 0)
+-
+-
+-#define	OSD_OSDATRMD_OASW			(1 << 15)
+-#define	OSD_OSDATRMD_OHZA			(3 << 10)
+-#define	OSD_OSDATRMD_OHZA_SHIFT			10
+-#define	OSD_OSDATRMD_OVZA			(3 << 8)
+-#define	OSD_OSDATRMD_OVZA_SHIFT			8
+-#define	OSD_OSDATRMD_BLNKINT			(3 << 6)
+-#define	OSD_OSDATRMD_BLNKINT_SHIFT		6
+-#define	OSD_OSDATRMD_OFFA			(1 << 1)
+-#define	OSD_OSDATRMD_BLNK			(1 << 0)
+-
+-#define	OSD_RECTCUR_RCAD			(0xff << 8)
+-#define	OSD_RECTCUR_RCAD_SHIFT			8
+-#define	OSD_RECTCUR_CLUTSR			(1 << 7)
+-#define	OSD_RECTCUR_RCHW			(3 << 4)
+-#define	OSD_RECTCUR_RCHW_SHIFT			4
+-#define	OSD_RECTCUR_RCVW			(3 << 1)
+-#define	OSD_RECTCUR_RCVW_SHIFT			1
+-#define	OSD_RECTCUR_RCACT			(1 << 0)
+-
+-#define	OSD_VIDWIN0OFST_V0LO			(0x1ff << 0)
+-#define	OSD_VIDWIN0OFST_V0LO_SHIFT		0
+-#define	OSD_VIDWIN1OFST_V1LO			(0x1ff << 0)
+-#define	OSD_VIDWIN1OFST_V1LO_SHIFT		0
+-#define	OSD_OSDWIN0OFST_O0LO			(0x1ff << 0)
+-#define	OSD_OSDWIN0OFST_O0LO_SHIFT		0
+-#define	OSD_OSDWIN1OFST_O1LO			(0x1ff << 0)
+-#define	OSD_OSDWIN1OFST_O1LO_SHIFT		0
+-#define	OSD_BASEPX_BPX				(0x3ff << 0)
+-#define	OSD_BASEPX_BPX_SHIFT			0
+-#define	OSD_BASEPY_BPY				(0x1ff << 0)
+-#define	OSD_BASEPY_BPY_SHIFT			0
+-#define	OSD_VIDWIN0XP_V0X			(0x3ff << 0)
+-#define	OSD_VIDWIN0XP_V0X_SHIFT			0
+-#define	OSD_VIDWIN0YP_V0Y			(0x1ff << 0)
+-#define	OSD_VIDWIN0YP_V0Y_SHIFT			0
+-#define	OSD_VIDWIN0XL_V0W			(0xfff << 0)
+-#define	OSD_VIDWIN0XL_V0W_SHIFT			0
+-#define	OSD_VIDWIN0YL_V0H			(0x7ff << 0)
+-#define	OSD_VIDWIN0YL_V0H_SHIFT			0
+-#define	OSD_VIDWIN1XP_V1X			(0x3ff << 0)
+-#define	OSD_VIDWIN1XP_V1X_SHIFT			0
+-#define	OSD_VIDWIN1YP_V1Y			(0x1ff << 0)
+-#define	OSD_VIDWIN1YP_V1Y_SHIFT			0
+-#define	OSD_VIDWIN1XL_V1W			(0xfff << 0)
+-#define	OSD_VIDWIN1XL_V1W_SHIFT			0
+-#define	OSD_VIDWIN1YL_V1H			(0x7ff << 0)
+-#define	OSD_VIDWIN1YL_V1H_SHIFT			0
+-#define	OSD_OSDWIN0XP_W0X			(0x3ff << 0)
+-#define	OSD_OSDWIN0XP_W0X_SHIFT			0
+-#define	OSD_OSDWIN0YP_W0Y			(0x1ff << 0)
+-#define	OSD_OSDWIN0YP_W0Y_SHIFT			0
+-#define	OSD_OSDWIN0XL_W0W			(0xfff << 0)
+-#define	OSD_OSDWIN0XL_W0W_SHIFT			0
+-#define	OSD_OSDWIN0YL_W0H			(0x7ff << 0)
+-#define	OSD_OSDWIN0YL_W0H_SHIFT			0
+-#define	OSD_OSDWIN1XP_W1X			(0x3ff << 0)
+-#define	OSD_OSDWIN1XP_W1X_SHIFT			0
+-#define	OSD_OSDWIN1YP_W1Y			(0x1ff << 0)
+-#define	OSD_OSDWIN1YP_W1Y_SHIFT			0
+-#define	OSD_OSDWIN1XL_W1W			(0xfff << 0)
+-#define	OSD_OSDWIN1XL_W1W_SHIFT			0
+-#define	OSD_OSDWIN1YL_W1H			(0x7ff << 0)
+-#define	OSD_OSDWIN1YL_W1H_SHIFT			0
+-#define	OSD_CURXP_RCSX				(0x3ff << 0)
+-#define	OSD_CURXP_RCSX_SHIFT			0
+-#define	OSD_CURYP_RCSY				(0x1ff << 0)
+-#define	OSD_CURYP_RCSY_SHIFT			0
+-#define	OSD_CURYL_RCSH				(0x7ff << 0)
+-#define	OSD_CURYL_RCSH_SHIFT			0
+-#define	OSD_W0BMP01_PAL01			(0xff << 8)
+-#define	OSD_W0BMP01_PAL01_SHIFT			8
+-#define	OSD_W0BMP01_PAL00			(0xff << 0)
+-#define	OSD_W0BMP01_PAL00_SHIFT			0
+-#define	OSD_W0BMP23_PAL03			(0xff << 8)
+-#define	OSD_W0BMP23_PAL03_SHIFT			8
+-#define	OSD_W0BMP23_PAL02			(0xff << 0)
+-#define	OSD_W0BMP23_PAL02_SHIFT			0
+-#define	OSD_W0BMP45_PAL05			(0xff << 8)
+-#define	OSD_W0BMP45_PAL05_SHIFT			8
+-#define	OSD_W0BMP45_PAL04			(0xff << 0)
+-#define	OSD_W0BMP45_PAL04_SHIFT			0
+-#define	OSD_W0BMP67_PAL07			(0xff << 8)
+-#define	OSD_W0BMP67_PAL07_SHIFT			8
+-#define	OSD_W0BMP67_PAL06			(0xff << 0)
+-#define	OSD_W0BMP67_PAL06_SHIFT			0
+-#define	OSD_W0BMP89_PAL09			(0xff << 8)
+-#define	OSD_W0BMP89_PAL09_SHIFT			8
+-#define	OSD_W0BMP89_PAL08			(0xff << 0)
+-#define	OSD_W0BMP89_PAL08_SHIFT			0
+-#define	OSD_W0BMPAB_PAL11			(0xff << 8)
+-#define	OSD_W0BMPAB_PAL11_SHIFT			8
+-#define	OSD_W0BMPAB_PAL10			(0xff << 0)
+-#define	OSD_W0BMPAB_PAL10_SHIFT			0
+-#define	OSD_W0BMPCD_PAL13			(0xff << 8)
+-#define	OSD_W0BMPCD_PAL13_SHIFT			8
+-#define	OSD_W0BMPCD_PAL12			(0xff << 0)
+-#define	OSD_W0BMPCD_PAL12_SHIFT			0
+-#define	OSD_W0BMPEF_PAL15			(0xff << 8)
+-#define	OSD_W0BMPEF_PAL15_SHIFT			8
+-#define	OSD_W0BMPEF_PAL14			(0xff << 0)
+-#define	OSD_W0BMPEF_PAL14_SHIFT			0
+-#define	OSD_W1BMP0_PAL01			(0xff << 8)
+-#define	OSD_W1BMP0_PAL01_SHIFT			8
+-#define	OSD_W1BMP0_PAL00			(0xff << 0)
+-#define	OSD_W1BMP0_PAL00_SHIFT			0
+-#define	OSD_W1BMP2_PAL03			(0xff << 8)
+-#define	OSD_W1BMP2_PAL03_SHIFT			8
+-#define	OSD_W1BMP2_PAL02			(0xff << 0)
+-#define	OSD_W1BMP2_PAL02_SHIFT			0
+-#define	OSD_W1BMP4_PAL05			(0xff << 8)
+-#define	OSD_W1BMP4_PAL05_SHIFT			8
+-#define	OSD_W1BMP4_PAL04			(0xff << 0)
+-#define	OSD_W1BMP4_PAL04_SHIFT			0
+-#define	OSD_W1BMP6_PAL07			(0xff << 8)
+-#define	OSD_W1BMP6_PAL07_SHIFT			8
+-#define	OSD_W1BMP6_PAL06			(0xff << 0)
+-#define	OSD_W1BMP6_PAL06_SHIFT			0
+-#define	OSD_W1BMP8_PAL09			(0xff << 8)
+-#define	OSD_W1BMP8_PAL09_SHIFT			8
+-#define	OSD_W1BMP8_PAL08			(0xff << 0)
+-#define	OSD_W1BMP8_PAL08_SHIFT			0
+-#define	OSD_W1BMPA_PAL11			(0xff << 8)
+-#define	OSD_W1BMPA_PAL11_SHIFT			8
+-#define	OSD_W1BMPA_PAL10			(0xff << 0)
+-#define	OSD_W1BMPA_PAL10_SHIFT			0
+-#define	OSD_W1BMPC_PAL13			(0xff << 8)
+-#define	OSD_W1BMPC_PAL13_SHIFT			8
+-#define	OSD_W1BMPC_PAL12			(0xff << 0)
+-#define	OSD_W1BMPC_PAL12_SHIFT			0
+-#define	OSD_W1BMPE_PAL15			(0xff << 8)
+-#define	OSD_W1BMPE_PAL15_SHIFT			8
+-#define	OSD_W1BMPE_PAL14			(0xff << 0)
+-#define	OSD_W1BMPE_PAL14_SHIFT			0
+-
+-#define	OSD_MISCCT_RGBEN			(1 << 7)
+-#define	OSD_MISCCT_RGBWIN			(1 << 6)
+-#define	OSD_MISCCT_TMON				(1 << 5)
+-#define	OSD_MISCCT_RSEL				(1 << 4)
+-#define	OSD_MISCCT_CPBSY			(1 << 3)
+-#define	OSD_MISCCT_PPSW				(1 << 2)
+-#define	OSD_MISCCT_PPRV				(1 << 1)
+-
+-#define	OSD_CLUTRAMY_Y				(0xff << 8)
+-#define	OSD_CLUTRAMY_Y_SHIFT			8
+-#define	OSD_CLUTRAMY_CB				(0xff << 0)
+-#define	OSD_CLUTRAMY_CB_SHIFT			0
+-#define	OSD_CLUTRAM_CR				(0xff << 8)
+-#define	OSD_CLUTRAM_CR_SHIFT			8
+-#define	OSD_CLUTRAM_CADDR			(0xff << 0)
+-#define	OSD_CLUTRAM_CADDR_SHIFT			0
+-#define	OSD_TRANSPVA_RGBTRANS			(0xff << 0)
+-#define	OSD_TRANSPVA_RGBTRANS_SHIFT		0
+-
+-
+-#define LCD             0
+-#define NTSC            1
+-#define PAL             2
+-
+-#define COMPOSITE       1
+-#define SVIDEO          2
+-#define COMPONENT       3
+-#define RGB             4
+-
+-/* define the custom FBIO_WAITFORVSYNC ioctl */
+-#define FBIO_WAITFORVSYNC	_IOW('F', 0x20, u_int32_t)
+-#define FBIO_SETATTRIBUTE       _IOW('F', 0x21, struct fb_fillrect)
+-#define FBIO_SETPOSX		_IOW('F', 0x22, u_int32_t)
+-#define FBIO_SETPOSY		_IOW('F', 0x23, u_int32_t)
+-struct zoom_params
+-{
+-	u_int32_t window_id;
+-	u_int32_t zoom_h;
+-	u_int32_t zoom_v;
+-};
+-#define FBIO_SETZOOM		_IOW('F', 0x24, struct zoom_params)
+-#define FBIO_GETSTD		_IOR('F', 0x25, u_int32_t)
+-#endif /* _DAVINCIFB_H_ */
+Index: linux-2.6.18/drivers/media/video/ccdc_davinci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/ccdc_davinci.c
++++ /dev/null
+@@ -1,124 +0,0 @@
+-/*
+- *
+- *
+- * Copyright (C) 2006 Texas Instruments Inc
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+- */
+-/* ccdc_davinci.c */
+-
+-#include <media/ccdc_davinci.h>
+-#define debug_print(x...)	//printk(x)
+-void ccdc_reset()
+-{
+-	int i;
+-	/* disable CCDC */
+-	ccdc_enable(0);
+-	/* set all registers to default value */
+-	for (i = 0; i <= 0x94; i += 4) {
+-		regw(0, i);
+-	}
+-	regw(0, PCR);
+-	regw(0, SYN_MODE);
+-	regw(0, HD_VD_WID);
+-	regw(0, PIX_LINES);
+-	regw(0, HORZ_INFO);
+-	regw(0, VERT_START);
+-	regw(0, VERT_LINES);
+-	regw(0xffff00ff, CULLING);
+-	regw(0, HSIZE_OFF);
+-	regw(0, SDOFST);
+-	regw(0, SDR_ADDR);
+-	regw(0, VDINT);
+-	regw(0, REC656IF);
+-	regw(0, CCDCFG);
+-	regw(0, FMTCFG);
+-	regw(0, VP_OUT);
+-}
+-
+-void ccdc_setwin(ccdc_params_ycbcr * params)
+-{
+-	int horz_start, horz_nr_pixels;
+-	int vert_start, vert_nr_lines;
+-
+-	/* configure horizonal and vertical starts and sizes */
+-	horz_start = params->win.left << 1;
+-	horz_nr_pixels = (params->win.width <<1) - 1;
+-	regw((horz_start << 16) | horz_nr_pixels, HORZ_INFO);
+-
+-	vert_start = params->win.top;
+-
+-	if (params->frm_fmt == CCDC_FRMFMT_INTERLACED) {
+-		vert_nr_lines = (params->win.height >> 1) - 1;
+-		vert_start >>= 1;
+-	} else {
+-		vert_nr_lines = params->win.height - 1;
+-	}
+-	regw((vert_start << 16) | vert_start, VERT_START);
+-	regw(vert_nr_lines, VERT_LINES);
+-}
+-
+-void ccdc_config_ycbcr(ccdc_params_ycbcr * params)
+-{
+-	u32 syn_mode;
+-
+-	/* first reset the CCDC                                          */
+-	/* all registers have default values after reset                 */
+-	/* This is important since we assume default values to be set in */
+-	/* a lot of registers that we didn't touch                       */
+-	ccdc_reset();
+-
+-	/* configure pixel format */
+-	syn_mode = (params->pix_fmt & 0x3) << 12;
+-
+-	/* configure video frame format */
+-	syn_mode |= (params->frm_fmt & 0x1) << 7;
+-
+-	/* setup BT.656 sync mode */
+-	if (params->bt656_enable) {
+-		regw(3, REC656IF);
+-
+-		/* configure the FID, VD, HD pin polarity */
+-		/* fld,hd pol positive, vd negative, 8-bit pack mode */
+-		syn_mode |= 0x00000F04;
+-	} else {/* y/c external sync mode */
+-		syn_mode |= ((params->fid_pol & 0x1) << 4);
+-		syn_mode |= ((params->hd_pol & 0x1) << 3);
+-		syn_mode |= ((params->vd_pol & 0x1) << 2);
+-	}
+-
+-	/* configure video window */
+-	ccdc_setwin(params);
+-
+-	/* configure the order of y cb cr in SD-RAM */
+-	regw((params->pix_order << 11) | 0x8000, CCDCFG);
+-
+-	/* configure the horizontal line offset */
+-	/* this is done by rounding up width to a multiple of 16 pixels */
+-	/* and multiply by two to account for y:cb:cr 4:2:2 data */
+-	regw(((params->win.width * 2) + 31) & 0xffffffe0, HSIZE_OFF);
+-
+-	/* configure the memory line offset */
+-	if (params->buf_type == CCDC_BUFTYPE_FLD_INTERLEAVED) {
+-		/* two fields are interleaved in memory */
+-		regw(0x00000249, SDOFST);
+-	}
+-	/* enable output to SDRAM */
+-	syn_mode |= (0x1 << 17);
+-	/* enable internal timing generator */
+-	syn_mode |= (0x1 << 16);
+-
+-	regw(syn_mode, SYN_MODE);
+-}
+Index: linux-2.6.18/drivers/media/video/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/Kconfig
++++ linux-2.6.18/drivers/media/video/Kconfig
+@@ -28,25 +28,6 @@ config VIDEO_VIVI
+ 	  Say Y here if you want to test video apps or debug V4L devices.
+ 	  In doubt, say N.
+ 
+-config VIDEO_TVP5146
+-	tristate "TVP5146 video decoder"
+-	depends on I2C && ARCH_DAVINCI
+-	help
+-	  Support for I2C bus based TVP5146 configuration.
+-
+-	  To compile this driver as a module, choose M here: the
+-	  module will be called tvp5146.
+-
+-config VIDEO_DAVINCI
+-	tristate "Davinci Video Capture"
+-	depends on VIDEO_DEV && VIDEO_TVP5146 && ARCH_DAVINCI
+-	select VIDEO_BUF
+-	help
+-	  Support for Davinci based frame grabber through CCDC.
+-
+-	  To compile this driver as a module, choose M here: the
+-	  module will be called vpfe.
+-
+ source "drivers/media/video/bt8xx/Kconfig"
+ 
+ config VIDEO_SAA6588
+Index: linux-2.6.18/mvl_patches/pro50-1577.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1577.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1577);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

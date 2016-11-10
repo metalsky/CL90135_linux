@@ -1,0 +1,350 @@
+#! /usr/bin/env bash
+# Patch: -zd1211rw_Remove_IW_FREQ_AUTO_support
+# Date: Thu Feb 19 15:07:55 2009
+# MR: 29923
+# From a7efd2247ca8194733d8e4232579ad6eca92b320 Mon Sep 17 00:00:00 2001
+# From: Daniel Drake <dsd@gentoo.org>
+# Date: Wed, 22 Nov 2006 00:05:30 +0000
+# Subject: [PATCH] [PATCH] zd1211rw: Remove IW_FREQ_AUTO support
+# 
+# http://bugzilla.kernel.org/show_bug.cgi?id=7399
+# 
+# zd1211rw's support for IW_FREQ_AUTO is broken: when specified, the driver
+# tries to change to a channel specified in an uninitialized integer. As
+# IW_FREQ_AUTO is hard to implement properly, the solution (at least for now)
+# is to drop support for it and start ignoring the flags like all other wireless
+# drivers do.
+# 
+# This has the added advantage that kismet also starts working with zd1211rw,
+# even though kismet requesting IW_FREQ_AUTO is also a bug (fixed in their svn)
+# 
+# Signed-off-by: Daniel Drake <dsd@gentoo.org>
+# Signed-off-by: John W. Linville <linville@tuxdriver.com>
+# (cherry picked from commit 84bc715c465f76584fc5127955fca0c61592e04b)
+# 
+
+PATCHNUM=2205
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From a7efd2247ca8194733d8e4232579ad6eca92b320 Mon Sep 17 00:00:00 2001
+From: Daniel Drake <dsd@gentoo.org>
+Date: Wed, 22 Nov 2006 00:05:30 +0000
+Subject: [PATCH] [PATCH] zd1211rw: Remove IW_FREQ_AUTO support
+
+http://bugzilla.kernel.org/show_bug.cgi?id=7399
+
+zd1211rw's support for IW_FREQ_AUTO is broken: when specified, the driver
+tries to change to a channel specified in an uninitialized integer. As
+IW_FREQ_AUTO is hard to implement properly, the solution (at least for now)
+is to drop support for it and start ignoring the flags like all other wireless
+drivers do.
+
+This has the added advantage that kismet also starts working with zd1211rw,
+even though kismet requesting IW_FREQ_AUTO is also a bug (fixed in their svn)
+
+Signed-off-by: Daniel Drake <dsd@gentoo.org>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+(cherry picked from commit 84bc715c465f76584fc5127955fca0c61592e04b)
+
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_ieee80211.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_ieee80211.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_ieee80211.c
+@@ -133,9 +133,6 @@ int zd_find_channel(u8 *channel, const s
+ 	int i, r;
+ 	u32 mhz;
+ 
+-	if (!(freq->flags & IW_FREQ_FIXED))
+-		return 0;
+-
+ 	if (freq->m < 1000) {
+ 		if (freq->m  > NUM_CHANNELS || freq->m == 0)
+ 			return -EINVAL;
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+@@ -317,21 +317,12 @@ int zd_mac_request_channel(struct zd_mac
+ 		return 0;
+ }
+ 
+-int zd_mac_get_channel(struct zd_mac *mac, u8 *channel, u8 *flags)
++u8 zd_mac_get_channel(struct zd_mac *mac)
+ {
+-	struct ieee80211_device *ieee = zd_mac_to_ieee80211(mac);
++	u8 channel = zd_chip_get_channel(&mac->chip);
+ 
+-	*channel = zd_chip_get_channel(&mac->chip);
+-	if (ieee->iw_mode != IW_MODE_INFRA) {
+-		spin_lock_irq(&mac->lock);
+-		*flags = *channel == mac->requested_channel ?
+-			MAC_FIXED_CHANNEL : 0;
+-		spin_unlock(&mac->lock);
+-	} else {
+-		*flags = 0;
+-	}
+-	dev_dbg_f(zd_mac_dev(mac), "channel %u flags %u\n", *channel, *flags);
+-	return 0;
++	dev_dbg_f(zd_mac_dev(mac), "channel %u\n", channel);
++	return channel;
+ }
+ 
+ /* If wrong rate is given, we are falling back to the slowest rate: 1MBit/s */
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.h
+@@ -116,10 +116,6 @@ struct rx_status {
+ #define ZD_RX_CRC16_ERROR		0x40
+ #define ZD_RX_ERROR			0x80
+ 
+-enum mac_flags {
+-	MAC_FIXED_CHANNEL = 0x01,
+-};
+-
+ struct housekeeping {
+ 	struct work_struct link_led_work;
+ };
+@@ -180,7 +176,7 @@ int zd_mac_set_regdomain(struct zd_mac *
+ u8 zd_mac_get_regdomain(struct zd_mac *zd_mac);
+ 
+ int zd_mac_request_channel(struct zd_mac *mac, u8 channel);
+-int zd_mac_get_channel(struct zd_mac *mac, u8 *channel, u8 *flags);
++u8 zd_mac_get_channel(struct zd_mac *mac);
+ 
+ int zd_mac_set_mode(struct zd_mac *mac, u32 mode);
+ int zd_mac_get_mode(struct zd_mac *mac, u32 *mode);
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_netdev.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_netdev.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_netdev.c
+@@ -107,21 +107,10 @@ static int iw_get_freq(struct net_device
+ 	           struct iw_request_info *info,
+ 		   union iwreq_data *req, char *extra)
+ {
+-	int r;
+ 	struct zd_mac *mac = zd_netdev_mac(netdev);
+ 	struct iw_freq *freq = &req->freq;
+-	u8 channel;
+-	u8 flags;
+ 
+-	r = zd_mac_get_channel(mac, &channel, &flags);
+-	if (r)
+-		return r;
+-
+-	freq->flags = (flags & MAC_FIXED_CHANNEL) ?
+-		      IW_FREQ_FIXED : IW_FREQ_AUTO;
+-	dev_dbg_f(zd_mac_dev(mac), "channel %s\n",
+-		  (flags & MAC_FIXED_CHANNEL) ? "fixed" : "auto");
+-	return zd_channel_to_freq(freq, channel);
++	return zd_channel_to_freq(freq, zd_mac_get_channel(mac));
+ }
+ 
+ static int iw_set_mode(struct net_device *netdev,
+Index: linux-2.6.18/mvl_patches/pro50-2205.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2205.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2205);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

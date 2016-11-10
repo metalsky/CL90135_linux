@@ -1,0 +1,550 @@
+#! /usr/bin/env bash
+# Patch: -pro_alsa_soc_tlv320aic3106_add_filter_control
+# Date: Thu Feb 19 14:59:42 2009
+# Source: MontaVista Software, Inc.
+# MR: 30877
+# Type:  Enhancement
+# Disposition: needs submitting to alsa-devel
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+#  Add ALSA controls to access and updates filter values in page 1 of the AIC3106.
+# 
+#  sound/soc/codecs/tlv320aic3x.c |  189 +++++++++++++++++++++++++++++++++++++++--
+#  sound/soc/codecs/tlv320aic3x.h |   11 ++
+#  2 files changed, 192 insertions(+), 8 deletions(-)
+# 
+
+PATCHNUM=2089
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 30877
+Type:  Enhancement
+Disposition: needs submitting to alsa-devel
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+ Add ALSA controls to access and updates filter values in page 1 of the AIC3106.
+
+ mvl_patches/pro50-2089.c       |   16 +++
+ sound/soc/codecs/tlv320aic3x.c |  189 +++++++++++++++++++++++++++++++++++++++--
+ sound/soc/codecs/tlv320aic3x.h |   11 ++
+ 3 files changed, 208 insertions(+), 8 deletions(-)
+
+Index: linux-2.6.18/sound/soc/codecs/tlv320aic3x.c
+===================================================================
+--- linux-2.6.18.orig/sound/soc/codecs/tlv320aic3x.c
++++ linux-2.6.18/sound/soc/codecs/tlv320aic3x.c
+@@ -58,13 +58,16 @@ struct aic3x_priv {
+ 	int master;
+ };
+ 
++static u8 pg0_end = AIC3X_GEN_PG0_END;
++static u8 pg1_end = AIC3X_GEN_PG1_END;
++static enum aic3x_codec_variant codec_variant;
+ /*
+  * AIC3X register cache
+  * We can't read the AIC3X register space when we are
+  * using 2 wire for device control, so we cache them instead.
+  * There is no point in caching the reset register
+  */
+-static const u8 aic3x_reg[AIC3X_CACHEREGNUM] = {
++static const u8 aic3x_reg[] = {
+ 	0x00, 0x00, 0x00, 0x10,	/* 0 */
+ 	0x04, 0x00, 0x00, 0x00,	/* 4 */
+ 	0x00, 0x00, 0x00, 0x01,	/* 8 */
+@@ -91,6 +94,35 @@ static const u8 aic3x_reg[AIC3X_CACHEREG
+ 	0x00, 0x00, 0x00, 0x00,	/* 92 */
+ 	0x00, 0x00, 0x00, 0x00,	/* 96 */
+ 	0x00, 0x00, 0x02,	/* 100 */
++
++	0x00, 0x00, 0x00, 0x00,	/* 103-127 unused */
++	0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00,
++	0x00,
++
++	0x00, 0x6b, 0xe3, 0x96, /* 0 */
++	0x66, 0x67, 0x5d, 0x6b, /* 4 */
++	0xe3, 0x96, 0x66, 0x67, /* 8 */
++	0x5d, 0x7d, 0x83, 0x84, /* 12 */
++	0xee, 0x7d, 0x83, 0x84, /* 16 */
++	0xee, 0x39, 0x55, 0xf3, /* 20 */
++	0x2d, 0x53, 0x7e, 0x6b, /* 24 */
++	0xe3, 0x96, 0x66, 0x67, /* 28 */
++	0x5d, 0x6b, 0xe3, 0x96, /* 32 */
++	0x66, 0x67, 0x5d, 0x7d, /* 36 */
++	0x83, 0x84, 0xee, 0x7d, /* 40 */
++	0x83, 0x84, 0xee, 0x39, /* 44 */
++	0x55, 0xf3, 0x2d, 0x53, /* 48 */
++	0x7e, 0x7f, 0xff, 0x00, /* 52 */
++	0x00, 0x00, 0x00, 0x00, /* 56 */
++	0x00, 0x00, 0x00, 0x00, /* 60 */
++	0x00, 0x39, 0x55, 0xf3, /* 64 */
++	0x2d, 0x53, 0x7e, 0x39, /* 68 */
++	0x55, 0xf3, 0x2d, 0x53, /* 72 */
++	0x7e,			/* 76 */
+ };
+ 
+ /*
+@@ -100,7 +132,8 @@ static inline unsigned int aic3x_read_re
+ 						unsigned int reg)
+ {
+ 	u8 *cache = codec->reg_cache;
+-	if (reg >= AIC3X_CACHEREGNUM)
++	if ((reg >= pg1_end) ||
++	    ((reg >= pg0_end) && (reg < AIC3X_GEN_PG1_BEG)))
+ 		return -1;
+ 	return cache[reg];
+ }
+@@ -112,16 +145,15 @@ static inline void aic3x_write_reg_cache
+ 					 u8 reg, u8 value)
+ {
+ 	u8 *cache = codec->reg_cache;
+-	if (reg >= AIC3X_CACHEREGNUM)
+-		return;
++
+ 	cache[reg] = value;
+ }
+ 
+ /*
+  * write to the aic3x register space
+  */
+-static int aic3x_write(struct snd_soc_codec *codec, unsigned int reg,
+-		       unsigned int value)
++static int _aic3x_write(struct snd_soc_codec *codec, unsigned int reg,
++			unsigned int value)
+ {
+ 	u8 data[2];
+ 
+@@ -133,12 +165,41 @@ static int aic3x_write(struct snd_soc_co
+ 	data[1] = value & 0xff;
+ 
+ 	aic3x_write_reg_cache(codec, data[0], data[1]);
++
++	/* adjust for page 1 before updating hardware if necessary */
++	if (data[0] >= AIC3X_GEN_PG1_BEG)
++		data[0] -= AIC3X_GEN_PG1_BEG;
++
+ 	if (codec->hw_write(codec->control_data, data, 2) == 2)
+ 		return 0;
+ 	else
+ 		return -EIO;
+ }
+ 
++static int aic3x_write(struct snd_soc_codec *codec, unsigned int reg,
++		       unsigned int value)
++{
++	u8 cur_pg;
++	u8 reg_pg;
++	int ret = 0;
++
++	cur_pg = aic3x_read_reg_cache(codec, 0);
++	if (reg < pg0_end)
++		reg_pg = 0;
++	else if ((reg >= AIC3X_GEN_PG1_BEG) && (reg < pg1_end))
++		reg_pg = 1;
++	else
++		return -EIO;
++
++	if (cur_pg != reg_pg)
++		ret = _aic3x_write(codec, 0, reg_pg);
++
++	if (ret == 0)
++		ret = _aic3x_write(codec, reg, value);
++
++	return ret;
++}
++
+ #define SOC_DAPM_SINGLE_AIC3X(xname, reg, shift, mask, invert) \
+ {	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, \
+ 	.info = snd_soc_info_volsw, \
+@@ -338,6 +399,65 @@ static int tlv320aic3x_switch_info(struc
+ 		((mask) << 24)}
+ #endif
+ 
++static int tlv320aic3x_dual_reg_info(struct snd_kcontrol *kcontrol,
++				     struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++	uinfo->count = 1;
++	uinfo->value.integer.min = 0;
++	uinfo->value.integer.max = 0xffff;
++	return 0;
++}
++
++static int tlv320aic3x_dual_reg_get(struct snd_kcontrol *kcontrol,
++				    struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
++	int reg_msb = kcontrol->private_value & 0xff;
++	int reg_lsb = (kcontrol->private_value >> 8) & 0xff;
++	int val = aic3x_read_reg_cache(codec, reg_msb) << 8;
++
++	val |= aic3x_read_reg_cache(codec, reg_lsb);
++
++	/* convert 2's complement to unsigned int */
++	val ^= 0x8000;
++
++	ucontrol->value.integer.value[0] = val;
++
++	return 0;
++}
++
++static int tlv320aic3x_dual_reg_put(struct snd_kcontrol *kcontrol,
++				    struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
++	int err;
++	int reg_msb = kcontrol->private_value & 0xff;
++	int reg_lsb = (kcontrol->private_value >> 8) & 0xff;
++	int val_msb, val_lsb;
++
++	val_msb = (ucontrol->value.integer.value[0] >> 8) & 0xff;
++	val_lsb = ucontrol->value.integer.value[0] & 0xff;
++
++	/* convert unsigned int to 2's complement */
++	val_msb ^= 0x80;
++
++	err = snd_soc_update_bits(codec, reg_msb, 0xff, val_msb);
++	if (err < 0)
++		return err;
++	err = snd_soc_update_bits(codec, reg_lsb, 0xff, val_lsb);
++	return err;
++}
++
++#define TLV320AIC3X_DUAL_R(xname, page, reg_msb, reg_lsb) \
++{	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = (xname), \
++	.info = tlv320aic3x_dual_reg_info, \
++	.get = tlv320aic3x_dual_reg_get, .put = tlv320aic3x_dual_reg_put, \
++	.private_value = ((reg_msb) + page) | (((reg_lsb) + page) << 8) }
++
++#define TLV320AIC3X_PG1_DUAL_R(xname, reg_msb, reg_lsb) \
++	TLV320AIC3X_DUAL_R(xname, AIC3X_GEN_PG1_BEG, reg_msb, reg_lsb)
++
+ static const char *aic3x_left_dac_mux[] = { "DAC_L1", "DAC_L3", "DAC_L2" };
+ static const char *aic3x_right_dac_mux[] = { "DAC_R1", "DAC_R3", "DAC_R2" };
+ static const char *aic3x_left_hpcom_mux[] =
+@@ -454,6 +574,48 @@ static const struct snd_kcontrol_new aic
+ 	TLV320AIC3X_GAIN_SWITCH("Line Capture Switch", LINE1L_2_LADC_CTRL,
+ 		LINE1R_2_RADC_CTRL, 3, 3, 0xf),
+ #endif
++
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient N0", 1, 2),
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient N1", 3, 4),
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient N2", 5, 6),
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient N3", 7, 8),
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient N4", 9, 10),
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient N5", 11, 12),
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient D1", 13, 14),
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient D2", 15, 16),
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient D4", 17, 18),
++	TLV320AIC3X_PG1_DUAL_R("Left Effects Coefficient D5", 19, 20),
++	TLV320AIC3X_PG1_DUAL_R("Left De-Emphasis Coefficient N0", 21, 22),
++	TLV320AIC3X_PG1_DUAL_R("Left De-Emphasis Coefficient N1", 23, 24),
++	TLV320AIC3X_PG1_DUAL_R("Left De-Emphasis Coefficient D1", 25, 26),
++
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient N0", 27, 28),
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient N1", 29, 30),
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient N2", 31, 32),
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient N3", 33, 34),
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient N4", 35, 36),
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient N5", 37, 38),
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient D1", 39, 40),
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient D2", 41, 42),
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient D4", 43, 44),
++	TLV320AIC3X_PG1_DUAL_R("Right Effects Coefficient D5", 45, 46),
++	TLV320AIC3X_PG1_DUAL_R("Right De-Emphasis Coefficient N0", 47, 48),
++	TLV320AIC3X_PG1_DUAL_R("Right De-Emphasis Coefficient N1", 49, 50),
++	TLV320AIC3X_PG1_DUAL_R("Right De-Emphasis Coefficient D1", 51, 52),
++
++	TLV320AIC3X_PG1_DUAL_R("3-D Attenuation Coefficient", 53, 54),
++};
++
++static const struct snd_kcontrol_new aic3106_snd_controls[] = {
++	TLV320AIC3X_PG1_DUAL_R("Left Capture High Pass Coefficient N0", 65, 66),
++	TLV320AIC3X_PG1_DUAL_R("Left Capture High Pass Coefficient N1", 67, 68),
++	TLV320AIC3X_PG1_DUAL_R("Left Capture High Pass Coefficient D1", 69, 70),
++	TLV320AIC3X_PG1_DUAL_R("Right Capture High Pass Coefficient N0",
++			     71, 72),
++	TLV320AIC3X_PG1_DUAL_R("Right Capture High Pass Coefficient N1",
++			     73, 74),
++	TLV320AIC3X_PG1_DUAL_R("Right Capture High Pass Coefficient D1",
++			     75, 76),
+ };
+ 
+ /* add non dapm controls */
+@@ -469,6 +631,15 @@ static int aic3x_add_controls(struct snd
+ 			return err;
+ 	}
+ 
++	if (codec_variant == AIC3106_CODEC) {
++		for (i = 0; i < ARRAY_SIZE(aic3106_snd_controls); i++) {
++			err = snd_ctl_add(codec->card,
++					  snd_soc_cnew(&aic3106_snd_controls[i],
++						       codec, NULL));
++			if (err < 0)
++				return err;
++		}
++	}
+ 	return 0;
+ }
+ 
+@@ -1171,7 +1342,10 @@ static int aic3x_init(struct snd_soc_dev
+ 	if (codec->reg_cache == NULL)
+ 		return -ENOMEM;
+ 
+-	aic3x_write(codec, AIC3X_PAGE_SELECT, PAGE0_SELECT);
++	/* setup register cache sizes */
++	if (codec_variant == AIC3106_CODEC)
++		pg1_end = AIC3106_PG1_END;
++
+ 	aic3x_write(codec, AIC3X_RESET, SOFT_RESET);
+ 
+ 	/* register pcms */
+@@ -1376,6 +1550,7 @@ static int aic3x_probe(struct platform_d
+ 	printk(KERN_INFO "AIC3X Audio Codec %s\n", AIC3X_VERSION);
+ 
+ 	setup = socdev->codec_data;
++	codec_variant = setup->variant;
+ 	codec = kzalloc(sizeof(struct snd_soc_codec), GFP_KERNEL);
+ 	if (codec == NULL)
+ 		return -ENOMEM;
+Index: linux-2.6.18/sound/soc/codecs/tlv320aic3x.h
+===================================================================
+--- linux-2.6.18.orig/sound/soc/codecs/tlv320aic3x.h
++++ linux-2.6.18/sound/soc/codecs/tlv320aic3x.h
+@@ -13,7 +13,10 @@
+ #define _AIC3X_H
+ 
+ /* AIC3X register space */
+-#define AIC3X_CACHEREGNUM		103
++#define AIC3X_GEN_PG0_END			103
++#define AIC3X_GEN_PG1_BEG			128
++#define AIC3X_GEN_PG1_END			183
++#define AIC3106_PG1_END			205
+ 
+ /* Page select register */
+ #define AIC3X_PAGE_SELECT		0
+@@ -178,8 +181,14 @@
+ /* Default input volume */
+ #define DEFAULT_GAIN    0x50
+ 
++enum aic3x_codec_variant {
++	AIC3X_GENERIC_CODEC,
++	AIC3106_CODEC,
++};
++
+ struct aic3x_setup_data {
+ 	unsigned short i2c_address;
++	enum aic3x_codec_variant variant;
+ };
+ 
+ extern struct snd_soc_codec_dai aic3x_dai;
+Index: linux-2.6.18/mvl_patches/pro50-2089.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2089.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2089);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

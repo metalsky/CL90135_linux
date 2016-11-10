@@ -1,0 +1,1624 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_add_conflict_checking_to_pinmux_layer
+# Date: Thu Feb 19 15:03:39 2009
+# Source: MontaVista Software, Inc.
+# MR: 28546
+# Type: Enhancement
+# Disposition: needs submitting to DaVinci community
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+#     DaVinci: add conflict checking to the PinMux layer
+# 
+#     This patch enabled detection of the PinMux conflicts; once a conflict is
+#     detected, an error is propagated back.  For a driver that uses clk_enable()
+#     to set the PinMux, clk_enable() will now fail when there it a PinMux
+#     conflict.  The user will be notified via KERN_ERR and the driver will
+#     fail to load when there is a conflict.
+# 
+#     For DM644x and DM646x, the PinMux is grouped by module, so the detection
+#     mechanism won't work.  Additional hardware knowledge is required to
+#     implement PinMux conflict detection there.
+# 
+#  arch/arm/mach-davinci/Makefile                  |    3 
+#  arch/arm/mach-davinci/board-dm355-evm.c         |   52 ------
+#  arch/arm/mach-davinci/board-dm6467-evm.c        |   22 --
+#  arch/arm/mach-davinci/board-evm.c               |   41 -----
+#  arch/arm/mach-davinci/clock.c                   |   48 ++++++
+#  arch/arm/mach-davinci/mux_cfg.c                 |  192 +++++++++++++++++++++---
+#  arch/arm/mach-davinci/video_hdevm.c             |   56 -------
+#  arch/arm/plat-davinci/clock.c                   |   20 +-
+#  arch/arm/plat-davinci/mux.c                     |   89 ++++++++++-
+#  drivers/char/tsif_control.c                     |   84 ++++++++--
+#  drivers/char/tsif_data.c                        |   25 ++-
+#  drivers/media/video/davinci/ccdc_dm355.c        |   22 +-
+#  drivers/media/video/davinci/davinci_platform.c  |   38 ++--
+#  drivers/media/video/davinci/davincihd_capture.c |    4 
+#  drivers/media/video/davinci/davincihd_display.c |    4 
+#  drivers/usb/musb/davinci.c                      |    7 
+#  include/asm-arm/arch-davinci/clock.h            |    4 
+#  include/asm-arm/arch-davinci/hardware.h         |    1 
+#  include/asm-arm/arch-davinci/mux.h              |   27 +--
+#  include/asm-arm/arch-davinci/video_hdevm.h      |    3 
+#  20 files changed, 456 insertions(+), 286 deletions(-)
+# 
+
+PATCHNUM=2144
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28546
+Type: Enhancement
+Disposition: needs submitting to DaVinci community
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+    DaVinci: add conflict checking to the PinMux layer
+
+    This patch enabled detection of the PinMux conflicts; once a conflict is
+    detected, an error is propagated back.  For a driver that uses clk_enable()
+    to set the PinMux, clk_enable() will now fail when there it a PinMux
+    conflict.  The user will be notified via KERN_ERR and the driver will
+    fail to load when there is a conflict.
+
+    For DM644x and DM646x, the PinMux is grouped by module, so the detection
+    mechanism won't work.  Additional hardware knowledge is required to
+    implement PinMux conflict detection there.
+
+ arch/arm/mach-davinci/Makefile                  |    3 
+ arch/arm/mach-davinci/board-dm355-evm.c         |   52 ------
+ arch/arm/mach-davinci/board-dm6467-evm.c        |   22 --
+ arch/arm/mach-davinci/board-evm.c               |   41 -----
+ arch/arm/mach-davinci/clock.c                   |   48 ++++++
+ arch/arm/mach-davinci/mux_cfg.c                 |  192 +++++++++++++++++++++---
+ arch/arm/mach-davinci/video_hdevm.c             |   56 -------
+ arch/arm/plat-davinci/clock.c                   |   20 +-
+ arch/arm/plat-davinci/mux.c                     |   89 ++++++++++-
+ drivers/char/tsif_control.c                     |   84 ++++++++--
+ drivers/char/tsif_data.c                        |   25 ++-
+ drivers/media/video/davinci/ccdc_dm355.c        |   22 +-
+ drivers/media/video/davinci/davinci_platform.c  |   38 ++--
+ drivers/media/video/davinci/davincihd_capture.c |    4 
+ drivers/media/video/davinci/davincihd_display.c |    4 
+ drivers/usb/musb/davinci.c                      |    7 
+ include/asm-arm/arch-davinci/clock.h            |    4 
+ include/asm-arm/arch-davinci/hardware.h         |    1 
+ include/asm-arm/arch-davinci/mux.h              |   27 +--
+ include/asm-arm/arch-davinci/video_hdevm.h      |    3 
+ mvl_patches/pro50-2144.c                        |   16 ++
+ 21 files changed, 472 insertions(+), 286 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Makefile
++++ linux-2.6.18/arch/arm/mach-davinci/Makefile
+@@ -4,7 +4,7 @@
+ #
+ 
+ # Common objects
+-obj-y := time.o irq.o clock.o io.o id.o mux_cfg.o dma.o devices.o
++obj-y := time.o irq.o clock.o io.o id.o dma.o devices.o
+ 
+ # Board specific
+ obj-$(CONFIG_MACH_DAVINCI_EVM)		+= board-evm.o
+@@ -12,6 +12,7 @@ obj-$(CONFIG_MACH_DAVINCI_DM355_EVM)	+= 
+ obj-$(CONFIG_MACH_DAVINCI_DM6467_EVM)	+= board-dm6467-evm.o video_hdevm.o
+ obj-$(CONFIG_SPI_DAVINCI)		+= davinci_spi_platform.o
+ obj-$(CONFIG_GENERIC_GPIO)		+= gpio.o
++obj-$(CONFIG_DAVINCI_MUX)		+= mux_cfg.o
+ 
+ # Vlynq specific
+ obj-$(CONFIG_DAVINCI_VLYNQ)		+= davinci_vlynq_init.o
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm355-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+@@ -498,57 +498,6 @@ static void board_init(void)
+ 	davinci_writel(0x7b3c0004, DAVINCI_VPSS_REGS_BASE + 0x814);
+ }
+ 
+-static void dm355_setup_pinmux(unsigned ctlr, unsigned id)
+-{
+-	if (ctlr)
+-		return;
+-
+-	switch (id) {
+-	case DAVINCI_LPSC_ATA:
+-		/* DAVINCI_LPSC_PWM3 */
+-		davinci_cfg_reg(DM355_PWM3_G69);
+-		davinci_cfg_reg(DM355_PWM3_G70);
+-		davinci_cfg_reg(DM355_PWM3_G74);
+-		davinci_cfg_reg(DM355_PWM3_G75);
+-		break;
+-	case DAVINCI_LPSC_MMC_SD0:
+-		davinci_cfg_reg(DM355_MMCSD0);
+-		break;
+-	case DAVINCI_LPSC_MMC_SD1:
+-		davinci_cfg_reg(DM355_SD1_CLK);
+-		davinci_cfg_reg(DM355_SD1_CMD);
+-		davinci_cfg_reg(DM355_SD1_DATA3);
+-		davinci_cfg_reg(DM355_SD1_DATA2);
+-		davinci_cfg_reg(DM355_SD1_DATA1);
+-		davinci_cfg_reg(DM355_SD1_DATA0);
+-		break;
+-	case DAVINCI_LPSC_I2C:
+-		davinci_cfg_reg(DM355_I2C_SDA);
+-		davinci_cfg_reg(DM355_I2C_SCL);
+-		break;
+-	case DAVINCI_LPSC_McBSP0:
+-		davinci_cfg_reg(DM355_MCBSP0_BDX);
+-		davinci_cfg_reg(DM355_MCBSP0_X);
+-		davinci_cfg_reg(DM355_MCBSP0_BFSX);
+-		davinci_cfg_reg(DM355_MCBSP0_BDR);
+-		davinci_cfg_reg(DM355_MCBSP0_R);
+-		davinci_cfg_reg(DM355_MCBSP0_BFSR);
+-		break;
+-	case DAVINCI_LPSC_PWM0:
+-		davinci_cfg_reg(DM355_PWM0);
+-		break;
+-	case DAVINCI_LPSC_PWM1:
+-		davinci_cfg_reg(DM355_PWM1);
+-		break;
+-	case DAVINCI_LPSC_PWM2:
+-		davinci_cfg_reg(DM355_PWM2_G76);
+-		davinci_cfg_reg(DM355_PWM2_G77);
+-		davinci_cfg_reg(DM355_PWM2_G78);
+-		davinci_cfg_reg(DM355_PWM2_G79);
+-		break;
+-	}
+-}
+-
+ #define UART_DAVINCI_PWREMU 0x0c
+ 
+ static inline unsigned int davinci_serial_in(struct plat_serial8250_port *up,
+@@ -582,7 +531,6 @@ void __init davinci_serial_reset(struct 
+ 
+ static void __init davinci_map_io(void)
+ {
+-	davinci_pinmux_setup = dm355_setup_pinmux;
+ 	davinci_irq_priorities = dm355_default_priorities;
+ 	davinci_map_common_io();
+ 	davinci_init_common_hw();
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm6467-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+@@ -301,26 +301,7 @@ static void board_init(void)
+ */
+ }
+ 
+-static void dm646x_setup_pinmux(unsigned ctlr, unsigned id)
+-{
+-	unsigned int val;
+-
+-	if (ctlr)
+-		return;
+-
+-	switch (id) {
+-	case DAVINCI_LPSC_ATA:
+-		davinci_cfg_reg(DM646X_ATAEN);
+-		break;
+-	case DAVINCI_LPSC_USB:
+-		davinci_cfg_reg(DM646X_VBUSDIS);
+-		val = davinci_readl(DAVINCI_VDD3P3V_PWDN);
+-		davinci_writel(val & 0xEFFFFFFF, DAVINCI_VDD3P3V_PWDN);
+-		break;
+-	}
+-}
+-
+-#define UART_DM6467_SCR               __REG(DAVINCI_UART0_BASE + 0x40)
++#define UART_DM6467_SCR		__REG(DAVINCI_UART0_BASE + 0x40)
+ /*
+  * Internal UARTs need to be initialized for the 8250 autoconfig to work
+  * properly. Note that the TX watermark initialization may not be needed
+@@ -339,7 +320,6 @@ void __init davinci_map_common_io(void);
+ 
+ static void __init davinci_map_io(void)
+ {
+-	davinci_pinmux_setup = dm646x_setup_pinmux;
+ 	davinci_def_priorities = dm646x_default_priorities;
+ 	davinci_map_common_io();
+ 
+Index: linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+@@ -320,50 +320,9 @@ static struct platform_device *davinci_e
+ #endif
+ };
+ 
+-static void dm644x_setup_pinmux(unsigned ctlr, unsigned id)
+-{
+-	if (ctlr)
+-		return;
+-
+-	switch (id) {
+-	case DAVINCI_LPSC_ATA:
+-		davinci_cfg_reg(DM644X_HDIREN);
+-		davinci_cfg_reg(DM644X_ATAEN);
+-		break;
+-	case DAVINCI_LPSC_MMC_SD:
+-		/* VDD power manupulations are done in U-Boot for CPMAC
+-		 * so applies to MMC as well
+-		 */
+-		/*Set up the pull regiter for MMC */
+-		davinci_writel(0, DAVINCI_VDD3P3V_PWDN);
+-		davinci_cfg_reg(DM644X_MSTK);
+-		break;
+-	case DAVINCI_LPSC_I2C:
+-		davinci_cfg_reg(DM644X_I2C);
+-		break;
+-	case DAVINCI_LPSC_McBSP:
+-		davinci_cfg_reg(DM644X_MCBSP);
+-		break;
+-	case DAVINCI_LPSC_PWM0:
+-		davinci_cfg_reg(DM644X_PWM0);
+-		break;
+-	case DAVINCI_LPSC_PWM1:
+-		davinci_cfg_reg(DM644X_PWM1);
+-		break;
+-	case DAVINCI_LPSC_PWM2:
+-		davinci_cfg_reg(DM644X_PWM2);
+-		break;
+-	case DAVINCI_LPSC_VLYNQ:
+-		davinci_cfg_reg(DM644X_VLINQEN);
+-		davinci_cfg_reg(DM644X_VLINQWD);
+-		break;
+-	}
+-}
+-
+ static void __init
+ davinci_evm_map_io(void)
+ {
+-	davinci_pinmux_setup = dm644x_setup_pinmux;
+ 	davinci_map_common_io();
+ #ifdef CONFIG_KGDB_8250
+ 	kgdb8250_add_platform_port(CONFIG_KGDB_PORT_NUM,
+Index: linux-2.6.18/arch/arm/mach-davinci/clock.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/clock.c
++++ linux-2.6.18/arch/arm/mach-davinci/clock.c
+@@ -296,6 +296,50 @@ static struct clk davinci_dm355_clks[] =
+ 	},
+ };
+ 
++static void dm644x_module_setup(unsigned ctlr, unsigned id, int enable)
++{
++	if (ctlr == 0 && id == DAVINCI_LPSC_MMC_SD) {
++		/*
++		 * VDD power manipulations are done in U-Boot for CPMAC,
++		 * so apply to MMC as well -- set up the pull register.
++		 */
++		davinci_writel(0, DAVINCI_VDD3P3V_PWDN);
++	}
++}
++
++static void dm646x_module_setup(unsigned ctlr, unsigned id, int enable)
++{
++	u32 val;
++
++	if (ctlr)
++		return;
++
++	switch (id) {
++	case DAVINCI_LPSC_USB:
++		val = davinci_readl(DAVINCI_VDD3P3V_PWDN);
++		if (enable)
++			val &= ~0x10000000;
++		else
++			val |=	0x10000000;
++		davinci_writel(val, DAVINCI_VDD3P3V_PWDN);
++		break;
++	case DAVINCI_DM646X_LPSC_HDVICP0:
++	case DAVINCI_DM646X_LPSC_HDVICP1:
++		if (enable) {
++			val = davinci_readl(DAVINCI_VSCLKDIS);
++			davinci_writel(val & ~0x00000F00, DAVINCI_VSCLKDIS);
++		}
++
++		val = davinci_readl(DAVINCI_VDD3P3V_PWDN);
++		if (enable)
++			val &= ~0x0000000F;
++		else
++			val |=	0x0000000F;
++		davinci_writel(val, DAVINCI_VDD3P3V_PWDN);
++		break;
++	}
++}
++
+ static unsigned long davinci_psc_base[] = { DAVINCI_PWR_SLEEP_CNTRL_BASE };
+ 
+ int __init davinci_clk_init(void)
+@@ -339,6 +383,8 @@ int __init davinci_clk_init(void)
+ 
+ 		clk_list = davinci_dm6467_clks;
+ 		num_clks = ARRAY_SIZE(davinci_dm6467_clks);
++
++		davinci_module_setup = dm646x_module_setup;
+ 	} else {
+ 
+ 		fixedrate = 27000000;
+@@ -347,6 +393,8 @@ int __init davinci_clk_init(void)
+ 
+ 		clk_list = davinci_dm644x_clks;
+ 		num_clks = ARRAY_SIZE(davinci_dm644x_clks);
++
++		davinci_module_setup = dm644x_module_setup;
+ 	}
+ 
+ 	return davinci_enable_clks(clk_list, num_clks);
+Index: linux-2.6.18/arch/arm/mach-davinci/mux_cfg.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/mux_cfg.c
++++ linux-2.6.18/arch/arm/mach-davinci/mux_cfg.c
+@@ -1,16 +1,16 @@
+ /*
+  * DAVINCI pin multiplexing configurations
+  *
+- * Author: Vladimir Barinov, MontaVista Software, Inc. <source@mvista.com>
++ * Author: Vladimir Barinov, MontaVista Software, Inc.
++ * Copyright (C) 2007-2008 MontaVista Software, Inc. <source@mvista.com>
+  *
+  * Based on linux/arch/arm/mach-omap1/mux.c:
+  * Copyright (C) 2003 - 2005 Nokia Corporation
+  * Written by Tony Lindgren <tony.lindgren@nokia.com>
+  *
+- * 2007 (c) MontaVista Software, Inc. This file is licensed under
+- * the terms of the GNU General Public License version 2. This program
+- * is licensed "as is" without any warranty of any kind, whether express
+- * or implied.
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
+  */
+ 
+ #include <linux/module.h>
+@@ -18,12 +18,17 @@
+ 
+ #include <asm/hardware.h>
+ 
++#include <asm/arch/clock.h>
+ #include <asm/arch/cpu.h>
+ #include <asm/arch/mux.h>
+ 
+-#ifdef CONFIG_DAVINCI_MUX
++/*
++ * DM644x and DM6467 have 2 PinMux registers, DM355 has 5 PinMux registers.
++ * Allocate the maximum.
++ */
++static unsigned long pinmux_in_use[5];
+ 
+-struct pin_config __initdata_or_module davinci_dm644x_pins[] = {
++const struct pin_config __initdata_or_module davinci_dm644x_pinmux[] = {
+ /*
+  *	 description		mux  mode   mode  mux	 dbg
+  *				reg  offset mask  mode
+@@ -61,7 +66,7 @@ MUX_CFG("LOEEN",		 0,   24,    1,	  1,	 
+ MUX_CFG("LFLDEN",		 0,   25,    1,	  1,	 0)
+ };
+ 
+-struct pin_config __initdata_or_module davinci_dm646x_pins[] = {
++const struct pin_config __initdata_or_module davinci_dm646x_pinmux[] = {
+ /*
+  *	 description		mux  mode   mode  mux	 dbg
+  *				reg  offset mask  mode
+@@ -100,7 +105,8 @@ MUX_CFG("PTSOMUX_SERIAL",	 0,   18,    3
+ 
+ MUX_CFG("PTSIMUX_SERIAL",	 0,   16,    3,	  3,	 0)
+ };
+-struct pin_config __initdata_or_module davinci_dm355_pins[] = {
++
++const struct pin_config __initdata_or_module davinci_dm355_pinmux[] = {
+ /*
+  *	 description		mux  mode   mode  mux	 dbg
+  *				reg  offset mask  mode
+@@ -171,18 +177,164 @@ MUX_CFG("VIN_CINL_EN",		 0,   0,     0xf
+ MUX_CFG("VIN_CINH_EN",		 0,   8,     3,	  3,	 0)
+ };
+ 
++static const short dm644x_ata_pins[] = {
++	DM644X_HDIREN, DM644X_ATAEN,
++	-1
++};
+ 
+-void __init davinci_mux_init(void)
++static const short dm644x_mmcsd_pins[] = {
++	DM644X_MSTK,
++	-1
++};
++
++static const short dm644x_i2c_pins[] = {
++	DM644X_I2C,
++	-1
++};
++
++static const short dm644x_mcbsp_pins[] = {
++	DM644X_MCBSP,
++	-1
++};
++
++static const short dm644x_pwm0_pins[] = {
++	DM644X_PWM0,
++	-1
++};
++
++static const short dm644x_pwm1_pins[] = {
++	DM644X_PWM1,
++	-1
++};
++
++static const short dm644x_pwm2_pins[] = {
++	DM644X_PWM2,
++	-1
++};
++
++static const short dm644x_vlynq_pins[] = {
++	DM644X_VLINQEN, DM644X_VLINQWD,
++	-1
++};
++
++static const short *dm644x_pins[DAVINCI_LPSC_IMCOP + 1] = {
++	[DAVINCI_LPSC_ATA]	= dm644x_ata_pins,
++	[DAVINCI_LPSC_MMC_SD]	= dm644x_mmcsd_pins,
++	[DAVINCI_LPSC_I2C]	= dm644x_i2c_pins,
++	[DAVINCI_LPSC_McBSP]	= dm644x_mcbsp_pins,
++	[DAVINCI_LPSC_PWM0]	= dm644x_pwm0_pins,
++	[DAVINCI_LPSC_PWM1]	= dm644x_pwm1_pins,
++	[DAVINCI_LPSC_PWM2]	= dm644x_pwm2_pins,
++	[DAVINCI_LPSC_VLYNQ]	= dm644x_vlynq_pins,
++};
++
++static const short dm355_pwm3_pins[] = {
++	DM355_PWM3_G69, DM355_PWM3_G70, DM355_PWM3_G74, DM355_PWM3_G75,
++	-1
++
++};
++static const short dm355_mmcsd0_pins[] = {
++	DM355_MMCSD0,
++	-1
++};
++
++static const short dm355_mmcsd1_pins[] = {
++	DM355_SD1_CLK, DM355_SD1_CMD, DM355_SD1_DATA3, DM355_SD1_DATA2,
++	DM355_SD1_DATA1, DM355_SD1_DATA0,
++	-1
++};
++
++static const short dm355_i2c_pins[] = {
++	DM355_I2C_SDA, DM355_I2C_SCL,
++	-1
++};
++
++static const short dm355_mcbsp0_pins[] = {
++	DM355_MCBSP0_BDX, DM355_MCBSP0_X, DM355_MCBSP0_BFSX, DM355_MCBSP0_BDR,
++	DM355_MCBSP0_R, DM355_MCBSP0_BFSR,
++	-1
++};
++
++static const short dm355_pwm0_pins[] = {
++	DM355_PWM0,
++	-1
++};
++
++static const short dm355_pwm1_pins[] = {
++	DM355_PWM1,
++	-1
++};
++
++static const short dm355_pwm2_pins[] = {
++	DM355_PWM2_G76, DM355_PWM2_G77, DM355_PWM2_G78, DM355_PWM2_G79,
++	-1
++};
++
++static const short *dm355_pins[DAVINCI_LPSC_IMCOP + 1] = {
++	[DAVINCI_LPSC_PWM3]	= dm355_pwm3_pins,
++	[DAVINCI_LPSC_MMC_SD0]	= dm355_mmcsd0_pins,
++	[DAVINCI_LPSC_MMC_SD1]	= dm355_mmcsd1_pins,
++	[DAVINCI_LPSC_I2C]	= dm355_i2c_pins,
++	[DAVINCI_LPSC_McBSP0]	= dm355_mcbsp0_pins,
++	[DAVINCI_LPSC_PWM0]	= dm355_pwm0_pins,
++	[DAVINCI_LPSC_PWM1]	= dm355_pwm1_pins,
++	[DAVINCI_LPSC_PWM2]	= dm355_pwm2_pins,
++};
++
++static const short dm466x_ata_pins[] = {
++	DM646X_ATAEN,
++	-1
++};
++
++static const short dm466x_usb_pins[] = {
++	DM646X_VBUSDIS,
++	-1
++};
++
++static const short dm466x_video_pins[] = {
++	DM646X_STSOMUX_DISABLE, DM646X_STSIMUX_DISABLE,
++	DM646X_PTSOMUX_DISABLE, DM646X_PTSIMUX_DISABLE,
++	-1
++};
++
++static const short *dm646x_pins[DAVINCI_DM646X_LPSC_ARM_INTC + 1] = {
++	[DAVINCI_LPSC_ATA]		= dm466x_ata_pins,
++	[DAVINCI_LPSC_USB]		= dm466x_usb_pins,
++	[DAVINCI_DM646X_LPSC_HDVICP0]	= dm466x_video_pins,
++	[DAVINCI_DM646X_LPSC_HDVICP1]	= dm466x_video_pins,
++};
++
++static const short **davinci_pins;
++static int davinci_num_pins;
++
++static const short *davinci_get_pins(unsigned ctlr, unsigned id)
+ {
+-	if (cpu_is_davinci_dm355())
+-		davinci_mux_register(davinci_dm355_pins,
+-					ARRAY_SIZE(davinci_dm355_pins));
+-	else if (cpu_is_davinci_dm6467())
+-		davinci_mux_register(davinci_dm646x_pins,
+-					ARRAY_SIZE(davinci_dm646x_pins));
+-	else
+-		davinci_mux_register(davinci_dm644x_pins,
+-					ARRAY_SIZE(davinci_dm644x_pins));
++	if (ctlr == 0 && id <= davinci_num_pins)
++		return davinci_pins[id];
++
++	return NULL;
+ }
+ 
+-#endif
++void __init davinci_mux_init(void)
++{
++	const struct pin_config *table;
++	unsigned size;
++
++	if (cpu_is_davinci_dm355()) {
++		davinci_pins = dm355_pins;
++		davinci_num_pins = ARRAY_SIZE(dm355_pins);
++		table = davinci_dm355_pinmux;
++		size  = ARRAY_SIZE(davinci_dm355_pinmux);
++	} else if (cpu_is_davinci_dm6467()) {
++		davinci_pins = dm646x_pins;
++		davinci_num_pins = ARRAY_SIZE(dm646x_pins);
++		table = davinci_dm646x_pinmux;
++		size  = ARRAY_SIZE(davinci_dm646x_pinmux);
++	} else {
++		davinci_pins = dm644x_pins;
++		davinci_num_pins = ARRAY_SIZE(dm644x_pins);
++		table = davinci_dm644x_pinmux;
++		size  = ARRAY_SIZE(davinci_dm644x_pinmux);
++	}
++	davinci_mux_register(table, size, davinci_get_pins, pinmux_in_use);
++}
+Index: linux-2.6.18/arch/arm/mach-davinci/video_hdevm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/video_hdevm.c
++++ linux-2.6.18/arch/arm/mach-davinci/video_hdevm.c
+@@ -186,68 +186,12 @@ int set_vid_out_mode_for_hd() {
+ 	return err;
+ }
+ 
+-/*
+-Capture :: bits PTSIMUX = 0x, PTSOMUX = 0x, STSIMUX = 00
+-Display :: bits STSOMUX = 0x, PTSOMUX = 0x, STSIMUX = 00
+-
+-bits
+-17:16 PTSIMUX
+-19:18 PTSOMUX
+-21:20 STSIMUX
+-23:22 STSOMUX
+-
+-*/
+-void set_vpif_capture_pinmux()
+-{
+-	davinci_cfg_reg(DM646X_STSIMUX_DISABLE);
+-	davinci_cfg_reg(DM646X_PTSOMUX_DISABLE);
+-	davinci_cfg_reg(DM646X_PTSIMUX_DISABLE);
+-}
+-
+-void set_vpif_display_pinmux()
+-{
+-	davinci_cfg_reg(DM646X_STSOMUX_DISABLE);
+-	davinci_cfg_reg(DM646X_STSIMUX_DISABLE);
+-	davinci_cfg_reg(DM646X_PTSOMUX_DISABLE);
+-}
+-
+-void set_vpif_pinmux()
+-{
+-
+-	unsigned int pinmux0
+-		= (unsigned int)IO_ADDRESS(0x01C40000);
+-	unsigned int sys_vsclkdis =
+-		(unsigned int)IO_ADDRESS(0x01C4006C);
+-	unsigned int sys_vdd3p3vpwdn =
+-		(unsigned int)IO_ADDRESS(0x01C40048);
+-	unsigned int value;
+-
+-	/* make 17th bit(PTSIMUX), 19th bit(PTSOMUX), 21:20 bits(STSIMUX), 23rd
+-	 * bit(STSOMUX) to zero */
+-	value = inl(pinmux0);
+-	value &= ~(unsigned int)(0x00FF0000);
+-	outl(value, pinmux0);
+-
+-	value = inl(sys_vsclkdis);
+-	value &= ~(unsigned int)(0x00000F00);
+-	outl(value, sys_vsclkdis);
+-
+-	value = inl(sys_vdd3p3vpwdn);
+-	value &= ~(unsigned int)(0x0000000F);
+-	outl(value, sys_vdd3p3vpwdn);
+-
+-	return;
+-}
+-
+ EXPORT_SYMBOL(set_cpld_for_tvp5147);
+ EXPORT_SYMBOL(set_cpld_for_tvp7002);
+ EXPORT_SYMBOL(set_vid_in_mode_for_tvp5147);
+ EXPORT_SYMBOL(set_vid_in_mode_for_tvp7002);
+ EXPORT_SYMBOL(set_vid_out_mode_for_sd);
+ EXPORT_SYMBOL(set_vid_out_mode_for_hd);
+-EXPORT_SYMBOL(set_vpif_pinmux);
+-EXPORT_SYMBOL(set_vpif_capture_pinmux);
+-EXPORT_SYMBOL(set_vpif_display_pinmux);
+ EXPORT_SYMBOL(set_vid_clock);
+ MODULE_LICENSE("GPL");
+ /* Function for module initialization and cleanup */
+Index: linux-2.6.18/arch/arm/plat-davinci/clock.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/clock.c
++++ linux-2.6.18/arch/arm/plat-davinci/clock.c
+@@ -25,7 +25,7 @@ static LIST_HEAD(clocks);
+ static DEFINE_MUTEX(clocks_mutex);
+ static DEFINE_SPINLOCK(clockfw_lock);
+ 
+-void (*davinci_pinmux_setup)(unsigned ctlr, unsigned id);
++void (*davinci_module_setup)(unsigned ctlr, unsigned id, int enable);
+ 
+ static unsigned long *psc_bases;
+ static unsigned psc_num;
+@@ -37,14 +37,15 @@ void __init davinci_psc_register(unsigne
+ }
+ 
+ /* Enable or disable a PSC domain */
+-void davinci_psc_config(unsigned domain, unsigned ctlr, unsigned id, int enable)
++int davinci_psc_config(unsigned domain, unsigned ctlr, unsigned id, int enable)
+ {
+ 	u32 epcpr, ptcmd, ptstat, pdstat, pdctl1, mdstat, mdctl;
+ 	u32 state = enable ? 0x00000003 : 0x00000002;
+ 	unsigned long psc_base;
++	int error;
+ 
+ 	if (ctlr >= psc_num)
+-		return;
++		return -EINVAL;
+ 
+ 	psc_base = psc_bases[ctlr];
+ 
+@@ -86,8 +87,13 @@ void davinci_psc_config(unsigned domain,
+ 		mdstat = davinci_readl(psc_base + MDSTAT(id));
+ 	} while ((mdstat & 0x0000001F) != state);
+ 
+-	if (enable && davinci_pinmux_setup)
+-		davinci_pinmux_setup(ctlr, id);
++	error = davinci_pinmux_setup(ctlr, id,
++				     enable ? PINMUX_RESV : PINMUX_FREE);
++
++	if (!error && davinci_module_setup != NULL)
++		davinci_module_setup(ctlr, id, enable);
++
++	return error;
+ }
+ 
+ /*
+@@ -138,8 +144,8 @@ static int __clk_enable(struct clk *clk)
+ 	if (clk->flags & ALWAYS_ENABLED)
+ 		return 0;
+ 
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, clk->ctlr, clk->lpsc, 1);
+-	return 0;
++	return davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++				  clk->ctlr, clk->lpsc,	1);
+ }
+ 
+ static void __clk_disable(struct clk *clk)
+Index: linux-2.6.18/arch/arm/plat-davinci/mux.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/mux.c
++++ linux-2.6.18/arch/arm/plat-davinci/mux.c
+@@ -21,24 +21,44 @@
+ #include <asm/arch/mux.h>
+ #include <asm/arch/hardware.h>
+ 
+-static struct pin_config *pin_table;
++static unsigned long *pinmux_in_use;
++static const struct pin_config *pin_table;
+ static unsigned pin_table_sz;
++const short *(*get_pin_list)(unsigned ctlr, unsigned id);
+ 
+-void __init davinci_mux_register(struct pin_config *pins, unsigned size)
++void __init davinci_mux_register(const struct pin_config *pins, unsigned size,
++				 const short *(*get_pins)(unsigned, unsigned),
++				 unsigned long *in_use)
+ {
+ 	pin_table = pins;
+ 	pin_table_sz = size;
++	get_pin_list = get_pins;
++	pinmux_in_use = in_use;
++}
++
++static int __init_or_module davinci_find_conflict(unsigned long mux_reg,
++						  unsigned long mode)
++{
++	int i;
++
++	for (i = 0; i < pin_table_sz; i++) {
++		if (pin_table[i].mux_reg == mux_reg &&
++		    pin_table[i].mode << pin_table[i].mask_offset == mode)
++			return i;
++	}
++	return -1;
+ }
+ 
+ /*
+  * Sets the DAVINCI MUX register based on the table
+  */
+-int __init_or_module davinci_cfg_reg(unsigned index)
++int __init_or_module davinci_cfg_reg(unsigned index, int action)
+ {
+ 	static DEFINE_SPINLOCK(mux_spin_lock);
+-	struct pin_config *cfg;
++	const struct pin_config *cfg;
+ 	unsigned long flags, reg_orig = 0, reg = 0;
+-	int warn = 0;
++	const char *conflict_name = "???";
++	int conflict, warn = 0;
+ 
+ 	if (pin_table == NULL)
+ 		BUG();
+@@ -63,6 +83,39 @@ int __init_or_module davinci_cfg_reg(uns
+ 		if ((reg_orig & mask) != mode)
+ 			warn = 1;
+ 
++		/* Check if the pin is reserved */
++		if (pinmux_in_use[cfg->reg_index] & mask) {
++			conflict = davinci_find_conflict(cfg->mux_reg,
++							 reg_orig & mask);
++			if (conflict >= 0)
++				conflict_name = pin_table[conflict].name;
++			if (action == PINMUX_FREE) {
++				if (warn) {
++					printk(KERN_ERR "%s unreserve failed. "
++						"Pin used by %s\n",
++						cfg->name, conflict_name);
++					spin_unlock_irqrestore(&mux_spin_lock,
++							       flags);
++					return -EBUSY;
++				}
++				pinmux_in_use[cfg->reg_index] &= ~mask;
++				spin_unlock_irqrestore(&mux_spin_lock, flags);
++				return 0;
++			}
++
++			if (warn) {
++				printk(KERN_ERR "Pin %s already used for %s.\n",
++					cfg->name, conflict_name);
++				spin_unlock_irqrestore(&mux_spin_lock, flags);
++				return -EBUSY;
++			}
++		} else	{
++			if (action == PINMUX_FREE) {
++				spin_unlock_irqrestore(&mux_spin_lock, flags);
++				return 0;
++			}
++			pinmux_in_use[cfg->reg_index] |= mask;
++		}
+ 		davinci_cfg_writel(reg, cfg->mux_reg);
+ 		spin_unlock_irqrestore(&mux_spin_lock, flags);
+ 	}
+@@ -74,11 +127,33 @@ int __init_or_module davinci_cfg_reg(uns
+ 
+ #ifdef CONFIG_DAVINCI_MUX_DEBUG
+ 	if (cfg->debug || warn) {
+-		printk(KERN_INFO "MUX: setting register %s (%#08x) for %s: "
+-		       "%#08x -> %#08x\n", cfg->mux_reg_name, cfg->mux_reg,
++		printk(KERN_INFO "MUX: setting register PINMUX%u (%#08x) "
++		       "for %s: %#08x -> %#08x\n", cfg->reg_index, cfg->mux_reg,
+ 		       cfg->name, reg_orig, reg);
+ 	}
+ #endif
+ 	return 0;
+ }
+ EXPORT_SYMBOL(davinci_cfg_reg);
++
++int davinci_pinmux_setup(unsigned ctlr, unsigned id, int action)
++{
++	const short *pins = NULL;
++	int i, error = 0;
++
++	if (get_pin_list != NULL)
++		pins = get_pin_list(ctlr, id);
++
++	if (pins != NULL) {
++		for (i = 0; pins[i] >= 0; i++) {
++			error = davinci_cfg_reg(pins[i], action);
++			if (error)
++				break;
++		}
++		/* Free the previously reserved pins if an error occured */
++		if (error)
++			for (i--; i >= 0; i--)
++				davinci_cfg_reg(pins[i], PINMUX_FREE);
++	}
++	return error;
++}
+Index: linux-2.6.18/drivers/char/tsif_control.c
+===================================================================
+--- linux-2.6.18.orig/drivers/char/tsif_control.c
++++ linux-2.6.18/drivers/char/tsif_control.c
+@@ -54,6 +54,7 @@ struct tsif_control_dev {
+ static u8 tsif_tx_enable;	/* Transmit Enable Flag */
+ static u8 tsif_tx_ats_init;	/* tx_ats_init Flag */
+ static u8 tsif_rx_enable;	/* Receive Enable Flag */
++static u8 tsif_if_parallel;	/* Is currently using the parallel interface */
+ static u32 tsif_int_status;	/* Interrupt Status */
+ static unsigned int tsif_control_major;
+ static DEFINE_SPINLOCK(tsif_control_dev_array_lock);
+@@ -353,6 +354,7 @@ int tsif_control_mmap(struct file *filp,
+ 
+ int tsif_set_tx_config(struct inode *inode, unsigned long arg)
+ {
++	u8 new_if;
+ 	struct tsif_control_dev *tsif_dev;
+ 	unsigned int index, minor = iminor(inode);
+ 	u32 tx_ctrl, tsif_ctrl0, inten;
+@@ -392,8 +394,8 @@ int tsif_set_tx_config(struct inode *ino
+ 				set_tsif_clk(TSIF_81_0_MHZ_SERIAL);
+ 			else
+ 				return -EINVAL;
+-			davinci_cfg_reg(DM646X_PTSOMUX_SERIAL);
+-			davinci_cfg_reg(DM646X_PTSIMUX_SERIAL);
++
++			new_if = 0;
+ 			tx_ctrl |= TSIF_CTRL0_TX_IF_MODE_SER_SYN;
+ 			break;
+ 		case TSIF_IF_SERIAL_ASYNC:
+@@ -410,8 +412,8 @@ int tsif_set_tx_config(struct inode *ino
+ 				set_tsif_clk(TSIF_81_0_MHZ_SERIAL);
+ 			else
+ 				return -EINVAL;
+-			davinci_cfg_reg(DM646X_PTSOMUX_SERIAL);
+-			davinci_cfg_reg(DM646X_PTSIMUX_SERIAL);
++
++			new_if = 0;
+ 			tx_ctrl |= TSIF_CTRL0_TX_IF_MODE_SER_ASYN;
+ 			break;
+ 		case TSIF_IF_PARALLEL_SYNC:
+@@ -422,8 +424,8 @@ int tsif_set_tx_config(struct inode *ino
+ 				set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
+ 			else
+ 				return -EINVAL;
+-			davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL);
+-			davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL);
++
++			new_if = 1;
+ 			tx_ctrl |= TSIF_CTRL0_TX_IF_MODE_PAR_SYN;
+ 			break;
+ 		case TSIF_IF_PARALLEL_ASYNC:
+@@ -434,8 +436,8 @@ int tsif_set_tx_config(struct inode *ino
+ 				set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
+ 			else
+ 				return -EINVAL;
+-			davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL);
+-			davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL);
++
++			new_if = 1;
+ 			tx_ctrl |= TSIF_CTRL0_TX_IF_MODE_PAR_ASYN;
+ 			break;
+ 		case TSIF_IF_DMA:
+@@ -499,6 +501,28 @@ int tsif_set_tx_config(struct inode *ino
+ 		default:
+ 			return -EINVAL;
+ 		}
++		if (tsif_if_parallel != new_if) {
++			if (tsif_if_parallel) {
++				davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL,
++						PINMUX_FREE);
++				davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL,
++						PINMUX_FREE);
++				davinci_cfg_reg(DM646X_PTSOMUX_SERIAL,
++						PINMUX_RESV);
++				davinci_cfg_reg(DM646X_PTSIMUX_SERIAL,
++						PINMUX_RESV);
++			} else {
++				davinci_cfg_reg(DM646X_PTSOMUX_SERIAL,
++						PINMUX_FREE);
++				davinci_cfg_reg(DM646X_PTSIMUX_SERIAL,
++						PINMUX_FREE);
++				davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL,
++						PINMUX_RESV);
++				davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL,
++						PINMUX_RESV);
++			}
++			tsif_if_parallel = new_if;
++		}
+ 		davinci_writel((u32) tx_cfg.interval_wait,
+ 			       tsif_dev->base + ASYNC_TX_WAIT);
+ 
+@@ -1312,9 +1336,9 @@ int set_tsif_clk(enum tsif_clk_speed clk
+ 	unsigned int sys_tsif_ctl = (unsigned int)IO_ADDRESS(0x01C40050);
+ 	unsigned int sys_vsclkdis = (unsigned int)IO_ADDRESS(0x01C4006C);
+ 
+-	davinci_cfg_reg(DM646X_CRGMUX);
+-	davinci_cfg_reg(DM646X_STSOMUX);
+-	davinci_cfg_reg(DM646X_STSIMUX);
++	davinci_cfg_reg(DM646X_CRGMUX, PINMUX_RESV);
++	davinci_cfg_reg(DM646X_STSOMUX, PINMUX_RESV);
++	davinci_cfg_reg(DM646X_STSIMUX, PINMUX_RESV);
+ 
+ 	{
+ 		int err = 0;
+@@ -1375,8 +1399,9 @@ static int __init tsif_control_init(void
+ 	unsigned int size = 0, mem_size, i, j;
+ 
+ 	set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
+-	davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL);
+-	davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL);
++	davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL, PINMUX_RESV);
++	davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL, PINMUX_RESV);
++	tsif_if_parallel = 1;
+ 
+ 	size = tsif_device_count * tsif_control_minor_count;
+ 	/* Register the driver in the kernel */
+@@ -1384,7 +1409,8 @@ static int __init tsif_control_init(void
+ 	if (result < 0) {
+ 		printk(KERN_ERR "TSIF: Module intialization failed.\
+ 			could not register character device\n");
+-		return -ENODEV;
++		result = -ENODEV;
++		goto init_fail;
+ 	}
+ 	tsif_control_major = MAJOR(devno);
+ 
+@@ -1410,7 +1436,7 @@ static int __init tsif_control_init(void
+ 		if (result) {
+ 			printk("TSIF:Error adding TSIF\n");
+ 			unregister_chrdev_region(devno, size);
+-			return result;
++			goto init_fail;
+ 		}
+ 		tsif_control_dev_array[i]->devno = i;
+ 	}
+@@ -1419,7 +1445,8 @@ static int __init tsif_control_init(void
+ 	if (!tsif_control_class) {
+ 		for (i = 0; i < tsif_device_count; i++)
+ 			cdev_del(&tsif_control_dev_array[i]->c_dev);
+-		return -EIO;
++		result = -EIO;
++		goto init_fail;
+ 	}
+ 
+ 	/* register driver as a platform driver */
+@@ -1429,7 +1456,8 @@ static int __init tsif_control_init(void
+ 			cdev_del(&tsif_control_dev_array[i]->c_dev);
+ 			kfree(tsif_control_dev_array[i]);
+ 		}
+-		return -EINVAL;
++		result = -EINVAL;
++		goto init_fail;
+ 	}
+ 
+ 	for (i = 0; i < tsif_device_count; i++) {
+@@ -1454,7 +1482,8 @@ static int __init tsif_control_init(void
+ 				cdev_del(&tsif_control_dev_array[i]->c_dev);
+ 				kfree(pldev);
+ 				kfree(tsif_control_dev_array[i]);
+-				return -EINVAL;
++				result = -EINVAL;
++				goto init_fail;
+ 			}
+ 
+ 			devno =
+@@ -1471,6 +1500,15 @@ static int __init tsif_control_init(void
+ 	}
+ 
+ 	return 0;
++
++init_fail:
++	davinci_cfg_reg(DM646X_CRGMUX, PINMUX_FREE);
++	davinci_cfg_reg(DM646X_STSOMUX, PINMUX_FREE);
++	davinci_cfg_reg(DM646X_STSIMUX, PINMUX_FREE);
++	davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL, PINMUX_FREE);
++	davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL, PINMUX_FREE);
++	return result;
++
+ }
+ 
+ static void __exit tsif_control_exit(void)
+@@ -1505,6 +1543,16 @@ static void __exit tsif_control_exit(voi
+ 		class_destroy(tsif_control_class);
+ 		driver_unregister(&tsif_driver);
+ 	}
++	davinci_cfg_reg(DM646X_CRGMUX, PINMUX_FREE);
++	davinci_cfg_reg(DM646X_STSOMUX, PINMUX_FREE);
++	davinci_cfg_reg(DM646X_STSIMUX, PINMUX_FREE);
++	if(tsif_if_parallel) {
++		davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL, PINMUX_FREE);
++		davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL, PINMUX_FREE);
++	} else {
++		davinci_cfg_reg(DM646X_PTSOMUX_SERIAL, PINMUX_FREE);
++		davinci_cfg_reg(DM646X_PTSIMUX_SERIAL, PINMUX_FREE);
++	}
+ }
+ 
+ module_init(tsif_control_init);
+Index: linux-2.6.18/drivers/char/tsif_data.c
+===================================================================
+--- linux-2.6.18.orig/drivers/char/tsif_data.c
++++ linux-2.6.18/drivers/char/tsif_data.c
+@@ -957,8 +957,8 @@ static int __init tsif_data_init(void)
+ 	unsigned int size = 0, mem_size, i, j;
+ 
+ 	set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
+-	davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL);
+-	davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL);
++	davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL, PINMUX_RESV);
++	davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL, PINMUX_RESV);
+ 
+ 	size = tsif_device_count * tsif_data_minor_count;
+ 	/* Register the driver in the kernel */
+@@ -966,7 +966,8 @@ static int __init tsif_data_init(void)
+ 	if (result < 0) {
+ 		printk(KERN_ERR "TSIF: Module intialization failed.\
+ 			could not register character device\n");
+-		return -ENODEV;
++		result = -ENODEV;
++		goto init_fail;
+ 	}
+ 	tsif_data_major = MAJOR(devno);
+ 
+@@ -990,7 +991,7 @@ static int __init tsif_data_init(void)
+ 		if (result) {
+ 			printk("TSIF:Error adding TSIF\n");
+ 			unregister_chrdev_region(devno, size);
+-			return result;
++			goto init_fail;
+ 		}
+ 		tsif_data_dev_array[i]->devno = i;
+ 	}
+@@ -999,7 +1000,8 @@ static int __init tsif_data_init(void)
+ 	if (!tsif_data_class) {
+ 		for (i = 0; i < tsif_device_count; i++)
+ 			cdev_del(&tsif_data_dev_array[i]->c_dev);
+-		return -EIO;
++		result = -EIO;
++		goto init_fail;
+ 	}
+ 
+ 	/* register driver as a platform driver */
+@@ -1009,7 +1011,8 @@ static int __init tsif_data_init(void)
+ 			cdev_del(&tsif_data_dev_array[i]->c_dev);
+ 			kfree(tsif_data_dev_array[i]);
+ 		}
+-		return -EINVAL;
++		result = -EINVAL;
++		goto init_fail;
+ 	}
+ 
+ 	for (i = 0; i < tsif_device_count; i++) {
+@@ -1034,7 +1037,8 @@ static int __init tsif_data_init(void)
+ 				cdev_del(&tsif_data_dev_array[i]->c_dev);
+ 				kfree(pldev);
+ 				kfree(tsif_data_dev_array[i]);
+-				return -EINVAL;
++				result = -EINVAL;
++				goto init_fail;
+ 			}
+ 
+ 			devno =
+@@ -1058,6 +1062,11 @@ static int __init tsif_data_init(void)
+ 	}
+ 
+ 	return 0;
++init_fail:
++	davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL, PINMUX_FREE);
++	davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL, PINMUX_FREE);
++
++	return result;
+ }
+ 
+ static void __exit tsif_data_exit(void)
+@@ -1095,6 +1104,8 @@ static void __exit tsif_data_exit(void)
+ 		class_destroy(tsif_data_class);
+ 		driver_unregister(&tsif_driver);
+ 	}
++	davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL, PINMUX_FREE);
++	davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL, PINMUX_FREE);
+ }
+ 
+ module_init(tsif_data_init);
+Index: linux-2.6.18/drivers/media/video/davinci/ccdc_dm355.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/ccdc_dm355.c
++++ linux-2.6.18/drivers/media/video/davinci/ccdc_dm355.c
+@@ -270,18 +270,24 @@ int ccdc_update_ycbcr_params(void *arg)
+ 
+ void ccdc_init(void)
+ {
+-	davinci_cfg_reg(DM355_VIN_PCLK);
+-	davinci_cfg_reg(DM355_VIN_CAM_WEN);
+-	davinci_cfg_reg(DM355_VIN_CAM_VD);
+-	davinci_cfg_reg(DM355_VIN_CAM_HD);
+-	davinci_cfg_reg(DM355_VIN_YIN_EN);
+-	davinci_cfg_reg(DM355_VIN_CINL_EN);
+-	davinci_cfg_reg(DM355_VIN_CINH_EN);
++	davinci_cfg_reg(DM355_VIN_PCLK, PINMUX_RESV);
++	davinci_cfg_reg(DM355_VIN_CAM_WEN, PINMUX_RESV);
++	davinci_cfg_reg(DM355_VIN_CAM_VD, PINMUX_RESV);
++	davinci_cfg_reg(DM355_VIN_CAM_HD, PINMUX_RESV);
++	davinci_cfg_reg(DM355_VIN_YIN_EN, PINMUX_RESV);
++	davinci_cfg_reg(DM355_VIN_CINL_EN, PINMUX_RESV);
++	davinci_cfg_reg(DM355_VIN_CINH_EN, PINMUX_RESV);
+ }
+ 
+ void ccdc_cleanup(void)
+ {
+-	/* Nothing for DM355 */
++	davinci_cfg_reg(DM355_VIN_PCLK, PINMUX_FREE);
++	davinci_cfg_reg(DM355_VIN_CAM_WEN, PINMUX_FREE);
++	davinci_cfg_reg(DM355_VIN_CAM_VD, PINMUX_FREE);
++	davinci_cfg_reg(DM355_VIN_CAM_HD, PINMUX_FREE);
++	davinci_cfg_reg(DM355_VIN_YIN_EN, PINMUX_FREE);
++	davinci_cfg_reg(DM355_VIN_CINL_EN, PINMUX_FREE);
++	davinci_cfg_reg(DM355_VIN_CINH_EN, PINMUX_FREE);
+ }
+ 
+ /*
+Index: linux-2.6.18/drivers/media/video/davinci/davinci_platform.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/davinci_platform.c
++++ linux-2.6.18/drivers/media/video/davinci/davinci_platform.c
+@@ -420,8 +420,8 @@ static void enableDigitalOutput(int bEna
+ 		   per boot)
+ 		 */
+ 		if (!cpu_is_davinci_dm355()) {
+-			davinci_cfg_reg(DM644X_LOEEN);
+-			davinci_cfg_reg(DM644X_LFLDEN);
++			davinci_cfg_reg(DM644X_LOEEN, PINMUX_RESV);
++			davinci_cfg_reg(DM644X_LFLDEN, PINMUX_RESV);
+ 		}
+ 
+ 		/* disable VCLK output pin enable */
+@@ -657,16 +657,16 @@ static void davinci_enc_set_prgb(struct 
+ 	if (cpu_is_davinci_dm355()) {
+ 		/* Enable the venc and dlcd clocks. */
+ 		dispc_reg_out(VENC_CLKCTL, 0x11);
+-		davinci_cfg_reg(DM355_VOUT_FIELD_G70);
+-		davinci_cfg_reg(DM355_VOUT_COUTL_EN);
+-		davinci_cfg_reg(DM355_VOUT_COUTH_EN);
++		davinci_cfg_reg(DM355_VOUT_FIELD_G70, PINMUX_RESV);
++		davinci_cfg_reg(DM355_VOUT_COUTL_EN, PINMUX_RESV);
++		davinci_cfg_reg(DM355_VOUT_COUTH_EN, PINMUX_RESV);
+ 	} else {
+ 		dispc_reg_out(VENC_CMPNT, 0x100);
+-		davinci_cfg_reg(DM644X_GPIO46_47);
+-		davinci_cfg_reg(DM644X_GPIO0);
+-		davinci_cfg_reg(DM644X_RGB666);
+-		davinci_cfg_reg(DM644X_LOEEN);
+-		davinci_cfg_reg(DM644X_GPIO3);
++		davinci_cfg_reg(DM644X_GPIO46_47, PINMUX_RESV);
++		davinci_cfg_reg(DM644X_GPIO0, PINMUX_RESV);
++		davinci_cfg_reg(DM644X_RGB666, PINMUX_RESV);
++		davinci_cfg_reg(DM644X_LOEEN, PINMUX_RESV);
++		davinci_cfg_reg(DM644X_GPIO3, PINMUX_RESV);
+ 	}
+ 
+ 	if (cpu_is_davinci_dm355()) {
+@@ -768,16 +768,16 @@ static void davinci_enc_set_720p(struct 
+ 			       (DM355_OSD_REG_BASE + OSD_BASEPX));
+ 		davinci_writel(mode_info->upper_margin,
+ 			       (DM355_OSD_REG_BASE + OSD_BASEPY));
+-		davinci_cfg_reg(DM355_VOUT_FIELD_G70);
+-		davinci_cfg_reg(DM355_VOUT_COUTL_EN);
+-		davinci_cfg_reg(DM355_VOUT_COUTH_EN);
++		davinci_cfg_reg(DM355_VOUT_FIELD_G70, PINMUX_RESV);
++		davinci_cfg_reg(DM355_VOUT_COUTL_EN, PINMUX_RESV);
++		davinci_cfg_reg(DM355_VOUT_COUTH_EN, PINMUX_RESV);
+ 	} else {
+ 		davinci_writel(mode_info->left_margin,
+ 			       (DM644X_OSD_REG_BASE + OSD_BASEPX));
+ 		davinci_writel(mode_info->upper_margin,
+ 			       (DM644X_OSD_REG_BASE + OSD_BASEPY));
+-		davinci_cfg_reg(DM644X_LOEEN);
+-		davinci_cfg_reg(DM644X_GPIO3);
++		davinci_cfg_reg(DM644X_LOEEN, PINMUX_RESV);
++		davinci_cfg_reg(DM644X_GPIO3, PINMUX_RESV);
+ 	}
+ 
+ 	/* Set VENC for non-standard timing */
+@@ -863,15 +863,15 @@ static void davinci_enc_set_1080i(struct
+ 			       (DM355_OSD_REG_BASE + OSD_BASEPX));
+ 		davinci_writel(mode_info->upper_margin,
+ 			       (DM355_OSD_REG_BASE + OSD_BASEPY));
+-		davinci_cfg_reg(DM355_VOUT_FIELD);
+-		davinci_cfg_reg(DM355_VOUT_COUTL_EN);
+-		davinci_cfg_reg(DM355_VOUT_COUTH_EN);
++		davinci_cfg_reg(DM355_VOUT_FIELD, PINMUX_RESV);
++		davinci_cfg_reg(DM355_VOUT_COUTL_EN, PINMUX_RESV);
++		davinci_cfg_reg(DM355_VOUT_COUTH_EN, PINMUX_RESV);
+ 	} else {
+ 		davinci_writel(mode_info->left_margin,
+ 			       (DM644X_OSD_REG_BASE + OSD_BASEPX));
+ 		davinci_writel(mode_info->upper_margin,
+ 			       (DM644X_OSD_REG_BASE + OSD_BASEPY));
+-		davinci_cfg_reg(DM644X_LFLDEN);
++		davinci_cfg_reg(DM644X_LFLDEN, PINMUX_RESV);
+ 	}
+ 
+ 	/* Set VENC for non-standard timing */
+Index: linux-2.6.18/drivers/media/video/davinci/davincihd_capture.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/davincihd_capture.c
++++ linux-2.6.18/drivers/media/video/davinci/davincihd_capture.c
+@@ -2862,10 +2862,6 @@ static __init int vpif_init(void)
+ 	}
+ 	free_irq_no_index = VPIF_CAPTURE_NUM_CHANNELS;
+ 
+-	/* Set the pinmux settings */
+-	set_vpif_pinmux();
+-	set_vpif_capture_pinmux();
+-
+ 	return 0;
+ 
+ vpif_init_free_irq:
+Index: linux-2.6.18/drivers/media/video/davinci/davincihd_display.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/davincihd_display.c
++++ linux-2.6.18/drivers/media/video/davinci/davincihd_display.c
+@@ -2454,10 +2454,6 @@ static __init int vpif_init(void)
+ 	}
+ 	free_irq_no_index = VPIF_DISPLAY_NUM_CHANNELS;
+ 
+-	/* Set pinmux settings */
+-	set_vpif_pinmux();
+-	set_vpif_display_pinmux();
+-
+ 	return 0;
+ vpif_init_free_irq:
+ 	for (j = 0; j < free_irq_no_index; j++) {
+Index: linux-2.6.18/drivers/usb/musb/davinci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/davinci.c
++++ linux-2.6.18/drivers/usb/musb/davinci.c
+@@ -424,12 +424,11 @@ int __init musb_platform_init(struct mus
+ 	{
+ 		u32 tmp;
+ 
+-		/* clear EMACEN to enble OTG GPIO 16 for VBus power control */
+ 		/* Set GPIO Direction */
+ 		tmp = davinci_readl(DVEVM_GPIO45_DIR & ~DVEVM_GPIO45_DIR_OUT);
+ 		davinci_writel(tmp, DVEVM_GPIO45_DIR);
+ 
+-		davinci_cfg_reg(DM644X_GPIO3V);
++		davinci_cfg_reg(DM644X_GPIO3V, PINMUX_RESV);
+ 	}
+ #endif
+ #endif
+@@ -482,9 +481,7 @@ int __init musb_platform_init(struct mus
+ int musb_platform_exit(struct musb *musb)
+ {
+ #if defined(CONFIG_MACH_DAVINCI_EVM) && defined(CONFIG_USB_MUSB_OTG)
+-	/* Set EMACEN to enable OTG GPIO 16 for Emac control */
+-	/* Set GPIO Direction */
+-	davinci_cfg_reg(DM644X_EMACEN);
++	davinci_cfg_reg(DM644X_GPIO3V, PINMUX_FREE);
+ #endif
+ 
+ 	if (is_host_enabled(musb))
+Index: linux-2.6.18/include/asm-arm/arch-davinci/clock.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/clock.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/clock.h
+@@ -40,8 +40,10 @@ extern int  clk_register(struct clk *clk
+ extern void clk_unregister(struct clk *clk);
+ extern int  davinci_clk_init(void);
+ extern void davinci_psc_register(unsigned long *bases, unsigned num);
+-extern void davinci_psc_config(unsigned domain, unsigned ctlr, unsigned id,
++extern int  davinci_psc_config(unsigned domain, unsigned ctlr, unsigned id,
+ 			       int enable);
+ extern int  davinci_enable_clks(struct clk *clk_list, int num_clks);
+ 
++extern void (*davinci_module_setup)(unsigned ctlr, unsigned id, int enable);
++
+ #endif
+Index: linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/hardware.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+@@ -101,6 +101,7 @@
+  * Macro to access device power control
+  */
+ #define DAVINCI_VDD3P3V_PWDN            (DAVINCI_SYSTEM_MODULE_BASE + 0x48)
++#define DAVINCI_VSCLKDIS                (DAVINCI_SYSTEM_MODULE_BASE + 0x6c)
+ 
+ /*
+  * System module registers
+Index: linux-2.6.18/include/asm-arm/arch-davinci/mux.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/mux.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/mux.h
+@@ -16,17 +16,15 @@
+ #ifndef __ASM_ARCH_MUX_H
+ #define __ASM_ARCH_MUX_H
+ 
+-#ifdef	CONFIG_DAVINCI_MUX_DEBUG
+-#define MUX_REG_NAME(reg)	"PINMUX"#reg
+-#else
+-#define MUX_REG_NAME(reg)	NULL
+-#endif
++#define PINMUX_UNUSED	0
++#define PINMUX_FREE	1
++#define PINMUX_RESV	2
+ 
+ #define MUX_CFG(desc, reg, offset, mode_mask, mux_mode, dbg)	\
+ 	{							\
+ 		.name		= desc, 			\
+-		.mux_reg_name	= MUX_REG_NAME(reg),		\
+ 		.mux_reg	= PINMUX##reg,			\
++		.reg_index	= reg,				\
+ 		.mask_offset	= offset,			\
+ 		.mask		= mode_mask,			\
+ 		.mode		= mux_mode,			\
+@@ -35,8 +33,8 @@
+ 
+ struct pin_config {
+ 	const char *name;
+-	const char *mux_reg_name;
+ 	unsigned long mux_reg;
++	unsigned char reg_index;
+ 	unsigned char mask_offset;
+ 	unsigned char mask;
+ 	unsigned char mode;
+@@ -207,14 +205,19 @@ enum davinci_dm355_index {
+ #ifdef	CONFIG_DAVINCI_MUX
+ /* setup pin muxing in Linux */
+ extern void davinci_mux_init(void);
+-extern void davinci_mux_register(struct pin_config *pins, unsigned size);
+-extern int  davinci_cfg_reg(unsigned index);
++extern void davinci_mux_register(const struct pin_config *pins, unsigned size,
++				 const short *(*get_pins)(unsigned, unsigned),
++				 unsigned long *in_use);
++extern int  davinci_cfg_reg(unsigned index, int action);
++extern int  davinci_pinmux_setup(unsigned ctlr, unsigned id, int action);
+ #else
+ /* boot loader does it all (no warnings from CONFIG_DAVINCI_MUX_WARNINGS) */
+ static inline void davinci_mux_init(void) { }
+-static inline int  davinci_cfg_reg(unsigned index) { return 0; }
++static inline int  davinci_cfg_reg(unsigned index, int action) { return 0; }
++static inline int  davinci_pinmux_setup(unsigned ctlr, unsigned id, int action)
++{
++	return 0;
++}
+ #endif
+ 
+-extern void (*davinci_pinmux_setup)(unsigned ctlr, unsigned id);
+-
+ #endif
+Index: linux-2.6.18/include/asm-arm/arch-davinci/video_hdevm.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/video_hdevm.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/video_hdevm.h
+@@ -31,8 +31,5 @@ int set_vid_in_mode_for_tvp7002(void);
+ int set_vid_out_mode_for_sd(void);
+ 
+ int set_vid_out_mode_for_hd(void);
+-void set_vpif_pinmux(void);
+-void set_vpif_capture_pinmux(void);
+-void set_vpif_display_pinmux(void);
+ int set_vid_clock(int);
+ #endif /* CPLD_FUNCTIONS_H */
+Index: linux-2.6.18/mvl_patches/pro50-2144.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2144.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2144);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

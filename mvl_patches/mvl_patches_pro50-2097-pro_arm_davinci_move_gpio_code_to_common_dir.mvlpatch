@@ -1,0 +1,1315 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_move_gpio_code_to_common_dir
+# Date: Thu Feb 19 15:00:15 2009
+# Source: MontaVista Software, Inc.
+# MR: 30941
+# Type: Enhancement
+# Disposition: needs submitting to davinci community
+# Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+#     GPIO: move DaVinci code to common platform directory
+# 
+#     Divide the davinci GPIO code that resides in arch/arm/mach-davinci/ into
+#     non-SoC specific and SoC-specific pieces. Move the non-SoC specific piece
+#     to arch/arm/plat-davinci/.
+# 
+#  arch/arm/mach-davinci/Makefile           |    3 
+#  arch/arm/mach-davinci/board-dm6467-evm.c |    1 
+#  arch/arm/mach-davinci/gpio.c             |  359 ----------------------
+#  arch/arm/plat-davinci/Makefile           |    2 
+#  arch/arm/plat-davinci/gpio.c             |  487 +++++++++++++++++++++++++++++++
+#  include/asm-arm/arch-davinci/gpio.h      |   51 ++-
+#  6 files changed, 528 insertions(+), 375 deletions(-)
+# 
+
+PATCHNUM=2097
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 30941
+Type: Enhancement
+Disposition: needs submitting to davinci community
+Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+    GPIO: move DaVinci code to common platform directory
+
+    Divide the davinci GPIO code that resides in arch/arm/mach-davinci/ into
+    non-SoC specific and SoC-specific pieces. Move the non-SoC specific piece
+    to arch/arm/plat-davinci/.
+
+ arch/arm/mach-davinci/Makefile           |    3 
+ arch/arm/mach-davinci/board-dm6467-evm.c |    1 
+ arch/arm/mach-davinci/gpio.c             |  359 ----------------------
+ arch/arm/plat-davinci/Makefile           |    2 
+ arch/arm/plat-davinci/gpio.c             |  487 +++++++++++++++++++++++++++++++
+ include/asm-arm/arch-davinci/gpio.h      |   51 ++-
+ mvl_patches/pro50-2097.c                 |   16 +
+ 7 files changed, 544 insertions(+), 375 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Makefile
++++ linux-2.6.18/arch/arm/mach-davinci/Makefile
+@@ -4,7 +4,7 @@
+ #
+ 
+ # Common objects
+-obj-y := time.o irq.o clock.o serial.o io.o id.o gpio.o mux.o mux_cfg.o dma.o \
++obj-y := time.o irq.o clock.o serial.o io.o id.o mux.o mux_cfg.o dma.o \
+ 	devices.o usb.o
+ 
+ # Board specific
+@@ -14,6 +14,7 @@ obj-$(CONFIG_I2C_DAVINCI)		+= i2c-client
+ obj-$(CONFIG_MACH_DAVINCI_DM6467_EVM)	+= board-dm6467-evm.o i2c-emac.o \
+ 					   video_hdevm.o
+ obj-$(CONFIG_SPI_DAVINCI)		+= davinci_spi_platform.o
++obj-$(CONFIG_GENERIC_GPIO)		+= gpio.o
+ 
+ # Vlynq specific
+ obj-$(CONFIG_DAVINCI_VLYNQ)		+= davinci_vlynq_init.o
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm6467-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+@@ -45,6 +45,7 @@
+ #include <asm/arch/mux.h>
+ #include <asm/arch/nand.h>
+ #include <asm/arch/i2c-client.h>
++#include <asm/arch/gpio.h>
+ #include <asm/arch/clock.h>
+ 
+ /**************************************************************************
+Index: linux-2.6.18/arch/arm/mach-davinci/gpio.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/gpio.c
++++ linux-2.6.18/arch/arm/mach-davinci/gpio.c
+@@ -10,32 +10,20 @@
+  * (at your option) any later version.
+  */
+ 
+-#include <linux/errno.h>
+ #include <linux/kernel.h>
+-#include <linux/list.h>
+-#include <linux/module.h>
+-#include <linux/clk.h>
+-#include <linux/err.h>
+-#include <linux/io.h>
+-#include <linux/irq.h>
+-#include <linux/bitops.h>
+ 
+ #include <asm/arch/irqs.h>
+ #include <asm/arch/hardware.h>
+ #include <asm/arch/cpu.h>
+ #include <asm/arch/gpio.h>
+ 
+-#include <asm/mach/irq.h>
+ 
+-/* If a new chip is added with number of GPIO greater than 104, please
++/* If a new chip is added with number of GPIO greater than 128, please
+    update DAVINCI_MAX_N_GPIO in include/asm-arm/arch-davinci/irqs.h */
+ #define DM646x_N_GPIO	48
+ #define DM644x_N_GPIO	71
+ #define DM355_N_GPIO	104
+ 
+-static DEFINE_SPINLOCK(gpio_lock);
+-static struct gpio_bank *gpio_bank;
+-
+ #ifdef CONFIG_ARCH_DAVINCI644x
+ static DECLARE_BITMAP(dm644x_gpio_in_use, DM644x_N_GPIO);
+ struct gpio_bank gpio_bank_dm6446 = {
+@@ -67,351 +55,10 @@ struct gpio_bank gpio_bank_dm646x = {
+ 	.in_use		= dm646x_gpio_in_use,
+ };
+ #endif
+-int gpio_request(unsigned gpio, const char *tag)
+-{
+-	if (gpio >= gpio_bank->num_gpio)
+-		return -EINVAL;
+-
+-	if (test_and_set_bit(gpio, gpio_bank->in_use))
+-		return -EBUSY;
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL(gpio_request);
+-
+-void gpio_free(unsigned gpio)
+-{
+-	if (gpio >= gpio_bank->num_gpio)
+-		return;
+-
+-	clear_bit(gpio, gpio_bank->in_use);
+-}
+-EXPORT_SYMBOL(gpio_free);
+-
+-/* The __gpio_to_controller() and __gpio_mask() functions inline to constants
+- * with constant parameters; or in outlined code they execute at runtime.
+- *
+- * You'd access the controller directly when reading or writing more than
+- * one gpio value at a time, and to support wired logic where the value
+- * being driven by the cpu need not match the value read back.
+- *
+- * These are NOT part of the cross-platform GPIO interface
+- */
+-struct gpio_controller *__iomem __gpio_to_controller(unsigned gpio)
+-{
+-	void *__iomem ptr;
+-
+-	if (gpio >= gpio_bank->num_gpio)
+-		return NULL;
+-
+-	if (gpio < 32)
+-		ptr = (void *__iomem)IO_ADDRESS(gpio_bank->base + 0x10);
+-	else if (gpio < 64)
+-		ptr = (void *__iomem)IO_ADDRESS(gpio_bank->base + 0x38);
+-	else if (gpio < 96)
+-		ptr = (void *__iomem)IO_ADDRESS(gpio_bank->base + 0x60);
+-	else
+-		ptr = (void *__iomem)IO_ADDRESS(gpio_bank->base + 0x88);
+-	return ptr;
+-}
+-
+-void gpio_set_value(unsigned gpio, int value)
+-{
+-	if (__builtin_constant_p(value)) {
+-		struct gpio_controller	*__iomem g;
+-		u32			mask;
+-
+-		if (gpio >= gpio_bank->num_gpio)
+-			__error_inval_gpio();
+-
+-		g = __gpio_to_controller(gpio);
+-		mask = __gpio_mask(gpio);
+-		if (value)
+-			__raw_writel(mask, &g->set_data);
+-		else
+-			__raw_writel(mask, &g->clr_data);
+-		return;
+-	}
+-
+-	__gpio_set(gpio, value);
+-}
+-EXPORT_SYMBOL(gpio_set_value);
+-
+-/* Returns zero or nonzero; works for gpios configured as inputs OR
+- * as outputs.
+- *
+- * NOTE: changes in reported values are synchronized to the GPIO clock.
+- * This is most easily seen after calling gpio_set_value() and then immediatly
+- * gpio_get_value(), where the gpio_get_value() would return the old value
+- * until the GPIO clock ticks and the new value gets latched.
+- */
+-
+-int gpio_get_value(unsigned gpio)
+-{
+-	struct gpio_controller *__iomem g;
+-
+-	if (!__builtin_constant_p(gpio))
+-		return __gpio_get(gpio);
+-
+-	if (gpio >= gpio_bank->num_gpio)
+-		return __error_inval_gpio();
+-
+-	g = __gpio_to_controller(gpio);
+-	return !!(__gpio_mask(gpio) & __raw_readl(&g->in_data));
+-}
+-EXPORT_SYMBOL(gpio_get_value);
+-
+-/* create a non-inlined version */
+-static struct gpio_controller *__iomem gpio2controller(unsigned gpio)
+-{
+-	return __gpio_to_controller(gpio);
+-}
+-
+-/*
+- * Assuming the pin is muxed as a gpio output, set its output value.
+- */
+-void __gpio_set(unsigned gpio, int value)
+-{
+-	struct gpio_controller *__iomem g = gpio2controller(gpio);
+-
+-	__raw_writel(__gpio_mask(gpio), value ? &g->set_data : &g->clr_data);
+-}
+-EXPORT_SYMBOL(__gpio_set);
+-
+-
+-/*
+- * Read the pin's value (works even if it's set up as output);
+- * returns zero/nonzero.
+- *
+- * Note that changes are synched to the GPIO clock, so reading values back
+- * right after you've set them may give old values.
+- */
+-int __gpio_get(unsigned gpio)
+-{
+-	struct gpio_controller *__iomem g = gpio2controller(gpio);
+-
+-	return !!(__gpio_mask(gpio) & __raw_readl(&g->in_data));
+-}
+-EXPORT_SYMBOL(__gpio_get);
+-
+-
+-/*--------------------------------------------------------------------------*/
+-
+-/*
+- * board setup code *MUST* set PINMUX0 and PINMUX1 as
+- * needed, and enable the GPIO clock.
+- */
+-
+-int gpio_direction_input(unsigned gpio)
+-{
+-	struct gpio_controller *__iomem g = gpio2controller(gpio);
+-	u32 temp;
+-	u32 mask;
+-
+-	if (!g)
+-		return -EINVAL;
+-
+-	spin_lock(&gpio_lock);
+-	mask = __gpio_mask(gpio);
+-	temp = __raw_readl(&g->dir);
+-	temp |= mask;
+-	__raw_writel(temp, &g->dir);
+-	spin_unlock(&gpio_lock);
+-	return 0;
+-}
+-EXPORT_SYMBOL(gpio_direction_input);
+-
+-int gpio_direction_output(unsigned gpio, int value)
+-{
+-	struct gpio_controller *__iomem g = gpio2controller(gpio);
+-	u32 temp;
+-	u32 mask;
+-
+-	if (!g)
+-		return -EINVAL;
+-
+-	spin_lock(&gpio_lock);
+-	mask = __gpio_mask(gpio);
+-	temp = __raw_readl(&g->dir);
+-	temp &= ~mask;
+-	__raw_writel(mask, value ? &g->set_data : &g->clr_data);
+-	__raw_writel(temp, &g->dir);
+-	spin_unlock(&gpio_lock);
+-	return 0;
+-}
+-EXPORT_SYMBOL(gpio_direction_output);
+-
+-/*
+- * We expect irqs will normally be set up as input pins, but they can also be
+- * used as output pins ... which is convenient for testing.
+- *
+- * NOTE:  GPIO0..GPIO7 also have direct INTC hookups, which work in addition
+- * to their GPIOBNK0 irq (but with a bit less overhead).  But we don't have
+- * a good way to hook those up ...
+- *
+- * All those INTC hookups (GPIO0..GPIO7 plus five IRQ banks) can also
+- * serve as EDMA event triggers.
+- */
+-
+-static void gpio_irq_disable(unsigned irq)
+-{
+-	struct gpio_controller *__iomem g = get_irq_chip_data(irq);
+-	u32 mask = __gpio_mask(irq_to_gpio(irq));
+-
+-	__raw_writel(mask, &g->clr_falling);
+-	__raw_writel(mask, &g->clr_rising);
+-}
+-
+-static void gpio_irq_enable(unsigned irq)
+-{
+-	struct gpio_controller *__iomem g = get_irq_chip_data(irq);
+-	u32 tmp;
+-	u32 mask = __gpio_mask(irq_to_gpio(irq));
+-
+-	if (irq_desc[irq].status & IRQ_TYPE_EDGE_FALLING) {
+-		tmp = mask | __raw_readl(&g->set_falling);
+-		__raw_writel(tmp, &g->set_falling);
+-	}
+-	if (irq_desc[irq].status & IRQ_TYPE_EDGE_RISING) {
+-		tmp = mask | __raw_readl(&g->set_rising);
+-		__raw_writel(tmp, &g->set_rising);
+-	}
+-}
+-
+-static int gpio_irq_type(unsigned irq, unsigned trigger)
+-{
+-	struct gpio_controller *__iomem g = get_irq_chip_data(irq);
+-	u32 tmp;
+-	u32 mask = __gpio_mask(irq_to_gpio(irq));
+-
+-	if (trigger & ~(IRQ_TYPE_EDGE_FALLING | IRQ_TYPE_EDGE_RISING))
+-		return -EINVAL;
+-
+-	irq_desc[irq].status &= ~IRQ_TYPE_SENSE_MASK;
+-	irq_desc[irq].status |= trigger;
+-
+-	if (trigger & IRQ_TYPE_EDGE_FALLING) {
+-		tmp = mask | __raw_readl(&g->set_falling);
+-		__raw_writel(tmp, &g->set_falling);
+-	} else {
+-		__raw_writel(mask, &g->clr_falling);
+-	}
+-
+-	if (trigger & IRQ_TYPE_EDGE_RISING) {
+-		tmp = mask | __raw_readl(&g->set_rising);
+-		__raw_writel(tmp, &g->set_rising);
+-	} else {
+-		__raw_writel(mask, &g->clr_rising);
+-	}
+-
+-	return 0;
+-}
+-
+-static struct irq_chip gpio_irqchip = {
+-	.name		= "GPIO",
+-	.enable		= gpio_irq_enable,
+-	.disable	= gpio_irq_disable,
+-	.set_type	= gpio_irq_type,
+-};
+-
+-static void
+-gpio_irq_handler(unsigned irq, struct irq_desc *desc, struct pt_regs *regs)
+-{
+-	struct gpio_controller *__iomem g = get_irq_chip_data(irq);
+-	u32 mask = 0xffff;
+-
+-	/* we only care about one bank */
+-	if (irq & 1)
+-		mask <<= 16;
+-
+-	/* temporarily mask (level sensitive) parent IRQ */
+-	desc->chip->ack(irq);
+-	while (1) {
+-		u32		status;
+-		struct irq_desc	*gpio;
+-		int		n;
+-		int		res;
+-
+-		/* ack any irqs */
+-		status = __raw_readl(&g->intstat) & mask;
+-		if (!status)
+-			break;
+-		__raw_writel(status, &g->intstat);
+-		if (irq & 1)
+-			status >>= 16;
+-
+-		/* now demux them to the right lowlevel handler */
+-		n = (int)get_irq_data(irq);
+-		gpio = &irq_desc[n];
+-		while (status) {
+-			res = ffs(status);
+-			n += res;
+-			gpio += res;
+-			desc_handle_irq(n - 1, gpio - 1, regs);
+-			status >>= res;
+-		}
+-	}
+-	desc->chip->unmask(irq);
+-	/* now it may re-trigger */
+-}
+-
+-/*
+- * NOTE:  for suspend/resume, probably best to make a sysdev (and class)
+- * with its suspend/resume calls hooking into the results of the set_wake()
+- * calls ... so if no gpios are wakeup events the clock can be disabled,
+- * with outputs left at previously set levels, and so that VDD3P3V.IOPWDN0
+- * can be set appropriately for GPIOV33 pins.
+- */
+-
+-static int __init davinci_gpio_irq_setup(void)
+-{
+-	unsigned	gpio, irq, bank;
+-	struct clk	*clk;
+-
+-	clk = clk_get(NULL, "gpio");
+-	if (IS_ERR(clk)) {
+-		printk(KERN_ERR "Error %ld getting gpio clock?\n",
+-		       PTR_ERR(clk));
+-		return 0;
+-	}
+-
+-	clk_enable(clk);
+-
+-	for (gpio = 0, irq = gpio_to_irq(0), bank = gpio_bank->irq_num;
+-	     gpio < gpio_bank->num_gpio; bank++) {
+-		struct gpio_controller	*__iomem g = gpio2controller(gpio);
+-		unsigned		i;
+-
+-		__raw_writel(~0, &g->clr_falling);
+-		__raw_writel(~0, &g->clr_rising);
+-
+-		/* set up all irqs in this bank */
+-		set_irq_chained_handler(bank, gpio_irq_handler);
+-		set_irq_chip_data(bank, g);
+-		set_irq_data(bank, (void *)irq);
+-
+-		for (i = 0; i < 16 && gpio < gpio_bank->num_gpio;
+-		     i++, irq++, gpio++) {
+-			set_irq_chip(irq, &gpio_irqchip);
+-			set_irq_chip_data(irq, g);
+-			set_irq_handler(irq, handle_simple_irq);
+-			set_irq_flags(irq, IRQF_VALID);
+-		}
+-	}
+-
+-	/* BINTEN -- per-bank interrupt enable. genirq would also let these
+-	 * bits be set/cleared dynamically.
+-	 */
+-	__raw_writel(gpio_bank->irq_mask, (void *__iomem)
+-		     IO_ADDRESS(gpio_bank->base + 0x08));
+-
+-	printk(KERN_INFO "DaVinci: %d gpio irqs\n", irq - gpio_to_irq(0));
+-
+-	return 0;
+-}
+ 
+ void davinci_gpio_init(void)
+ {
++	struct gpio_bank *gpio_bank;
+ 
+ #ifdef CONFIG_ARCH_DAVINCI644x
+ 	if (cpu_is_davinci_dm644x())
+@@ -425,5 +72,5 @@ void davinci_gpio_init(void)
+ 	if (cpu_is_davinci_dm6467())
+ 		gpio_bank = &gpio_bank_dm646x;
+ #endif
+-	davinci_gpio_irq_setup();
++	davinci_gpio_irq_setup(gpio_bank);
+ }
+Index: linux-2.6.18/arch/arm/plat-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/Makefile
++++ linux-2.6.18/arch/arm/plat-davinci/Makefile
+@@ -5,3 +5,5 @@
+ 
+ # Common objects
+ obj-y := clock.o dma.o
++
++obj-$(CONFIG_GENERIC_GPIO)		+= gpio.o
+Index: linux-2.6.18/arch/arm/plat-davinci/gpio.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/plat-davinci/gpio.c
+@@ -0,0 +1,487 @@
++/*
++ * TI DaVinci GPIO Support
++ *
++ * Copyright (c) 2006 David Brownell
++ * Copyright (c) 2007, MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/clk.h>
++#include <linux/err.h>
++#include <linux/io.h>
++
++#include <asm/arch/hardware.h>
++#include <asm/arch/gpio.h>
++
++#include <asm/mach/irq.h>
++
++static DEFINE_SPINLOCK(gpio_lock);
++static struct gpio_bank *gpio_bank;
++
++
++int gpio_request(unsigned gpio, const char *tag)
++{
++	if (gpio >= gpio_bank->num_gpio)
++		return -EINVAL;
++
++	if (test_and_set_bit(gpio, gpio_bank->in_use))
++		return -EBUSY;
++
++	return 0;
++}
++EXPORT_SYMBOL(gpio_request);
++
++void gpio_free(unsigned gpio)
++{
++	if (gpio >= gpio_bank->num_gpio)
++		return;
++
++	clear_bit(gpio, gpio_bank->in_use);
++}
++EXPORT_SYMBOL(gpio_free);
++
++/* The __gpio_to_controller() and __gpio_mask() functions inline to constants
++ * with constant parameters; or in outlined code they execute at runtime.
++ *
++ * You'd access the controller directly when reading or writing more than
++ * one gpio value at a time, and to support wired logic where the value
++ * being driven by the cpu need not match the value read back.
++ *
++ * These are NOT part of the cross-platform GPIO interface
++ */
++struct gpio_controller *__iomem __gpio_to_controller(unsigned gpio)
++{
++	void *__iomem ptr;
++
++	if (gpio >= gpio_bank->num_gpio)
++		return NULL;
++
++	if (gpio < 32)
++		ptr = (void *__iomem)IO_ADDRESS(gpio_bank->base + 0x10);
++	else if (gpio < 64)
++		ptr = (void *__iomem)IO_ADDRESS(gpio_bank->base + 0x38);
++	else if (gpio < 96)
++		ptr = (void *__iomem)IO_ADDRESS(gpio_bank->base + 0x60);
++	else
++		ptr = (void *__iomem)IO_ADDRESS(gpio_bank->base + 0x88);
++	return ptr;
++}
++
++void gpio_set_value(unsigned gpio, int value)
++{
++	if (__builtin_constant_p(value)) {
++		struct gpio_controller	*__iomem g;
++		u32			mask;
++
++		if (gpio >= gpio_bank->num_gpio)
++			__error_inval_gpio();
++
++		g = __gpio_to_controller(gpio);
++		mask = __gpio_mask(gpio);
++		if (value)
++			__raw_writel(mask, &g->set_data);
++		else
++			__raw_writel(mask, &g->clr_data);
++		return;
++	}
++
++	__gpio_set(gpio, value);
++}
++EXPORT_SYMBOL(gpio_set_value);
++
++/* Returns zero or nonzero; works for gpios configured as inputs OR
++ * as outputs.
++ *
++ * NOTE: changes in reported values are synchronized to the GPIO clock.
++ * This is most easily seen after calling gpio_set_value() and then immediatly
++ * gpio_get_value(), where the gpio_get_value() would return the old value
++ * until the GPIO clock ticks and the new value gets latched.
++ */
++
++int gpio_get_value(unsigned gpio)
++{
++	struct gpio_controller *__iomem g;
++
++	if (!__builtin_constant_p(gpio))
++		return __gpio_get(gpio);
++
++	if (gpio >= gpio_bank->num_gpio)
++		return __error_inval_gpio();
++
++	g = __gpio_to_controller(gpio);
++	return !!(__gpio_mask(gpio) & __raw_readl(&g->in_data));
++}
++EXPORT_SYMBOL(gpio_get_value);
++
++/* create a non-inlined version */
++static struct gpio_controller *__iomem gpio2controller(unsigned gpio)
++{
++	return __gpio_to_controller(gpio);
++}
++
++/*
++ * Assuming the pin is muxed as a gpio output, set its output value.
++ */
++void __gpio_set(unsigned gpio, int value)
++{
++	struct gpio_controller *__iomem g = gpio2controller(gpio);
++
++	__raw_writel(__gpio_mask(gpio), value ? &g->set_data : &g->clr_data);
++}
++EXPORT_SYMBOL(__gpio_set);
++
++
++/*
++ * Read the pin's value (works even if it's set up as output);
++ * returns zero/nonzero.
++ *
++ * Note that changes are synched to the GPIO clock, so reading values back
++ * right after you've set them may give old values.
++ */
++int __gpio_get(unsigned gpio)
++{
++	struct gpio_controller *__iomem g = gpio2controller(gpio);
++
++	return !!(__gpio_mask(gpio) & __raw_readl(&g->in_data));
++}
++EXPORT_SYMBOL(__gpio_get);
++
++/*
++ * Read the values of the gpio pins in the bank, return 16 bit bitmap.
++ */
++u16 gpio_bank_get_value(unsigned bank)
++{
++	struct gpio_controller *__iomem g;
++
++	if (__builtin_constant_p(bank)) {
++		if (bank*16 >= gpio_bank->num_gpio)
++			return __error_inval_gpio();
++	}
++
++	g = __gpio_to_controller(bank*16);
++	return (__raw_readl(&g->in_data) >> (bank & 1 ? 16 : 0)) & 0xffff;
++}
++EXPORT_SYMBOL(gpio_bank_get_value);
++
++/*
++ * Set the values of the gpio pins in the bank.
++ */
++void gpio_bank_set_value(unsigned bank, u16 value)
++{
++	struct gpio_controller *__iomem g;
++	u32 save_mask, shifted_value, save;
++
++	if (__builtin_constant_p(bank)) {
++		if (bank*16 >= gpio_bank->num_gpio) {
++			__error_inval_gpio();
++			return;
++		}
++	}
++
++	if (bank & 1) {
++		save_mask = 0x0000ffff;
++		shifted_value = value << 16;
++	} else {
++		save_mask = 0xffff0000;
++		shifted_value = value;
++	}
++
++	g = __gpio_to_controller(bank*16);
++
++	save = __raw_readl(&g->in_data) & save_mask;
++	__raw_writel(shifted_value | save, &g->out_data);
++}
++EXPORT_SYMBOL(gpio_bank_set_value);
++
++/*--------------------------------------------------------------------------*/
++
++/*
++ * board setup code *MUST* set PINMUX0 and PINMUX1 as
++ * needed, and enable the GPIO clock.
++ */
++
++int gpio_direction_input(unsigned gpio)
++{
++	struct gpio_controller *__iomem g = gpio2controller(gpio);
++	u32 temp;
++	u32 mask;
++
++	if (!g)
++		return -EINVAL;
++
++	spin_lock(&gpio_lock);
++	mask = __gpio_mask(gpio);
++	temp = __raw_readl(&g->dir);
++	temp |= mask;
++	__raw_writel(temp, &g->dir);
++	spin_unlock(&gpio_lock);
++	return 0;
++}
++EXPORT_SYMBOL(gpio_direction_input);
++
++int gpio_direction_output(unsigned gpio, int value)
++{
++	struct gpio_controller *__iomem g = gpio2controller(gpio);
++	u32 temp;
++	u32 mask;
++
++	if (!g)
++		return -EINVAL;
++
++	spin_lock(&gpio_lock);
++	mask = __gpio_mask(gpio);
++	temp = __raw_readl(&g->dir);
++	temp &= ~mask;
++	__raw_writel(mask, value ? &g->set_data : &g->clr_data);
++	__raw_writel(temp, &g->dir);
++	spin_unlock(&gpio_lock);
++	return 0;
++}
++EXPORT_SYMBOL(gpio_direction_output);
++
++/* Configure gpio pins (from the given bank) designated by mask as input.
++ */
++int gpio_bank_direction_input(unsigned bank, u16 mask)
++{
++	struct gpio_controller *__iomem g;
++	u32 temp, shifted_mask;
++
++	if (__builtin_constant_p(bank)) {
++		if (bank*16 >= gpio_bank->num_gpio)
++			return __error_inval_gpio();
++	}
++
++	g = __gpio_to_controller(bank*16);
++
++	if (!g)
++		return -EINVAL;
++
++	if (bank & 1)
++		shifted_mask = mask << 16;
++	else
++		shifted_mask = mask;
++
++	spin_lock(&gpio_lock);
++	temp = __raw_readl(&g->dir);
++	temp |= shifted_mask;
++	__raw_writel(temp, &g->dir);
++	spin_unlock(&gpio_lock);
++	return 0;
++}
++EXPORT_SYMBOL(gpio_bank_direction_input);
++
++/* Set the gpio values (from the given bank) and configure gpio pins
++ * designated by mask as output.
++ */
++int gpio_bank_direction_output(unsigned bank, u16 mask, u16 value)
++{
++	struct gpio_controller *__iomem g;
++	u32 temp, save_mask, shifted_mask, shifted_value, save;
++
++	if (__builtin_constant_p(bank)) {
++		if (bank*16 >= gpio_bank->num_gpio)
++			return __error_inval_gpio();
++	}
++
++	g = __gpio_to_controller(bank*16);
++
++	if (!g)
++		return -EINVAL;
++
++	if (bank & 1) {
++		save_mask = 0x0000ffff;
++		shifted_value = value << 16;
++		shifted_mask = mask << 16;
++	} else {
++		save_mask = 0xffff0000;
++		shifted_value = value;
++		shifted_mask = mask;
++	}
++
++	spin_lock(&gpio_lock);
++	temp = __raw_readl(&g->dir);
++	temp &= ~shifted_mask;
++	save = __raw_readl(&g->in_data) & save_mask;
++	__raw_writel((shifted_value & shifted_mask) | save, &g->out_data);
++	__raw_writel(temp, &g->dir);
++	spin_unlock(&gpio_lock);
++	return 0;
++}
++EXPORT_SYMBOL(gpio_bank_direction_output);
++
++/*
++ * We expect irqs will normally be set up as input pins, but they can also be
++ * used as output pins ... which is convenient for testing.
++ *
++ * NOTE:  GPIO0..GPIO7 also have direct INTC hookups, which work in addition
++ * to their GPIOBNK0 irq (but with a bit less overhead).  But we don't have
++ * a good way to hook those up ...
++ *
++ * All those INTC hookups (GPIO0..GPIO7 plus five IRQ banks) can also
++ * serve as EDMA event triggers.
++ */
++
++static void gpio_irq_disable(unsigned irq)
++{
++	struct gpio_controller *__iomem g = get_irq_chip_data(irq);
++	u32 mask = __gpio_mask(irq_to_gpio(irq));
++
++	__raw_writel(mask, &g->clr_falling);
++	__raw_writel(mask, &g->clr_rising);
++}
++
++static void gpio_irq_enable(unsigned irq)
++{
++	struct gpio_controller *__iomem g = get_irq_chip_data(irq);
++	u32 tmp;
++	u32 mask = __gpio_mask(irq_to_gpio(irq));
++
++	if (irq_desc[irq].status & IRQ_TYPE_EDGE_FALLING) {
++		tmp = mask | __raw_readl(&g->set_falling);
++		__raw_writel(tmp, &g->set_falling);
++	}
++	if (irq_desc[irq].status & IRQ_TYPE_EDGE_RISING) {
++		tmp = mask | __raw_readl(&g->set_rising);
++		__raw_writel(tmp, &g->set_rising);
++	}
++}
++
++static int gpio_irq_type(unsigned irq, unsigned trigger)
++{
++	struct gpio_controller *__iomem g = get_irq_chip_data(irq);
++	u32 tmp;
++	u32 mask = __gpio_mask(irq_to_gpio(irq));
++
++	if (trigger & ~(IRQ_TYPE_EDGE_FALLING | IRQ_TYPE_EDGE_RISING))
++		return -EINVAL;
++
++	irq_desc[irq].status &= ~IRQ_TYPE_SENSE_MASK;
++	irq_desc[irq].status |= trigger;
++
++	if (trigger & IRQ_TYPE_EDGE_FALLING) {
++		tmp = mask | __raw_readl(&g->set_falling);
++		__raw_writel(tmp, &g->set_falling);
++	} else {
++		__raw_writel(mask, &g->clr_falling);
++	}
++
++	if (trigger & IRQ_TYPE_EDGE_RISING) {
++		tmp = mask | __raw_readl(&g->set_rising);
++		__raw_writel(tmp, &g->set_rising);
++	} else {
++		__raw_writel(mask, &g->clr_rising);
++	}
++
++	return 0;
++}
++
++static struct irq_chip gpio_irqchip = {
++	.name		= "GPIO",
++	.enable		= gpio_irq_enable,
++	.disable	= gpio_irq_disable,
++	.set_type	= gpio_irq_type,
++};
++
++static void
++gpio_irq_handler(unsigned irq, struct irq_desc *desc, struct pt_regs *regs)
++{
++	struct gpio_controller *__iomem g = get_irq_chip_data(irq);
++	u32 mask = 0xffff;
++
++	/* we only care about one bank */
++	if (irq & 1)
++		mask <<= 16;
++
++	/* temporarily mask (level sensitive) parent IRQ */
++	desc->chip->ack(irq);
++	while (1) {
++		u32		status;
++		struct irq_desc	*gpio;
++		int		n;
++		int		res;
++
++		/* ack any irqs */
++		status = __raw_readl(&g->intstat) & mask;
++		if (!status)
++			break;
++		__raw_writel(status, &g->intstat);
++		if (irq & 1)
++			status >>= 16;
++
++		/* now demux them to the right lowlevel handler */
++		n = (int)get_irq_data(irq);
++		gpio = &irq_desc[n];
++		while (status) {
++			res = ffs(status);
++			n += res;
++			gpio += res;
++			desc_handle_irq(n - 1, gpio - 1, regs);
++			status >>= res;
++		}
++	}
++	desc->chip->unmask(irq);
++	/* now it may re-trigger */
++}
++
++/*
++ * NOTE:  for suspend/resume, probably best to make a sysdev (and class)
++ * with its suspend/resume calls hooking into the results of the set_wake()
++ * calls ... so if no gpios are wakeup events the clock can be disabled,
++ * with outputs left at previously set levels, and so that VDD3P3V.IOPWDN0
++ * can be set appropriately for GPIOV33 pins.
++ */
++
++int __init davinci_gpio_irq_setup(struct gpio_bank *plat_gpio_bank)
++{
++	unsigned	gpio, irq, bank;
++	struct clk	*clk;
++
++	gpio_bank = plat_gpio_bank;
++
++	clk = clk_get(NULL, "gpio");
++	if (IS_ERR(clk)) {
++		printk(KERN_ERR "Error %ld getting gpio clock?\n",
++		       PTR_ERR(clk));
++		return 0;
++	}
++
++	clk_enable(clk);
++
++	for (gpio = 0, irq = gpio_to_irq(0), bank = gpio_bank->irq_num;
++	     gpio < gpio_bank->num_gpio; bank++) {
++		struct gpio_controller	*__iomem g = gpio2controller(gpio);
++		unsigned		i;
++
++		__raw_writel(~0, &g->clr_falling);
++		__raw_writel(~0, &g->clr_rising);
++
++		/* set up all irqs in this bank */
++		set_irq_chained_handler(bank, gpio_irq_handler);
++		set_irq_chip_data(bank, g);
++		set_irq_data(bank, (void *)irq);
++
++		for (i = 0; i < 16 && gpio < gpio_bank->num_gpio;
++		     i++, irq++, gpio++) {
++			set_irq_chip(irq, &gpio_irqchip);
++			set_irq_chip_data(irq, g);
++			set_irq_handler(irq, handle_simple_irq);
++			set_irq_flags(irq, IRQF_VALID);
++		}
++	}
++
++	/* BINTEN -- per-bank interrupt enable. genirq would also let these
++	 * bits be set/cleared dynamically.
++	 */
++	__raw_writel(gpio_bank->irq_mask, (void *__iomem)
++		     IO_ADDRESS(gpio_bank->base + 0x08));
++
++	printk(KERN_INFO "DaVinci: %d gpio irqs\n", irq - gpio_to_irq(0));
++
++	return 0;
++}
+Index: linux-2.6.18/include/asm-arm/arch-davinci/gpio.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/gpio.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/gpio.h
+@@ -2,7 +2,7 @@
+  * TI DaVinci GPIO Support
+  *
+  * Copyright (c) 2006 David Brownell
+- * Copyright (c) 2007, MontaVista Software, Inc. <source@mvista.com>
++ * Copyright (c) 2007-2008 MontaVista Software, Inc. <source@mvista.com>
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -13,28 +13,30 @@
+ #ifndef	__DAVINCI_GPIO_H
+ #define	__DAVINCI_GPIO_H
+ 
++#include <asm/arch/irqs.h>
++
+ /*
+- * basic gpio routines
++ * Basic GPIO routines
+  *
+- * board-specific init should be done by arch/.../.../board-XXX.c (maybe
++ * Board-specific init should be done by arch/.../.../board-XXX.c (maybe
+  * initializing banks together) rather than boot loaders; kexec() won't
+  * go through boot loaders.
+  *
+- * the gpio clock will be turned on when gpios are used, and you may also
++ * The GPIO clock will be turned on when GPIOs are used, and you may also
+  * need to pay attention to PINMUX0 and PINMUX1 to be sure those pins are
+  * used as gpios, not with other peripherals.
+  *
+- * GPIOs are numbered 0..(gpio_bank->num_gpio-1).  For documentation,
++ * GPIOs are numbered 0 .. gpio_bank->num_gpio - 1.  For documentation,
+  * and maybe for later updates, code should write GPIO(N) or:
+- *  - GPIOV18(N) for 1.8V pins, N in 0..53; same as GPIO(0)..GPIO(53)
+- *  - GPIOV33(N) for 3.3V pins, N in 0..17; same as GPIO(54)..GPIO(70)
++ *  - GPIOV18(N) for 1.8V pins, N in 0..53; same as GPIO(0)  .. GPIO(53)
++ *  - GPIOV33(N) for 3.3V pins, N in 0..17; same as GPIO(54) .. GPIO(70)
+  *
+- * For GPIO IRQs use gpio_to_irq(GPIO(N)) or gpio_to_irq(GPIOV33(N)) etc
+- * for now, that's != GPIO(N)
++ * For GPIO IRQs use gpio_to_irq(GPIO(N)) or gpio_to_irq(GPIOV33(N)), etc.
++ * For now, that's != GPIO(N)...
+  */
+ #define	GPIO(X)		(X)		/* 0 <= X <= 70 */
+ #define	GPIOV18(X)	(X)		/* 1.8V i/o; 0 <= X <= 53 */
+-#define	GPIOV33(X)	((X)+54)	/* 3.3V i/o; 0 <= X <= 17 */
++#define	GPIOV33(X)	((X) + 54)	/* 3.3V i/o; 0 <= X <= 17 */
+ 
+ struct gpio_controller {
+ 	u32	dir;
+@@ -57,7 +59,8 @@ struct gpio_bank {
+ 	unsigned long base;
+ };
+ 
+-/* The __gpio_to_controller() and __gpio_mask() functions inline to constants
++/*
++ * The __gpio_to_controller() and __gpio_mask() functions inline to constants
+  * with constant parameters; or in outlined code they execute at runtime.
+  *
+  * You'd access the controller directly when reading or writing more than
+@@ -73,7 +76,8 @@ static inline u32 __gpio_mask(unsigned g
+ 	return 1 << (gpio % 32);
+ }
+ 
+-/* The get/set/clear functions will inline when called with constant
++/*
++ * The get/set/clear functions will inline when called with constant
+  * parameters, for low-overhead bitbanging.  Illegal constant parameters
+  * cause link-time errors.
+  *
+@@ -86,8 +90,8 @@ extern int __gpio_get(unsigned gpio);
+ 
+ extern void gpio_set_value(unsigned gpio, int value);
+ 
+-/* Returns zero or nonzero; works for gpios configured as inputs OR
+- * as outputs.
++/*
++ * Returns zero or nonzero; works for GPIOs configured as inputs OR as outputs.
+  *
+  * NOTE: changes in reported values are synchronized to the GPIO clock.
+  * This is most easily seen after calling gpio_set_value() and then immediatly
+@@ -97,24 +101,35 @@ extern void gpio_set_value(unsigned gpio
+ 
+ extern int gpio_get_value(unsigned gpio);
+ 
+-/* powerup default direction is IN */
++extern u16 gpio_bank_get_value(unsigned bank);
++extern void gpio_bank_set_value(unsigned bank, u16 value);
++
++/* Powerup default direction is IN */
+ extern int gpio_direction_input(unsigned gpio);
+ extern int gpio_direction_output(unsigned gpio, int value);
+ 
++extern int gpio_bank_direction_input(unsigned bank, u16 mask);
++extern int gpio_bank_direction_output(unsigned bank, u16 mask, u16 value);
++
++extern int davinci_gpio_irq_setup(struct gpio_bank *plat_gpio_bank);
++
+ #include <asm-generic/gpio.h>	/* cansleep wrappers */
+ 
+ extern int gpio_request(unsigned gpio, const char *tag);
+ extern void gpio_free(unsigned gpio);
+ 
++#define GPIO_IRQ_BASE	DAVINCI_N_AINTC_IRQ
++
+ static inline int gpio_to_irq(unsigned gpio)
+ {
+-	return DAVINCI_N_AINTC_IRQ + gpio;
++	return GPIO_IRQ_BASE + gpio;
+ }
+ 
+ static inline int irq_to_gpio(unsigned irq)
+ {
+-	return irq - DAVINCI_N_AINTC_IRQ;
++	return irq - GPIO_IRQ_BASE;
+ }
+ 
+ extern void davinci_gpio_init(void);
+-#endif				/* __DAVINCI_GPIO_H */
++
++#endif	/* __DAVINCI_GPIO_H */
+Index: linux-2.6.18/mvl_patches/pro50-2097.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2097.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2097);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

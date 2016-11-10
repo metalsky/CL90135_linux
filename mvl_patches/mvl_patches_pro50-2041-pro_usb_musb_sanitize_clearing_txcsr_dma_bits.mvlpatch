@@ -1,0 +1,575 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_musb_sanitize_clearing_txcsr_dma_bits
+# Date: Thu Feb 19 14:56:28 2009
+# Source: MontaVista Software, Inc.
+# MR: 32060
+# Type: Defect Fix
+# Disposition: needs submitting to linux-usb@vger.kernel.org
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# The MUSB code either expects TXCSR.DMAReqEnab bit cleared in several places
+# and then proceeds with clearing the TXCSR.DMAMode bit (but does not bother
+# with actually clearing DMAReqEnab beforehand) or just clears both bits at
+# once -- while is the programming guide explicitly forbids to clear DMAMode
+# before or in the same cycle as DMAReEnab.
+# 
+#  drivers/usb/musb/musb_gadget.c |   35 ++++++++++----
+#  drivers/usb/musb/musb_host.c   |  100 ++++++++++++++++-------------------------
+#  drivers/usb/musb/musbhsdma.c   |   54 +++++++++++++---------
+#  3 files changed, 100 insertions(+), 89 deletions(-)
+# 
+
+PATCHNUM=2041
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 32060
+Type: Defect Fix
+Disposition: needs submitting to linux-usb@vger.kernel.org
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+The MUSB code either expects TXCSR.DMAReqEnab bit cleared in several places
+and then proceeds with clearing the TXCSR.DMAMode bit (but does not bother
+with actually clearing DMAReqEnab beforehand) or just clears both bits at
+once -- while is the programming guide explicitly forbids to clear DMAMode
+before or in the same cycle as DMAReEnab.
+
+ drivers/usb/musb/musb_gadget.c |   35 ++++++++++----
+ drivers/usb/musb/musb_host.c   |  100 ++++++++++++++++-------------------------
+ drivers/usb/musb/musbhsdma.c   |   54 +++++++++++++---------
+ mvl_patches/pro50-2041.c       |   16 ++++++
+ 4 files changed, 116 insertions(+), 89 deletions(-)
+
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -165,9 +165,19 @@ static void nuke(struct musb_ep *ep, con
+ 	if (is_dma_capable() && ep->dma) {
+ 		struct dma_controller	*c = ep->musb->dma_controller;
+ 		int value;
++
+ 		if (ep->is_in) {
++			u16 txcsr = musb_readw(epio, MUSB_TXCSR);
++
++			/*
++			 * The programming guide says that we must not clear
++			 * the DMAReqMode bit before DMAReqEnab, so we only
++			 * clear it in the second write...
++			 */
++			txcsr &= MUSB_TXCSR_DMAMODE;
++
+ 			musb_writew(epio, MUSB_TXCSR,
+-					0 | MUSB_TXCSR_FLUSHFIFO);
++				    txcsr | MUSB_TXCSR_FLUSHFIFO);
+ 			musb_writew(epio, MUSB_TXCSR,
+ 					0 | MUSB_TXCSR_FLUSHFIFO);
+ 		} else {
+@@ -230,7 +240,7 @@ static inline int max_ep_writesize(struc
+ 		  |	IN token(s) are recd from Host.
+ 		  |		-> DMA interrupt on completion
+ 		  |		   calls TxAvail.
+-		  |		      -> stop DMA, ~DmaEenab,
++		  |		      -> stop DMA, ~DMAEnab,
+ 		  |		      -> set TxPktRdy for last short pkt or zlp
+ 		  |		      -> Complete Request
+ 		  |		      -> Continue next request (call txstate)
+@@ -315,9 +325,17 @@ static void txstate(struct musb *musb, s
+ 					request->dma, request_size);
+ 			if (use_dma) {
+ 				if (musb_ep->dma->desired_mode == 0) {
+-					/* ASSERT: DMAENAB is clear */
++					/*
++					 * We must not clear the DMAReqMode bit
++					 * before the DMAReqEnab bit -- and the
++					 * latter doesn't always get cleared
++					 * before we get here...
++					 */
+ 					csr &= ~(MUSB_TXCSR_AUTOSET |
+-							MUSB_TXCSR_DMAMODE);
++						 MUSB_TXCSR_DMAENAB);
++					musb_writew(epio, MUSB_TXCSR, csr |
++						    MUSB_TXCSR_P_WZC_BITS);
++					csr &= ~MUSB_TXCSR_DMAMODE;
+ 					csr |= (MUSB_TXCSR_DMAENAB |
+ 							MUSB_TXCSR_MODE);
+ 					/* against programming guide */
+@@ -334,10 +352,7 @@ static void txstate(struct musb *musb, s
+ 
+ #elif defined(CONFIG_USB_TI_CPPI_DMA)
+ 		/* program endpoint CSR first, then setup DMA */
+-		csr &= ~(MUSB_TXCSR_AUTOSET
+-				| MUSB_TXCSR_DMAMODE
+-				| MUSB_TXCSR_P_UNDERRUN
+-				| MUSB_TXCSR_TXPKTRDY);
++		csr &= ~(MUSB_TXCSR_P_UNDERRUN | MUSB_TXCSR_TXPKTRDY);
+ 		csr |= MUSB_TXCSR_MODE | MUSB_TXCSR_DMAENAB;
+ 		musb_writew(epio, MUSB_TXCSR,
+ 			(MUSB_TXCSR_P_WZC_BITS & ~MUSB_TXCSR_P_UNDERRUN)
+@@ -366,8 +381,8 @@ static void txstate(struct musb *musb, s
+ 		if (!use_dma) {
+ 			c->channel_release(musb_ep->dma);
+ 			musb_ep->dma = NULL;
+-			/* ASSERT: DMAENAB clear */
+-			csr &= ~(MUSB_TXCSR_DMAMODE | MUSB_TXCSR_MODE);
++			csr &= ~MUSB_TXCSR_DMAENAB;
++			musb_writew(epio, MUSB_TXCSR, csr);
+ 			/* invariant: prequest->buf is non-null */
+ 		}
+ #elif defined(CONFIG_USB_TUSB_OMAP_DMA)
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -641,10 +641,17 @@ musb_rx_reinit(struct musb *musb, struct
+ 		csr = musb_readw(ep->regs, MUSB_TXCSR);
+ 		if (csr & MUSB_TXCSR_MODE) {
+ 			musb_h_tx_flush_fifo(ep);
++			csr = musb_readw(ep->regs, MUSB_TXCSR);
+ 			musb_writew(ep->regs, MUSB_TXCSR,
+-					MUSB_TXCSR_FRCDATATOG);
++				    csr | MUSB_TXCSR_FRCDATATOG);
+ 		}
+-		/* clear mode (and everything else) to enable Rx */
++
++		/*
++		 * Clear the Mode bit (and everything else) to enable Rx.
++		 * NOTE: we mustn't clear the DMAReqMode bit before DMAReqEnab.
++		 */
++		if (csr & MUSB_TXCSR_DMAMODE)
++			musb_writew(ep->regs, MUSB_TXCSR, MUSB_TXCSR_DMAMODE);
+ 		musb_writew(ep->regs, MUSB_TXCSR, 0);
+ 
+ 	/* scrub all previous state, clearing toggle */
+@@ -746,29 +753,30 @@ static void musb_ep_program(struct musb 
+ 
+ 		/* general endpoint setup */
+ 		if (epnum) {
+-			/* ASSERT:  TXCSR_DMAENAB was already cleared */
+-
+ 			/* flush all old state, set default */
+ 			musb_h_tx_flush_fifo(hw_ep);
+-			csr &= ~(MUSB_TXCSR_H_NAKTIMEOUT
+-					| MUSB_TXCSR_DMAMODE
+-					| MUSB_TXCSR_FRCDATATOG
+-					| MUSB_TXCSR_H_RXSTALL
+-					| MUSB_TXCSR_H_ERROR
+-					| MUSB_TXCSR_TXPKTRDY
+-					);
++
++			/*
++			 * We must not clear the DMAReqMode bit before or in
++			 * the same cycle with the DMAReqEnab bit, so we clear
++			 * the latter first...
++			 */
++			csr &= ~(MUSB_TXCSR_AUTOSET | MUSB_TXCSR_DMAENAB |
++				 MUSB_TXCSR_FRCDATATOG |
++				 MUSB_TXCSR_H_NAKTIMEOUT |
++				 MUSB_TXCSR_H_RXSTALL | MUSB_TXCSR_H_ERROR |
++				 MUSB_TXCSR_TXPKTRDY);
+ 			csr |= MUSB_TXCSR_MODE;
+ 
+-			if (usb_gettoggle(urb->dev,
+-					qh->epnum, 1))
++			if (usb_gettoggle(urb->dev, qh->epnum, 1))
+ 				csr |= MUSB_TXCSR_H_WR_DATATOGGLE
+ 					| MUSB_TXCSR_H_DATATOGGLE;
+ 			else
+ 				csr |= MUSB_TXCSR_CLRDATATOG;
+ 
+-			/* twice in case of double packet buffering */
+ 			musb_writew(epio, MUSB_TXCSR, csr);
+ 			/* REVISIT may need to clear FLUSHFIFO ... */
++			csr &= ~MUSB_TXCSR_DMAMODE;
+ 			musb_writew(epio, MUSB_TXCSR, csr);
+ 			csr = musb_readw(epio, MUSB_TXCSR);
+ 		} else {
+@@ -821,34 +829,19 @@ static void musb_ep_program(struct musb 
+ 
+ #ifdef CONFIG_USB_INVENTRA_DMA
+ 		if (dma_channel) {
+-
+-			/* clear previous state */
+-			csr = musb_readw(epio, MUSB_TXCSR);
+-			csr &= ~(MUSB_TXCSR_AUTOSET
+-				| MUSB_TXCSR_DMAMODE
+-				| MUSB_TXCSR_DMAENAB);
+-			csr |= MUSB_TXCSR_MODE;
+-			musb_writew(epio, MUSB_TXCSR,
+-				csr | MUSB_TXCSR_MODE);
+-
+ 			qh->segsize = min(len, dma_channel->max_len);
+-
+ 			if (qh->segsize <= packet_sz)
+ 				dma_channel->desired_mode = 0;
+ 			else
+ 				dma_channel->desired_mode = 1;
+ 
+-
+-			if (dma_channel->desired_mode == 0) {
+-				csr &= ~(MUSB_TXCSR_AUTOSET
+-					| MUSB_TXCSR_DMAMODE);
+-				csr |= (MUSB_TXCSR_DMAENAB);
+-					/* against programming guide */
+-			} else
+-				csr |= (MUSB_TXCSR_AUTOSET
+-					| MUSB_TXCSR_DMAENAB
+-					| MUSB_TXCSR_DMAMODE);
+-
++			if (dma_channel->desired_mode == 0)
++				/* Against the programming guide */
++				csr |= MUSB_TXCSR_DMAENAB;
++			else
++				csr |= MUSB_TXCSR_AUTOSET |
++				       MUSB_TXCSR_DMAMODE |
++				       MUSB_TXCSR_DMAENAB;
+ 			musb_writew(epio, MUSB_TXCSR, csr);
+ 
+ 			dma_ok = dma_controller->channel_program(
+@@ -865,6 +858,17 @@ static void musb_ep_program(struct musb 
+ 				else
+ 					hw_ep->rx_channel = NULL;
+ 				dma_channel = NULL;
++
++				/*
++				 * The programming guide says that we must only
++				 * clear the DMAReqEnab bit before DMAReqMode...
++				 */
++				csr = musb_readw(epio, MUSB_TXCSR);
++				csr &= ~(MUSB_TXCSR_DMAENAB |
++					 MUSB_TXCSR_AUTOSET);
++				musb_writew(epio, MUSB_TXCSR, csr);
++				csr &= ~MUSB_TXCSR_DMAMODE;
++				musb_writew(epio, MUSB_TXCSR, csr);
+ 			}
+ 		}
+ #endif
+@@ -872,18 +876,7 @@ static void musb_ep_program(struct musb 
+ 		/* candidate for DMA */
+ 		if ((is_cppi_enabled() || tusb_dma_omap()) && dma_channel) {
+ 
+-			/* program endpoint CSRs first, then setup DMA.
+-			 * assume CPPI setup succeeds.
+-			 * defer enabling dma.
+-			 */
+-			csr = musb_readw(epio, MUSB_TXCSR);
+-			csr &= ~(MUSB_TXCSR_AUTOSET
+-					| MUSB_TXCSR_DMAMODE
+-					| MUSB_TXCSR_DMAENAB);
+-			csr |= MUSB_TXCSR_MODE;
+-			musb_writew(epio, MUSB_TXCSR,
+-				csr | MUSB_TXCSR_MODE);
+-
++			/* Defer enabling DMA */
+ 			dma_channel->actual_len = 0L;
+ 			qh->segsize = len;
+ 
+@@ -911,20 +904,9 @@ static void musb_ep_program(struct musb 
+ 		}
+ 
+ 		if (load_count) {
+-			/* ASSERT:  TXCSR_DMAENAB was already cleared */
+-
+ 			/* PIO to load FIFO */
+ 			qh->segsize = load_count;
+ 			musb_write_fifo(hw_ep, load_count, buf);
+-			csr = musb_readw(epio, MUSB_TXCSR);
+-			csr &= ~(MUSB_TXCSR_DMAENAB
+-				| MUSB_TXCSR_DMAMODE
+-				| MUSB_TXCSR_AUTOSET);
+-			/* write CSR */
+-			csr |= MUSB_TXCSR_MODE;
+-
+-			if (epnum)
+-				musb_writew(epio, MUSB_TXCSR, csr);
+ 		}
+ 
+ 		if (!is_cppi_enabled() && !musb->dma_controller)
+Index: linux-2.6.18/drivers/usb/musb/musbhsdma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbhsdma.c
++++ linux-2.6.18/drivers/usb/musb/musbhsdma.c
+@@ -251,28 +251,30 @@ static int dma_channel_abort(struct dma_
+ 		(struct musb_dma_channel *) pChannel->private_data;
+ 	u8 bChannel = pImplChannel->bIndex;
+ 	void __iomem *mbase = pImplChannel->controller->pCoreBase;
++	int offset;
+ 	u16 csr;
+ 
+ 	if (pChannel->status == MUSB_DMA_STATUS_BUSY) {
+ 		if (pImplChannel->transmit) {
++			offset = MUSB_EP_OFFSET(pImplChannel->epnum,
++						MUSB_TXCSR);
+ 
+-			csr = musb_readw(mbase,
+-				MUSB_EP_OFFSET(pImplChannel->epnum, MUSB_TXCSR));
+-			csr &= ~(MUSB_TXCSR_AUTOSET |
+-				 MUSB_TXCSR_DMAENAB |
+-				 MUSB_TXCSR_DMAMODE);
+-			musb_writew(mbase,
+-				MUSB_EP_OFFSET(pImplChannel->epnum, MUSB_TXCSR),
+-				csr);
++			/*
++			 * The programming guide says that we must only clear
++			 * the DMAReqEnab bit before the DMAReqMode bit...
++			 */
++			csr = musb_readw(mbase, offset);
++			csr &= ~(MUSB_TXCSR_AUTOSET | MUSB_TXCSR_DMAENAB);
++			musb_writew(mbase, offset, csr);
++			csr &= ~MUSB_TXCSR_DMAMODE;
++			musb_writew(mbase, offset , csr);
+ 		} else {
+-			csr = musb_readw(mbase,
+-				MUSB_EP_OFFSET(pImplChannel->epnum, MUSB_RXCSR));
++			offset = MUSB_EP_OFFSET(pImplChannel->epnum, MUSB_RXCSR);
++			csr = musb_readw(mbase, offset);
+ 			csr &= ~(MUSB_RXCSR_AUTOCLEAR |
+ 				 MUSB_RXCSR_DMAENAB |
+ 				 MUSB_RXCSR_DMAMODE);
+-			musb_writew(mbase,
+-				MUSB_EP_OFFSET(pImplChannel->epnum, MUSB_RXCSR),
+-				csr);
++			musb_writew(mbase, offset, csr);
+ 		}
+ 
+ 		musb_writew(mbase,
+@@ -352,14 +354,26 @@ static irqreturn_t dma_controller_irq(in
+ 					&& ((pChannel->desired_mode == 0)
+ 					    || (pChannel->actual_len &
+ 					    (pImplChannel->wMaxPacketSize - 1)))
+-					 ) {
++				    ) {
++					u8  epnum  = pImplChannel->epnum;
++					int offset = MUSB_EP_OFFSET(epnum,
++								    MUSB_TXCSR);
++					u16 txcsr;
++
++					/*
++					 * The programming guide says that we
++					 * must only clear the DMAReqEnab bit
++					 * before the DMAReqMode bit...
++					 */
++					musb_ep_select(mbase, epnum);
++					txcsr = musb_readw(mbase, offset);
++					txcsr &= ~(MUSB_TXCSR_DMAENAB |
++						   MUSB_TXCSR_AUTOSET);
++					musb_writew(mbase, offset, txcsr);
+ 					/* Send out the packet */
+-					musb_ep_select(mbase,
+-						pImplChannel->epnum);
+-					musb_writew(mbase, MUSB_EP_OFFSET(
+-							pImplChannel->epnum,
+-							MUSB_TXCSR),
+-						MUSB_TXCSR_TXPKTRDY);
++					txcsr &= ~MUSB_TXCSR_DMAMODE;
++					txcsr |=  MUSB_TXCSR_TXPKTRDY;
++					musb_writew(mbase, offset, txcsr);
+ 				} else
+ 					musb_dma_completion(
+ 						musb,
+Index: linux-2.6.18/mvl_patches/pro50-2041.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2041.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2041);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,615 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_Rename_dma.h_to_musb_dma.h
+# Date: Fri Sep 19 14:17:25 2008
+# From b2def0d919585e91014479cc207e1a9faaf00c1b Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Mon, 20 Aug 2007 01:18:07 -0700
+# Subject: [PATCH] musb: Rename dma.h to musb_dma.h
+# 
+# Rename dma.h to musb_dma.h
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 851c24e263470469fc35f4cffa5fd1ff686dbb11)
+
+PATCHNUM=1777
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From b2def0d919585e91014479cc207e1a9faaf00c1b Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Mon, 20 Aug 2007 01:18:07 -0700
+Subject: [PATCH] musb: Rename dma.h to musb_dma.h
+
+Rename dma.h to musb_dma.h
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 851c24e263470469fc35f4cffa5fd1ff686dbb11)
+Index: linux-2.6.18/drivers/usb/musb/cppi_dma.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/cppi_dma.h
++++ linux-2.6.18/drivers/usb/musb/cppi_dma.h
+@@ -9,7 +9,7 @@
+ #include <linux/errno.h>
+ #include <linux/dmapool.h>
+ 
+-#include "dma.h"
++#include "musb_dma.h"
+ #include "musb_core.h"
+ #include "davinci.h"
+ 
+Index: linux-2.6.18/drivers/usb/musb/dma.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/dma.h
++++ /dev/null
+@@ -1,174 +0,0 @@
+-/*
+- * MUSB OTG driver DMA controller abstraction
+- *
+- * Copyright 2005 Mentor Graphics Corporation
+- * Copyright (C) 2005-2006 by Texas Instruments
+- * Copyright (C) 2006-2007 Nokia Corporation
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * version 2 as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+- * 02110-1301 USA
+- *
+- * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
+- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
+- * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+- * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+- *
+- */
+-
+-#ifndef __MUSB_DMA_H__
+-#define __MUSB_DMA_H__
+-
+-struct musb_hw_ep;
+-
+-/*
+- * DMA Controller Abstraction
+- *
+- * DMA Controllers are abstracted to allow use of a variety of different
+- * implementations of DMA, as allowed by the Inventra USB cores.  On the
+- * host side, usbcore sets up the DMA mappings and flushes caches; on the
+- * peripheral side, the gadget controller driver does.  Responsibilities
+- * of a DMA controller driver include:
+- *
+- *  - Handling the details of moving multiple USB packets
+- *    in cooperation with the Inventra USB core, including especially
+- *    the correct RX side treatment of short packets and buffer-full
+- *    states (both of which terminate transfers).
+- *
+- *  - Knowing the correlation between dma channels and the
+- *    Inventra core's local endpoint resources and data direction.
+- *
+- *  - Maintaining a list of allocated/available channels.
+- *
+- *  - Updating channel status on interrupts,
+- *    whether shared with the Inventra core or separate.
+- */
+-
+-#define	DMA_ADDR_INVALID	(~(dma_addr_t)0)
+-
+-#ifndef CONFIG_MUSB_PIO_ONLY
+-#define	is_dma_capable()	(1)
+-#else
+-#define	is_dma_capable()	(0)
+-#endif
+-
+-#ifdef CONFIG_USB_TI_CPPI_DMA
+-#define	is_cppi_enabled()	1
+-#else
+-#define	is_cppi_enabled()	0
+-#endif
+-
+-#ifdef CONFIG_USB_TUSB_OMAP_DMA
+-#define tusb_dma_omap()			1
+-#else
+-#define tusb_dma_omap()			0
+-#endif
+-
+-/*
+- * DMA channel status ... updated by the dma controller driver whenever that
+- * status changes, and protected by the overall controller spinlock.
+- */
+-enum dma_channel_status {
+-	/* unallocated */
+-	MUSB_DMA_STATUS_UNKNOWN,
+-	/* allocated ... but not busy, no errors */
+-	MUSB_DMA_STATUS_FREE,
+-	/* busy ... transactions are active */
+-	MUSB_DMA_STATUS_BUSY,
+-	/* transaction(s) aborted due to ... dma or memory bus error */
+-	MUSB_DMA_STATUS_BUS_ABORT,
+-	/* transaction(s) aborted due to ... core error or USB fault */
+-	MUSB_DMA_STATUS_CORE_ABORT
+-};
+-
+-struct dma_controller;
+-
+-/**
+- * struct dma_channel - A DMA channel.
+- * @private_data: channel-private data
+- * @max_len: the maximum number of bytes the channel can move in one
+- *	transaction (typically representing many USB maximum-sized packets)
+- * @actual_len: how many bytes have been transferred
+- * @status: current channel status (updated e.g. on interrupt)
+- * @desired_mode: TRUE if mode 1 is desired; FALSE if mode 0 is desired
+- *
+- * channels are associated with an endpoint for the duration of at least
+- * one usb transfer.
+- */
+-struct dma_channel {
+-	void			*private_data;
+-	// FIXME not void* private_data, but a dma_controller *
+-	size_t			max_len;
+-	size_t			actual_len;
+-	enum dma_channel_status	status;
+-	u8			desired_mode;
+-};
+-
+-/*
+- * dma_channel_status - return status of dma channel
+- * @c: the channel
+- *
+- * Returns the software's view of the channel status.  If that status is BUSY
+- * then it's possible that the hardware has completed (or aborted) a transfer,
+- * so the driver needs to update that status.
+- */
+-static inline enum dma_channel_status
+-dma_channel_status(struct dma_channel *c)
+-{
+-	return (is_dma_capable() && c) ? c->status : MUSB_DMA_STATUS_UNKNOWN;
+-}
+-
+-/**
+- * struct dma_controller - A DMA Controller.
+- * @private_data: controller-private data;
+- * @start: call this to start a DMA controller;
+- *	return 0 on success, else negative errno
+- * @stop: call this to stop a DMA controller
+- *	return 0 on success, else negative errno
+- * @channel_alloc: call this to allocate a DMA channel
+- * @channel_release: call this to release a DMA channel
+- * @channel_abort: call this to abort a pending DMA transaction,
+- *	returning it to FREE (but allocated) state
+- *
+- * Controllers manage dma channels.
+- */
+-struct dma_controller {
+-	void			*private_data;
+-	int			(*start)(struct dma_controller *);
+-	int			(*stop)(struct dma_controller *);
+-	struct dma_channel	*(*channel_alloc)(struct dma_controller *,
+-					struct musb_hw_ep *, u8 is_tx);
+-	void			(*channel_release)(struct dma_channel *);
+-	int			(*channel_program)(struct dma_channel *channel,
+-							u16 maxpacket, u8 mode,
+-							dma_addr_t dma_addr,
+-							u32 length);
+-	int			(*channel_abort)(struct dma_channel *);
+-};
+-
+-/* called after channel_program(), may indicate a fault */
+-extern void musb_dma_completion(struct musb *musb, u8 epnum, u8 transmit);
+-
+-
+-extern struct dma_controller *__init
+-dma_controller_create(struct musb *, void __iomem *);
+-
+-extern void dma_controller_destroy(struct dma_controller *);
+-
+-#endif	/* __MUSB_DMA_H__ */
+Index: linux-2.6.18/drivers/usb/musb/musb_core.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.h
++++ linux-2.6.18/drivers/usb/musb/musb_core.h
+@@ -54,7 +54,7 @@ struct musb_ep;
+ 
+ 
+ #include "debug.h"
+-#include "dma.h"
++#include "musb_dma.h"
+ 
+ #ifdef CONFIG_USB_MUSB_SOC
+ /*
+Index: linux-2.6.18/drivers/usb/musb/musb_dma.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/usb/musb/musb_dma.h
+@@ -0,0 +1,174 @@
++/*
++ * MUSB OTG driver DMA controller abstraction
++ *
++ * Copyright 2005 Mentor Graphics Corporation
++ * Copyright (C) 2005-2006 by Texas Instruments
++ * Copyright (C) 2006-2007 Nokia Corporation
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
++ * 02110-1301 USA
++ *
++ * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
++ * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
++ * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
++ * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
++ * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ */
++
++#ifndef __MUSB_DMA_H__
++#define __MUSB_DMA_H__
++
++struct musb_hw_ep;
++
++/*
++ * DMA Controller Abstraction
++ *
++ * DMA Controllers are abstracted to allow use of a variety of different
++ * implementations of DMA, as allowed by the Inventra USB cores.  On the
++ * host side, usbcore sets up the DMA mappings and flushes caches; on the
++ * peripheral side, the gadget controller driver does.  Responsibilities
++ * of a DMA controller driver include:
++ *
++ *  - Handling the details of moving multiple USB packets
++ *    in cooperation with the Inventra USB core, including especially
++ *    the correct RX side treatment of short packets and buffer-full
++ *    states (both of which terminate transfers).
++ *
++ *  - Knowing the correlation between dma channels and the
++ *    Inventra core's local endpoint resources and data direction.
++ *
++ *  - Maintaining a list of allocated/available channels.
++ *
++ *  - Updating channel status on interrupts,
++ *    whether shared with the Inventra core or separate.
++ */
++
++#define	DMA_ADDR_INVALID	(~(dma_addr_t)0)
++
++#ifndef CONFIG_MUSB_PIO_ONLY
++#define	is_dma_capable()	(1)
++#else
++#define	is_dma_capable()	(0)
++#endif
++
++#ifdef CONFIG_USB_TI_CPPI_DMA
++#define	is_cppi_enabled()	1
++#else
++#define	is_cppi_enabled()	0
++#endif
++
++#ifdef CONFIG_USB_TUSB_OMAP_DMA
++#define tusb_dma_omap()			1
++#else
++#define tusb_dma_omap()			0
++#endif
++
++/*
++ * DMA channel status ... updated by the dma controller driver whenever that
++ * status changes, and protected by the overall controller spinlock.
++ */
++enum dma_channel_status {
++	/* unallocated */
++	MUSB_DMA_STATUS_UNKNOWN,
++	/* allocated ... but not busy, no errors */
++	MUSB_DMA_STATUS_FREE,
++	/* busy ... transactions are active */
++	MUSB_DMA_STATUS_BUSY,
++	/* transaction(s) aborted due to ... dma or memory bus error */
++	MUSB_DMA_STATUS_BUS_ABORT,
++	/* transaction(s) aborted due to ... core error or USB fault */
++	MUSB_DMA_STATUS_CORE_ABORT
++};
++
++struct dma_controller;
++
++/**
++ * struct dma_channel - A DMA channel.
++ * @private_data: channel-private data
++ * @max_len: the maximum number of bytes the channel can move in one
++ *	transaction (typically representing many USB maximum-sized packets)
++ * @actual_len: how many bytes have been transferred
++ * @status: current channel status (updated e.g. on interrupt)
++ * @desired_mode: TRUE if mode 1 is desired; FALSE if mode 0 is desired
++ *
++ * channels are associated with an endpoint for the duration of at least
++ * one usb transfer.
++ */
++struct dma_channel {
++	void			*private_data;
++	// FIXME not void* private_data, but a dma_controller *
++	size_t			max_len;
++	size_t			actual_len;
++	enum dma_channel_status	status;
++	u8			desired_mode;
++};
++
++/*
++ * dma_channel_status - return status of dma channel
++ * @c: the channel
++ *
++ * Returns the software's view of the channel status.  If that status is BUSY
++ * then it's possible that the hardware has completed (or aborted) a transfer,
++ * so the driver needs to update that status.
++ */
++static inline enum dma_channel_status
++dma_channel_status(struct dma_channel *c)
++{
++	return (is_dma_capable() && c) ? c->status : MUSB_DMA_STATUS_UNKNOWN;
++}
++
++/**
++ * struct dma_controller - A DMA Controller.
++ * @private_data: controller-private data;
++ * @start: call this to start a DMA controller;
++ *	return 0 on success, else negative errno
++ * @stop: call this to stop a DMA controller
++ *	return 0 on success, else negative errno
++ * @channel_alloc: call this to allocate a DMA channel
++ * @channel_release: call this to release a DMA channel
++ * @channel_abort: call this to abort a pending DMA transaction,
++ *	returning it to FREE (but allocated) state
++ *
++ * Controllers manage dma channels.
++ */
++struct dma_controller {
++	void			*private_data;
++	int			(*start)(struct dma_controller *);
++	int			(*stop)(struct dma_controller *);
++	struct dma_channel	*(*channel_alloc)(struct dma_controller *,
++					struct musb_hw_ep *, u8 is_tx);
++	void			(*channel_release)(struct dma_channel *);
++	int			(*channel_program)(struct dma_channel *channel,
++							u16 maxpacket, u8 mode,
++							dma_addr_t dma_addr,
++							u32 length);
++	int			(*channel_abort)(struct dma_channel *);
++};
++
++/* called after channel_program(), may indicate a fault */
++extern void musb_dma_completion(struct musb *musb, u8 epnum, u8 transmit);
++
++
++extern struct dma_controller *__init
++dma_controller_create(struct musb *, void __iomem *);
++
++extern void dma_controller_destroy(struct dma_controller *);
++
++#endif	/* __MUSB_DMA_H__ */
+Index: linux-2.6.18/mvl_patches/pro50-1777.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1777.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1777);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

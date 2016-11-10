@@ -1,0 +1,1041 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_vdce_resync
+# Date: Fri Sep 19 14:28:40 2008
+# Source: Texas Instruments Inc.
+# MR: 29355
+# Type: Integration
+# Disposition: merged from pro_40
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+# 
+# Bring Pro 5 in sync with TI's PSP080 release.
+# 
+#  drivers/char/davinci_vdce.c                    |  374 +++++--------------------
+#  include/asm-arm/arch-davinci/davinci_vdce.h    |   41 +-
+#  include/asm-arm/arch-davinci/davinci_vdce_hw.h |    2 
+#  3 files changed, 101 insertions(+), 316 deletions(-)
+# 
+
+PATCHNUM=1883
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Texas Instruments Inc.
+MR: 29355
+Type: Integration
+Disposition: merged from pro_40
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+
+Bring Pro 5 in sync with TI's PSP080 release.
+
+ drivers/char/davinci_vdce.c                    |  374 +++++--------------------
+ include/asm-arm/arch-davinci/davinci_vdce.h    |   41 +-
+ include/asm-arm/arch-davinci/davinci_vdce_hw.h |    2 
+ mvl_patches/pro50-1883.c                       |   16 +
+ 4 files changed, 117 insertions(+), 316 deletions(-)
+
+Index: linux-2.6.18/drivers/char/davinci_vdce.c
+===================================================================
+--- linux-2.6.18.orig/drivers/char/davinci_vdce.c
++++ linux-2.6.18/drivers/char/davinci_vdce.c
+@@ -36,7 +36,8 @@
+ #define ITCINTEN_SHIFT              21
+ 
+ /* edma isr status tracking variable */
+-static int irqraised1;
++static int irqraised1 = 1;
++
+ #define	DRIVERNAME	"DavinciHD_vdce"
+ #define VDCE_INTERRUPT	12
+ 
+@@ -56,6 +57,8 @@ struct device *vdce_device = NULL;
+ static u32 inter_bufsize = 1920 * 1080;
+ module_param(inter_bufsize, uint, S_IRUGO);
+ 
++channel_config_t *vdce_current_chan;
++
+ /* default values for various modes */
+ #define COMMON_DEFAULT_PARAMS {VDCE_PROGRESSIVE, VDCE_FRAME_MODE, \
+ VDCE_FRAME_MODE, VDCE_FRAME_MODE, VDCE_LUMA_CHROMA_ENABLE, \
+@@ -439,6 +442,7 @@ static void callback1(int lch, unsigned 
+ 	default:
+ 		break;
+ 	}
++
+ 	complete(&(device_config.edma_sem));
+ }
+ 
+@@ -458,7 +462,6 @@ static int edma3_memcpy(int acnt, int bc
+ 	int desbidx = 0;
+ 	int srccidx = 0;
+ 	int descidx = 0;
+-	int ret = 0;
+ 	struct paramentry_descriptor param_set;
+ 	unsigned int numtimes = 0;
+ 	unsigned int src_inc = 0, dst_inc = 0;
+@@ -544,29 +547,24 @@ static int edma3_memcpy(int acnt, int bc
+ 				dev_err(vdce_device, "dma start failed \n");
+ 				break;
+ 			}
+-			ret =
+-			    wait_for_completion_interruptible_timeout(&
+-								      (device_config.
+-								       edma_sem),
+-								      10000);
+-			if (ret <= 0) {
+-				davinci_stop_dma(dma_ch);
+-				davinci_free_dma(dma_ch);
+-				dev_err(vdce_device, "EDMA Interrupt did not \
+-					Occur \n");
+-				return -EINVAL;
+-			}
++			result = wait_for_completion_interruptible(
++						&(device_config.edma_sem));
++			if (result)
++				wait_for_completion(&(device_config.edma_sem));
++
+ 			/* Check the status of the completed transfer */
+ 			if (irqraised1 < 0) {
+ 				/* Some error occured, break from the FOR loop. */
++				davinci_stop_dma(dma_ch);
++				davinci_free_dma(dma_ch);
++				result = -EAGAIN;
+ 				break;
+ 			}
+ 		}
+-		if (0 == result) {
+ 			Istestpassed = 1;
+ 			davinci_stop_dma(dma_ch);
+ 			davinci_free_dma(dma_ch);
+-		}
++
+ 		src_inc = vdce_start->buffers[0].size / 4;
+ 		dst_inc = vdce_start->buffers[1].size / 4;
+ 	}
+@@ -608,7 +606,6 @@ int vdce_set_address(vdce_address_start_
+ 		}
+ 	}
+ 	if (num_pass == 1) {
+-
+ 		if (vdce_conf_chan->mode_state == VDCE_OPERATION_RESIZING) {
+ 			src_address = address;
+ 			src_pitch = vdce_start->res_horz_pitch;
+@@ -656,7 +653,8 @@ int vdce_set_address(vdce_address_start_
+ 	vdce_conf_chan->register_config[num_pass].vdce_src_add_ofst_cbot =
+ 	    vdce_start->src_horz_pitch * multiplier;
+ 
+-/* configure bottom field luma addreess is ytop + (no_of_lines*hpitch) */
++	/* configure bottom field luma addreess is
++	   ytop + (no_of_lines * hpitch) */
+ 	multiplier = src_pitch;
+ 	if (src_mode == VDCE_FIELD_MODE) {
+ 		temp_lines = no_of_lines;
+@@ -1004,21 +1002,17 @@ int vdce_start(vdce_address_start_t * vd
+ 	int divider_in, divider_out, blend_enable, i;
+ 	int dst_hsz_luma = 0, dst_vsz_luma = 0;
+ 	int ccnt = 1;
+-	unsigned int edma_operation = 0, ccv_only = 0, luma_status = 0;
+-	if (vdce_conf_chan->status == VDCE_CHAN_BUSY) {
+-		dev_err(vdce_device, "Channel is busy.Try after some time \n");
++	unsigned int ccv_only = 0, luma_status = 0;
++
++	if (vdce_conf_chan->status == VDCE_CHAN_UNINITIALISED) {
++		dev_err(vdce_device, "channel un-initialized\n");
+ 		return -EINVAL;
+ 	}
+-	/* checking the configuartion status */
+-	if (vdce_conf_chan->status == VDCE_CHAN_FREE) {
+-		vdce_conf_chan->status = VDCE_CHAN_PARAMS_INITIALISED;
+-	}
+-	if (vdce_conf_chan->status != VDCE_CHAN_PARAMS_INITIALISED) {
+-		dev_err(vdce_device, "State not configured \n");
+-		return -EINVAL;
++
++	if ((vdce_conf_chan->channel_mode == VDCE_MODE_NON_BLOCKING)
++	   && vdce_isbusy()) {
++		return -EBUSY;
+ 	}
+-	/* channel status is FREE */
+-	vdce_conf_chan->status = VDCE_CHAN_FREE;
+ 
+ 	/* check tht hpitch and vpitch should be greater or equal
+ 	   than hsize and vsize */
+@@ -1150,16 +1144,23 @@ int vdce_start(vdce_address_start_t * vd
+ 				     vdce_ctrl, SET_LUMA_ENABLE);
+ 		}
+ 	}
+-	/* Channel is busy */
+-	vdce_conf_chan->status = VDCE_CHAN_PENDING;
+-	/* function call to add the entry of application in array */
+-	ret = add_to_array(vdce_conf_chan);
+ 
+-	/* If non-blocking case than return */
+-	if (ret == -1 && vdce_conf_chan->channel_mode == VDCE_MODE_NON_BLOCKING) {
+-		return 0;
++
++	/* Check to see if channel is busy or not */
++	if (vdce_isbusy()) {
++		while (vdce_isbusy())
++			schedule();
++	}
++	if (irqraised1 == 0) {
++		while (irqraised1 == 0)
++			schedule();
+ 	}
+-	vdce_conf_chan->status = VDCE_CHAN_BUSY;
++
++	/* Wait for getting access to the hardware */
++	wait_for_completion(&(device_config.device_access));
++
++	vdce_current_chan = vdce_conf_chan;
++
+ 	/* start the process */
+ 	vdce_conf_chan->vdce_complete = VDCE_PASS1_STARTED;
+ 	if (vdce_conf_chan->mode_state ==
+@@ -1167,23 +1168,23 @@ int vdce_start(vdce_address_start_t * vd
+ 	    vdce_conf_chan->mode_state == VDCE_OPERATION_PRE_CODECMODE ||
+ 	    vdce_conf_chan->mode_state == VDCE_OPERATION_POST_CODECMODE ||
+ 	    vdce_conf_chan->mode_state == VDCE_OPERATION_TRANS_CODECMODE) {
+-		edma_operation = 1;
++		vdce_conf_chan->edma_operation = 1;
+ 
+ 		luma_status = vdce_conf_chan->register_config[0].vdce_ctrl;
+ 		if ((luma_status & 0x6) == 0x6) {
+-			edma_operation = 1;
++			vdce_conf_chan->edma_operation = 1;
+ 		} else {
+-			edma_operation = 0;
++			vdce_conf_chan->edma_operation = 0;
+ 		}
+ 		if ((vdce_conf_chan->get_params.common_params.src_mode !=
+ 		     vdce_conf_chan->get_params.common_params.res_mode)) {
+-			edma_operation = 0;
++			vdce_conf_chan->edma_operation = 0;
+ 		}
+ 		ccv_only = vdce_conf_chan->register_config[0].vdce_ctrl;
+ 		if (ccv_only & 0xb00) {
+-			edma_operation = 0;
++			vdce_conf_chan->edma_operation = 0;
+ 		}
+-		if (edma_operation == 1) {
++		if (vdce_conf_chan->edma_operation == 1) {
+ 			vdce_conf_chan->register_config[0].vdce_ctrl =
+ 			    BITRESET(vdce_conf_chan->register_config[0].
+ 				     vdce_ctrl, SET_LUMA_ENABLE);
+@@ -1194,7 +1195,7 @@ int vdce_start(vdce_address_start_t * vd
+ 	/*function call to enable ge hardware */
+ 	ret = vdce_enable(&vdce_conf_chan->register_config[0]);
+ 
+-	if (edma_operation == 1) {
++	if (vdce_conf_chan->edma_operation == 1) {
+ 		dst_hsz_luma = vdce_conf_chan->
+ 		    get_params.common_params.dst_hsz_luminance;
+ 
+@@ -1213,131 +1214,19 @@ int vdce_start(vdce_address_start_t * vd
+ 	}
+ 
+ 	/* waiting for processing to be complete */
+-	if (vdce_conf_chan->channel_mode != VDCE_MODE_NON_BLOCKING) {
+-		wait_for_completion_interruptible(&(device_config.sem_isr));
+-		vdce_conf_chan->status = VDCE_CHAN_FREE;
++	ret = wait_for_completion_interruptible(
++			&(device_config.sem_isr));
++	if (ret)
++		wait_for_completion(&(device_config.sem_isr));
++
++	/* Release access to hardware completion */
++	complete(&(device_config.device_access));
+ 
+-	}
+ 	dev_dbg(vdce_device, "<fn> vdce_start L</fn>\n");
+ 	return ret;
+ }
+ 
+ /*
+- * add_to_array : Function to add the current channel configuration
+- * into array according to priority.
+- */
+-int add_to_array(channel_config_t * vdce_conf_chan)
+-{
+-	int array_index, device_index;
+-	dev_dbg(vdce_device, "<fn> add_to_array E</fn>\n");
+-
+-	/* locking the configuartion aaray */
+-	down(&device_config.array_sem);
+-	/* add configuration to the     queue according to its priority */
+-	if (device_config.array_count == EMPTY) {
+-		/* if array empty insert at top position */
+-		dev_dbg(vdce_device, "First request for resizing \n");
+-		device_config.channel_configuration[device_config.array_count]
+-		    = vdce_conf_chan;
+-	} else {
+-		/* check the priority and insert according to the priority */
+-		/* it will start from first     index */
+-		for (array_index = SECONDENTRY;
+-		     array_index < device_config.array_count; array_index++) {
+-			if (device_config.
+-			    channel_configuration[array_index]->priority <
+-			    vdce_conf_chan->priority)
+-				break;
+-		}
+-		/* shift all the elements one step down in array */
+-		/* iF firstelement and second have same prioroty than insert */
+-		/* below first */
+-		for (device_index = device_config.array_count;
+-		     device_index > array_index; device_index--) {
+-			device_config.channel_configuration[device_index] =
+-			    device_config.
+-			    channel_configuration[device_index - 1];
+-		}
+-
+-		device_config.channel_configuration[array_index] =
+-		    vdce_conf_chan;
+-	}
+-	/* incrementing number of requests for VDCE */
+-	device_config.array_count++;
+-	dev_dbg(vdce_device, "The total request for resizing are %d",
+-		device_config.array_count);
+-	if (device_config.array_count != SECONDENTRY) {
+-
+-		up(&device_config.array_sem);
+-		/* if non-blocking return than channel in use */
+-		if (vdce_conf_chan->channel_mode == VDCE_MODE_NON_BLOCKING) {
+-			return -1;
+-		} else {
+-			/* if the request is pending that lock the request */
+-			wait_for_completion_interruptible
+-			    (&(vdce_conf_chan->channel_sem));
+-		}
+-	} else {
+-		up(&device_config.array_sem);
+-	}
+-	dev_dbg(vdce_device, "<fn> add_to_array L</fn>\n");
+-	return 0;
+-}
+-
+-/*
+- * delete_from_array : Function to delete the processed array entry
+- * form the array
+- */
+-int delete_from_array()
+-{
+-	int array_index = FIRSTENTRY, device_index;
+-	channel_config_t *vdce_conf_chan;
+-
+-	dev_dbg(vdce_device, "<fn> delete_from_array E</fn>\n");
+-	/*shift the     entried in array */
+-	if (device_config.array_count != SECONDENTRY) {
+-		/* decrementing the     request count */
+-		device_config.array_count--;
+-		/* shift all the elements one step up in array */
+-		for (device_index = array_index;
+-		     device_index < device_config.array_count; device_index++) {
+-
+-			device_config.channel_configuration[device_index] =
+-			    device_config.
+-			    channel_configuration[device_index + 1];
+-		}
+-		/* making last entry NULL; */
+-		device_config.channel_configuration[device_index + 1] = NULL;
+-	} else {
+-		/* remove the top entry */
+-		dev_dbg(vdce_device, "\n Removing	the first request");
+-		device_config.array_count--;
+-		device_config.channel_configuration[FIRSTENTRY] = NULL;
+-	}
+-	if (device_config.array_count != FIRSTENTRY) {
+-		/* get config having highest priority in array
+-		   vdce_device.config
+-		   and unlock config.sem of that config */
+-		dev_dbg(vdce_device,
+-			"Releasing array lock of the second entry\n");
+-
+-		vdce_conf_chan =
+-		    (device_config.channel_configuration[FIRSTENTRY]);
+-		/* non-blocking indicatind the first entry is nonblocking */
+-		if ((vdce_conf_chan->channel_mode) == VDCE_MODE_NON_BLOCKING) {
+-			return -1;
+-		} else {
+-			complete(&(device_config.channel_configuration
+-				   [FIRSTENTRY]->channel_sem));
+-		}
+-	} else {
+-		dev_dbg(vdce_device, "Releasing array lock \n");
+-	}
+-	dev_dbg(vdce_device, "<fn> delete_from_array L</fn>\n");
+-	return 0;
+-}
+-
+-/*
+  * vdce_check_global_params : Function to check the error conditions
+  */
+ int vdce_check_common_params(vdce_params_t * params)
+@@ -2322,7 +2211,7 @@ int vdce_set_params(vdce_params_t * para
+ int vdce_get_params(vdce_params_t * params, channel_config_t * vdce_conf_chan)
+ {
+ 	if (vdce_conf_chan->status == VDCE_CHAN_UNINITIALISED) {
+-		dev_err(vdce_device, "State not configured \n");
++		dev_err(vdce_device, "2 State not configured \n");
+ 		return -EINVAL;
+ 	}
+ 	memcpy(params, &vdce_conf_chan->get_params, sizeof(vdce_params_t));
+@@ -2330,36 +2219,6 @@ int vdce_get_params(vdce_params_t * para
+ }
+ 
+ /*
+- * vdce_set_priority : This function sets a priority of hardware and channel.
+- */
+-int vdce_set_priority(int priority, channel_config_t * vdce_conf_chan)
+-{
+-	dev_dbg(vdce_device, "<fn> vdce_set_priority E\n</fn>");
+-	/* check the prioroty range and assign the priority */
+-	if (priority > VDCE_MAX_PRIORITY || priority < VDCE_MIN_PRIORITY) {
+-		return -EINVAL;
+-	} else {
+-		vdce_conf_chan->priority = priority;
+-		dev_dbg(vdce_device, "the channel prioroty is %d", priority);
+-	}
+-	dev_dbg(vdce_device, "<fn> vdce_set_priority L\n</fn>");
+-	return 0;
+-}
+-
+-/*
+- * vdce_get_priority : This function gets a priority of hardware and channel.
+- */
+-int vdce_get_priority(int *priority, channel_config_t * vdce_conf_chan)
+-{
+-	dev_dbg(vdce_device, "<fn> vdce_Get_priority E\n</fn>");
+-	/* get the priority from the channel */
+-	*priority = vdce_conf_chan->priority;
+-	dev_dbg(vdce_device, "the	value is %d", *priority);
+-	dev_dbg(vdce_device, "<fn> vdce_Get_priority L\n</fn>");
+-	return 0;
+-}
+-
+-/*
+  * vdce_get_status : This function gets a status of hardware and channel.
+  */
+ int vdce_get_status(vdce_hw_status_t * hw_status,
+@@ -2405,16 +2264,9 @@ int vdce_get_default(vdce_params_t * def
+  */
+ static int vdce_open(struct inode *inode, struct file *filp)
+ {
+-	channel_config_t *vdce_conf_chan;
++	channel_config_t *vdce_conf_chan = NULL;
+ 
+ 	dev_dbg(vdce_device, "<fn> vdce_open E\n</fn>");
+-	/* if usage counter is greater than maximum supported channels
+-	   return error */
+-	if (device_config.module_usage_count >= MAX_CHANNELS) {
+-		dev_err(vdce_device,
+-			"\n modules usage count	is greater than	supported ");
+-		return -EBUSY;
+-	}
+ 	if (device_config.module_usage_count == 0) {
+ 		device_config.sem_isr.done = 0;
+ 	}
+@@ -2423,7 +2275,7 @@ static int vdce_open(struct inode *inode
+ 
+ 	if (vdce_conf_chan == NULL) {
+ 		dev_err(vdce_device,
+-			"\n cannot allocate memory ro channel config");
++			"cannot allocate memory ro channel config\n");
+ 		return -ENOMEM;
+ 	}
+ 	dev_dbg(vdce_device,
+@@ -2436,24 +2288,17 @@ static int vdce_open(struct inode *inode
+ 	if (filp->f_flags == (O_NONBLOCK | O_RDWR)) {
+ 		vdce_conf_chan->channel_mode = VDCE_MODE_NON_BLOCKING;
+ 	}
++	vdce_conf_chan->status = VDCE_CHAN_UNINITIALISED;
+ 
+ 	/* increment usage counter */
+ 	/* Lock the global variable and increment the counter */
+-	down_interruptible(&device_config.device_mutex);
+ 	device_config.module_usage_count++;
+-	up(&device_config.device_mutex);
+ 
+-	/*sTATE_NOT_CONFIGURED and priority to zero */
+-	vdce_conf_chan->priority = 0;
++	/*STATE_NOT_CONFIGURED and priority to zero */
+ 	vdce_conf_chan->mode_state = VDCE_CHAN_UNINITIALISED;
+ 
+ 	dev_dbg(vdce_device, "Initializing of channel done \n");
+ 
+-	/* initializing of application mutex */
+-	init_completion(&(vdce_conf_chan->channel_sem));
+-	vdce_conf_chan->channel_sem.done = 0;
+-
+-	init_MUTEX(&(vdce_conf_chan->chan_protection));
+ 	/* taking the configuartion     structure in private data */
+ 	filp->private_data = vdce_conf_chan;
+ 
+@@ -2471,30 +2316,18 @@ static int vdce_release(struct inode *in
+ 
+ 	/* get the configuratin of this channel from private_date member of
+ 	   file */
+-	int ret = 0;
+ 	channel_config_t *vdce_conf_chan =
+ 	    (channel_config_t *) filp->private_data;
+ 
+ 	dev_dbg(vdce_device, "<fn> vdce_release E\n</fn>");
+ 
+-	ret = down_trylock(&(vdce_conf_chan->chan_protection));
+-	if (ret != 0) {
+-
+-		dev_dbg(vdce_device, "Channel in use %d", ret);
+-		return -EBUSY;
+-	}
+-	vdce_clear_status();
+ 	/* it will free all the input and output buffers */
+ 	free_buff(vdce_conf_chan);
+ 	/* decrements the module usage count; */
+ 	/* lock the global variable and decrement variable */
+-	down_interruptible(&device_config.device_mutex);
+ 	device_config.module_usage_count--;
+-	up(&device_config.device_mutex);
+-	up(&(vdce_conf_chan->chan_protection));
+ 	kfree(vdce_conf_chan);
+ 	dev_dbg(vdce_device, "<fn> vdce_release L\n</fn>");
+-
+ 	return 0;
+ }
+ 
+@@ -2591,12 +2424,7 @@ static int vdce_ioctl(struct inode *inod
+ 		dev_err(vdce_device, "access denied\n");
+ 		return -1;	/*error in access */
+ 	}
+-	ret = down_trylock(&(vdce_conf_chan->chan_protection));
+-	if (ret != 0) {
+ 
+-		dev_dbg(vdce_device, "Channel in use %d", ret);
+-		return -EBUSY;
+-	}
+ 	/* switch according value of cmd */
+ 	switch (cmd) {
+ 		/*this ioctl is used to request frame buffers to be
+@@ -2632,23 +2460,7 @@ static int vdce_ioctl(struct inode *inod
+ 				 &buffer, sizeof(vdce_buffer_t)))
+ 			ret = -EFAULT;
+ 		break;
+-		/* this ioctl is used to set the priority of the current
+-		   logical channel. If multiple GE tasks from multiple
+-		   logical channels are currently *pending, the task
+-		   associated with the  highest priority logical channel
+-		   will be executed first */
+-	case VDCE_SET_PRIORITY:
+-		dev_dbg(vdce_device, "\n VDCE_Priority:start");
+-		ret = vdce_set_priority((*(int *)arg), vdce_conf_chan);
+-		dev_dbg(vdce_device, "\n VDCE_Priority:end");
+-		break;
+-		/* this ioctl is used to get the priority of
+-		   the current logic channel */
+-	case VDCE_GET_PRIORITY:
+-		dev_dbg(vdce_device, "\n Get VDCE_Priority:start");
+-		ret = vdce_get_priority((int *)arg, vdce_conf_chan);
+-		dev_dbg(vdce_device, "\n Get VDCE_Priority:end");
+-		break;
++
+ 		/* this ioctl is used to set the parameters
+ 		   of the GE hardware, parameters. */
+ 	case VDCE_SET_PARAMS:
+@@ -2672,22 +2484,12 @@ static int vdce_ioctl(struct inode *inod
+ 		/* function to get the hardware configuration */
+ 		ret = vdce_get_params((vdce_params_t *) arg, vdce_conf_chan);
+ 		break;
+-		/* this ioctl is used to check the current status
+-		   of the ge hardware */
+ 	case VDCE_GET_DEFAULT:
+ 		/* this ioctl is used to get the default parameters
+ 		   of the ge hardware */
+ 		ret = vdce_get_default((vdce_params_t *) arg);
+ 		break;
+-	case VDCE_GET_STATUS:
+-		ret = vdce_get_status((vdce_hw_status_t *) arg, vdce_conf_chan);
+-		break;
+-		/*this ioctl submits a VDCE task .The call can either be blocked
+-		   until the task is completed or returned immediately based
+-		   on the value of the blocking argument in the open
+-		   structure. If  it is blocking, the     status of the task
+-		   can be checked by calling ioctl   VDCE_GET_STATUS.
+-		   Only one taskcan  be outstanding for each logical channel. */
++
+ 	case VDCE_START:
+ 		if (copy_from_user(&start, (vdce_address_start_t *) arg,
+ 				   sizeof(vdce_address_start_t))) {
+@@ -2703,7 +2505,6 @@ static int vdce_ioctl(struct inode *inod
+ 	}
+ 
+ 	dev_dbg(vdce_device, " vdce_ioctl L\n");
+-	up(&(vdce_conf_chan->chan_protection));
+ 
+ 	return ret;
+ }
+@@ -2720,38 +2521,21 @@ static struct file_operations vdce_fops 
+  */
+ irqreturn_t vdce_isr(int irq, void *dev_id, struct pt_regs *regs)
+ {
+-	int ret;
+-	/* to suggest that resizing has been completed */
+-	channel_config_t *vdce_conf_chan =
+-	    device_config.channel_configuration[FIRSTENTRY];
+-
+-	dev_dbg(vdce_device, "<fn> vdce_isr E \n</fn>");
+-	/* if the current call in blocking release the semaphore */
+-	if (((vdce_conf_chan->num_pass == VDCE_MULTIPASS) &&
+-	     (vdce_conf_chan->vdce_complete == VDCE_PASS1_STARTED))) {
+-		vdce_conf_chan->vdce_complete = VDCE_PASS2_STARTED;
++	if (((vdce_current_chan->num_pass == VDCE_MULTIPASS) &&
++	     (vdce_current_chan->vdce_complete == VDCE_PASS1_STARTED))) {
++		vdce_current_chan->vdce_complete = VDCE_PASS2_STARTED;
+ 
+ 		tasklet_schedule(&short_tasklet);
+ 
+ 	} else {
+-		vdce_conf_chan->vdce_complete = VDCE_COMPLETED;
++		vdce_current_chan->vdce_complete = VDCE_COMPLETED;
+ 
+ 	}
+-	/* if process is completed than remove the entry from array */
+-	if (vdce_conf_chan->vdce_complete == VDCE_COMPLETED) {
+-		if (vdce_conf_chan->channel_mode != VDCE_MODE_NON_BLOCKING) {
++
++	if (vdce_current_chan->vdce_complete == VDCE_COMPLETED) {
+ 			complete(&(device_config.sem_isr));
+-		}
+ 		disable_irq(VDCE_INTERRUPT);
+-		ret = delete_from_array();
+-		vdce_conf_chan->status = VDCE_CHAN_FREE;
+-		if (ret == 0) {
+-			return IRQ_HANDLED;
+-		} else {
+-			tasklet_schedule(&short_tasklet);
+ 		}
+-	}
+-	dev_dbg(vdce_device, "<fn> vdce_isr L\n</fn>");
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -2762,7 +2546,7 @@ void process_bottomhalf(unsigned long re
+ {
+ 	/* codec mode used */
+ 	channel_config_t *vdce_conf_chan =
+-	    device_config.channel_configuration[FIRSTENTRY];
++		vdce_current_chan;
+ 	int pass_num;
+ 	if (vdce_conf_chan->vdce_complete == VDCE_PASS2_STARTED) {
+ 		/* set 2 pass register configuration */
+@@ -2774,10 +2558,11 @@ void process_bottomhalf(unsigned long re
+ 	}
+ 	/*function call to set up the hardware */
+ 	vdce_hw_setup(&vdce_conf_chan->register_config[pass_num]);
+-	/*function call to enable ge hardware */
+ 	if (pass_num == 0) {
+ 		enable_irq(VDCE_INTERRUPT);
+ 	}
++
++	/*function call to enable ge hardware */
+ 	ret = vdce_enable(&vdce_conf_chan->register_config[pass_num]);
+ 
+ 	dev_dbg(vdce_device, "<fn> process_nonblock L</fn>\n");
+@@ -2798,8 +2583,11 @@ static int vdce_remove(struct device *de
+ static struct class *vdce_class;
+ 
+ static struct platform_device graphics_device = {
+-	.name = DRIVERNAME,.id = 2,.dev = {
+-					   .release = vdce_platform_release,}
++	.name = DRIVERNAME,
++	.id = 2,
++	.dev = {
++	   .release = vdce_platform_release,
++	}
+ };
+ static struct device_driver vdce_driver = {
+ 	.name = DRIVERNAME,
+@@ -2816,8 +2604,8 @@ static int __init vdce_init(void)
+ 	int result;
+ 	int adr;
+ 	int size;
++
+ 	device_config.module_usage_count = 0;
+-	device_config.array_count = 0;
+ 
+ 	/* register the driver in the kernel */
+ 	result = alloc_chrdev_region(&dev, 0, 1, DRIVER_NAME);
+@@ -2861,25 +2649,25 @@ static int __init vdce_init(void)
+ 
+ 	init_completion(&(device_config.sem_isr));
+ 	init_completion(&(device_config.edma_sem));
++	init_completion(&(device_config.device_access));
+ 
+-	device_config.sem_isr.done = 0;
+-	device_config.edma_sem.done = 0;
++	device_config.device_access.done = 1;
+ 
+ 	/* initialize the device mutex */
+-	init_MUTEX(&device_config.array_sem);
+-	init_MUTEX(&device_config.device_mutex);
++	spin_lock_init(&device_config.irqlock);
+ 
+ 	/* set up the Interrupt handler for     ge interrupt */
+ 	result =
+ 	    request_irq(VDCE_INTERRUPT, vdce_isr, SA_INTERRUPT,
+-			"DavinciHD_VDCE", (void *)NULL);
+-	disable_irq(VDCE_INTERRUPT);
++				"DM646x_VDCE", (void *)NULL);
+ 	if (result < 0) {
+ 		printk(KERN_ERR "Cannot initialize IRQ \n");
+ 		result = -EINVAL;
+ 		goto label5;
+ 
+ 	}
++	disable_irq(VDCE_INTERRUPT);
++
+ 	device_config.inter_size = inter_bufsize;
+ 	if (device_config.inter_size > 0) {
+ 		device_config.inter_buffer =
+Index: linux-2.6.18/include/asm-arm/arch-davinci/davinci_vdce.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/davinci_vdce.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/davinci_vdce.h
+@@ -21,6 +21,7 @@
+ #ifdef __KERNEL__
+ /* include Linux files */
+ #include <linux/interrupt.h>
++#include <linux/spinlock.h>
+ #endif
+ #include <asm/arch/davinci_vdce_hw.h>
+ #define	  VDCE_IOC_BASE			   'G'
+@@ -28,13 +29,10 @@
+ /* Ioctl options which are to be passed	while calling the ioctl	*/
+ #define	VDCE_SET_PARAMS		 _IOWR(VDCE_IOC_BASE, 1, vdce_params_t)
+ #define	VDCE_GET_PARAMS		 _IOR(VDCE_IOC_BASE, 2, vdce_params_t)
+-#define	VDCE_GET_STATUS		 _IOR(VDCE_IOC_BASE, 3, vdce_hw_status_t)
+-#define	VDCE_START		 _IOWR(VDCE_IOC_BASE, 4, vdce_address_start_t)
+-#define	VDCE_REQBUF		 _IOWR(VDCE_IOC_BASE, 5, vdce_reqbufs_t)
+-#define	VDCE_QUERYBUF		 _IOWR(VDCE_IOC_BASE, 6, vdce_buffer_t)
+-#define VDCE_GET_DEFAULT	 _IOWR(VDCE_IOC_BASE, 7, vdce_params_t)
+-#define	VDCE_SET_PRIORITY	 _IOWR(VDCE_IOC_BASE, 8, int)
+-#define	VDCE_GET_PRIORITY	 _IOR(VDCE_IOC_BASE, 9, int)
++#define	VDCE_START		 _IOWR(VDCE_IOC_BASE, 3, vdce_address_start_t)
++#define	VDCE_REQBUF		 _IOWR(VDCE_IOC_BASE, 4, vdce_reqbufs_t)
++#define	VDCE_QUERYBUF		 _IOWR(VDCE_IOC_BASE, 5, vdce_buffer_t)
++#define VDCE_GET_DEFAULT	 _IOWR(VDCE_IOC_BASE, 6, vdce_params_t)
+ 
+ #define	VDCE_MAX_PRIORITY		  5
+ #define	VDCE_MIN_PRIORITY		  0
+@@ -114,7 +112,6 @@ typedef enum vdce_alfmode {
+ 
+ /* type	of algo*/
+ typedef enum vdce_algo_type {
+-
+ 	VDCE_ALGO_TAP_4CUBIC_CONVOLUTION = 0,	/* cubic convolution */
+ 	VDCE_ALGO_TAP_4LINEAR_INTERPOLATION	/* linear interpolation */
+ } vdce_algo_type_t;
+@@ -144,14 +141,15 @@ typedef enum vdce_processing_mode {
+ typedef enum vdce_image_fmt {
+ 	VDCE_IMAGE_FMT_420 = 0,	    /* 4:2:0 image format */
+ 	VDCE_IMAGE_FMT_422 = 1	    /* 4:2:2 image format */
+-
+ } vdce_image_fmt_t;
++
+ /*CCV operation	mode */
+ typedef enum vdce_ccv_mode {
+ 	VDCE_CCV_MODE_422_420 = 0,	/* 4:2:2 to 4:2:0 */
+ 	VDCE_CCV_MODE_420_422,		/* 4:2:0 to 4:2:2 */
+ 	VDCE_CCV_MODE_420_420		/* 4:2:0 to 4:2:0 */
+ } vdce_ccv_mode_t;
++
+ /*Resize operation mode	*/
+ typedef enum vdce_rsz_mode {
+ 	VDCE_MODE_420 = 0,	/* 4:2:2  */
+@@ -216,7 +214,6 @@ typedef struct blend_table {
+ } blend_table_t;
+ 
+ typedef struct vdce_blend_params {
+-
+ 	vdce_rsz_blend_mode_t blend_mode;
+ 	blend_table_t bld_lut[MAX_BLEND_TABLE];	/* 4 bitmap defined for blend */
+ } vdce_blend_params_t;
+@@ -364,30 +361,30 @@ typedef enum vdce_num_pass {
+ 	VDCE_SINGLE_PASS = 1,	/* VDCE driver will operate in single pass */
+ 	VDCE_MULTIPASS	/* VDCE driver will operate in Multipass pass */
+ } vdce_num_pass_t;
++
+ /* enum for suggesting channel mode */
+ typedef enum vdce_mode {
+ 	VDCE_MODE_BLOCKING = 0,	/* channel opeend in blocking mode */
+ 	VDCE_MODE_NON_BLOCKING	/* channel opened in non-blocking */
+ } vdce_mode_t;
++
+ typedef enum vdce_start_status {
+ 	VDCE_PASS1_STARTED = 0,
+ 	VDCE_PASS2_STARTED,
+ 	VDCE_COMPLETED
+ } vdce_start_status_t;
++
+ /* Global structure in driver */
+ typedef struct device_params {
+ 	int module_usage_count;	/* Keeps track of number of open chan */
+ 	struct completion sem_isr;	/* sem to indicate the completion */
+ 					/*in case for blocking call */
+-	struct semaphore array_sem;	/* sem to protect array entry */
+-	struct semaphore device_mutex;	/* sem to protect global variables */
+-	struct channel_config *channel_configuration[MAX_CHANNELS];
+-	/* Poniter */
+-	/* to be stored in Channel Queue */
+-	int array_count;	/* Total number of entries in array */
++	/*struct semaphore array_sem;*/	/* sem to protect array entry */
++	spinlock_t irqlock;
+ 	void *inter_buffer;	/* Address for inter buffer */
+ 	unsigned int inter_size; /* Size of intermediate buffer */
+ 	struct completion edma_sem;
++	struct completion device_access;
+ } device_params_t;
+ typedef struct vdce_buffer_info {
+ 	void *buffers[MAX_BUFFERS];
+@@ -403,20 +400,18 @@ typedef struct channel_config {
+ 	vdce_params_t get_params;	/*Instance for parameters send */
+ 						/* by application */
+ 	vdce_params_t get_params1;
+-	int priority;				/* Hold priority of channel */
+-	struct completion channel_sem;		/* Completion semaphore to be */
+-						/* used for blocking call */
+-	struct semaphore chan_protection;	/* Semaphore to protect the */
+-						/* channel */
++
+ 	vdce_mode_operation_t mode_state;	/* VDCE channel mode */
+ 	vdce_mode_t channel_mode;		/* Indiacte the blocking or */
+ 						/* non blocking */
+ 	int luma_chroma_phased;		/* if 1 indicates luma is phased */
+-	vdce_processing_status_t status;	/* Indiacte channel */
+-						/*free/pending/busy */
++	vdce_processing_status_t status;	/* Indicates channel free/used*/
+ 	vdce_start_status_t vdce_complete;	/* To keep track of isr */
+ 	vdce_image_fmt_t image_type_out;	/* Input image type */
+ 	vdce_image_fmt_t image_type_in;		/* Output image type */
++	unsigned int edma_operation;		/* Keeps track whether edma
++						   operation is required for
++						   this channel. */
+ 
+ } channel_config_t;
+ 
+Index: linux-2.6.18/include/asm-arm/arch-davinci/davinci_vdce_hw.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/davinci_vdce_hw.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/davinci_vdce_hw.h
+@@ -195,6 +195,8 @@
+ #define	regw(val,reg)		outl(val,((reg)+ VDCE_IOBASE_VADDR))
+ #define	regr(reg)		inl((reg)+VDCE_IOBASE_VADDR)
+ 
++#define vdce_isbusy()		(regr(VDCE_CTRL) & 0x01)
++
+ /* register mapping structure */
+ typedef struct vdce_hw_config {
+ 	unsigned int vdce_ctrl;
+Index: linux-2.6.18/mvl_patches/pro50-1883.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1883.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1883);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

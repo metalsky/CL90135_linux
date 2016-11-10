@@ -1,0 +1,458 @@
+#! /usr/bin/env bash
+# Patch: -pro_davinci_capture_non_blocked_io_mode_fix
+# Date: Fri Sep 19 14:29:33 2008
+# Source: Texas Instruments Inc.
+# MR: 29652
+# Type: Defect Fix
+# Disposition: local
+# Signed-off-by: Murali Karicheri <m-karicheri2@ti.com>
+# Signed-off-by: Philby John <pjohn@in.mvista.com>
+# Description:
+#         This video capture patch fixes the issue with immediate scheduling of
+# 	buffer for capture, if driver does not have buffer in the dma queue and
+# 	the issue with non-blocked IO. Earlier DQBUF was always blocked even if
+# 	the application requested for non-blocked mode.
+# 
+
+PATCHNUM=1892
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Texas Instruments Inc.
+MR: 29652
+Type: Defect Fix
+Disposition: local
+Signed-off-by: Murali Karicheri <m-karicheri2@ti.com>
+Signed-off-by: Philby John <pjohn@in.mvista.com>
+Description:
+        This video capture patch fixes the issue with immediate scheduling of
+	buffer for capture, if driver does not have buffer in the dma queue and
+	the issue with non-blocked IO. Earlier DQBUF was always blocked even if
+	the application requested for non-blocked mode.
+
+Index: linux-2.6.18/drivers/media/video/davinci/davinci_vpfe.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/davinci_vpfe.c
++++ linux-2.6.18/drivers/media/video/davinci/davinci_vpfe.c
+@@ -43,8 +43,24 @@
+ #include <media/davinci/ccdc_davinci.h>
+ #endif
+ 
+-MODULE_LICENSE("GPL");
++#if 0
++#define VPFE_DEBUG
++#endif
++
++#ifdef VPFE_DEBUG
++#include <linux/proc_fs.h>
++struct vpfe_stats_s {
++	int qbuf_count;
++	int dqbuf_count;
++};
++
++static struct vpfe_stats_s stats;
++
++#define PROCNAME "vpfe_stats"
++static struct proc_dir_entry *vpfe_stats_dir, *vpfe_stats;
++#endif
+ 
++MODULE_LICENSE("GPL");
+ /* Global variable for insmode command which will decide that either MT9T001
+  * (device =0)  or TVP5146 (device = 1) is the device
+  */
+@@ -372,6 +388,9 @@ static int buffer_prepare(struct videobu
+ 	}
+ 	vb->state = STATE_PREPARED;
+ 	dev_dbg(vpfe_dev, "\nEnd of buffer_prepare");
++#ifdef VPFE_DEBUG
++	stats.dqbuf_count++;
++#endif
+ 	return 0;
+ 
+ }
+@@ -447,6 +466,9 @@ static void buffer_queue(struct videobuf
+ 	dev_dbg(vpfe_dev, "\nstarting buffer_queue");
+ 	list_add_tail(&vb->queue, &vpfe->dma_queue);
+ 	vb->state = STATE_QUEUED;
++#ifdef VPFE_DEBUG
++	stats.qbuf_count++;
++#endif
+ 	dev_dbg(vpfe_dev, "\nEnding buffer_queue");
+ }
+ 
+@@ -500,6 +522,7 @@ static int vpfe_doioctl(struct inode *in
+ 	vpfe_obj *vpfe = &vpfe_device;
+ 	vpfe_fh *fh = file->private_data;
+ 	int ret = 0;
++	unsigned long addr = 0, flags;
+ 
+ 	switch (cmd) {
+ 	case VIDIOC_S_CTRL:
+@@ -1448,23 +1471,82 @@ static int vpfe_doioctl(struct inode *in
+ 		dev_dbg(vpfe_dev, "\nEnd of VIDIOC_QUERYBUF ioctl");
+ 		break;
+ 	case VIDIOC_QBUF:
+-		dev_dbg(vpfe_dev, "\nStarting VIDIOC_QBUF ioctl");
+-		if (!fh->io_allowed) {
+-			dev_dbg(vpfe_dev, "\nfh->io_allowed");
+-			ret = -EACCES;
+-		} else {
+-			dev_dbg(vpfe_dev, "\n else of fh->io_allowed");
+-			ret = videobuf_qbuf(&vpfe->bufqueue, arg);
+-		}
+-		dev_dbg(vpfe_dev, "\nEnd of VIDIOC_QBUF ioctl");
+-		break;
++		{
++			struct v4l2_buffer tbuf = *(struct v4l2_buffer *)arg;
++			struct videobuf_buffer *buf1;
++			dev_dbg(vpfe_dev, "\nStarting VIDIOC_QBUF ioctl");
++			if (!fh->io_allowed) {
++				dev_dbg(vpfe_dev, "\nfh->io_allowed");
++				ret = -EACCES;
++				break;
++			}
++			if (!(list_empty(&vpfe->dma_queue)) ||
++			    (vpfe->curFrm != vpfe->nextFrm) ||
++			    !(vpfe->started) ||
++			    (vpfe->started && (0 == vpfe->field_id))) {
++				ret =
++				    videobuf_qbuf(&vpfe->bufqueue,
++						  (struct v4l2_buffer *)
++						  arg);
++				break;
++			}
+ 
++			/* bufferqueue is empty store buffer address
++			 *  in VPFE registers */
++			mutex_lock(&vpfe->bufqueue.lock);
++			tbuf = *(struct v4l2_buffer *)arg;
++			buf1 = vpfe->bufqueue.bufs[tbuf.index];
++			if (buf1->memory != tbuf.memory) {
++				dev_err(vpfe_dev, "invalid buffer" " type\n");
++				mutex_unlock(&vpfe->bufqueue.lock);
++				return -EINVAL;
++			}
++			if ((buf1->state == STATE_QUEUED) ||
++			    (buf1->state == STATE_ACTIVE)) {
++				dev_err(vpfe_dev, "invalid state\n");
++				mutex_unlock(&vpfe->bufqueue.lock);
++				return -EINVAL;
++			}
++
++			switch (buf1->memory) {
++			case V4L2_MEMORY_MMAP:
++				if (buf1->baddr == 0) {
++					mutex_unlock(&vpfe->bufqueue.lock);
++					return -EINVAL;
++				}
++				break;
++			default:
++				mutex_unlock(&vpfe->bufqueue.lock);
++				return -EINVAL;
++			}
++			local_irq_save(flags);
++			ret =
++			    buffer_prepare(&vpfe->bufqueue,
++					   buf1, vpfe->bufqueue.field);
++			if (ret < 0) {
++				local_irq_restore(flags);
++				mutex_unlock(&vpfe->bufqueue.lock);
++				return -EINVAL;
++			}
++			buf1->state = STATE_ACTIVE;
++			addr = buf1->boff;
++			ccdc_setfbaddr((unsigned long)addr);
++			vpfe->nextFrm = buf1;
++			local_irq_restore(flags);
++			list_add_tail(&buf1->stream, &(vpfe->bufqueue.stream));
++			mutex_unlock(&vpfe->bufqueue.lock);
++			break;
++		}
+ 	case VIDIOC_DQBUF:
+ 		dev_dbg(vpfe_dev, "\nStarting VIDIOC_DQBUF ioctl");
+ 		if (!fh->io_allowed)
+ 			ret = -EACCES;
+-		else
+-			ret = videobuf_dqbuf(&vpfe->bufqueue, arg, 0);
++		else {
++			if (file->f_flags & O_NONBLOCK)
++				ret = videobuf_dqbuf(&vpfe->bufqueue, arg, 1);
++			else
++				ret = videobuf_dqbuf(&vpfe->bufqueue, arg, 0);
++		}
+ 		dev_dbg(vpfe_dev, "\nEnd of VIDIOC_DQBUF ioctl");
+ 		break;
+ 
+@@ -1905,6 +1987,30 @@ static struct platform_device _vpfe_devi
+ 		}
+ };
+ 
++#ifdef VPFE_DEBUG
++static int vpfe_read_proc(char *page, char **start,
++			  off_t off, int count, int *eof, void *data)
++{
++	int len;
++
++	/* DON'T DO THAT - buffer overruns are bad */
++	len = sprintf(page, "qbuf_count = %d, dqbuf_count = %d\n",
++		      stats.qbuf_count, stats.dqbuf_count);
++
++	return len;
++}
++
++static int vpfe_write_proc(struct file *file,
++			   const char *buffer, unsigned long count, void *data)
++{
++	int len = 0;
++	stats.qbuf_count = 0;
++	stats.dqbuf_count = 0;
++	printk(KERN_NOTICE "reset stats count\n");
++	return len;
++}
++#endif
++
+ /*
+  * ======== vpfe_init ========
+  */
+@@ -1919,6 +2025,24 @@ static int vpfe_init(void)
+ 	void *mem;
+ 	int ret = 0;
+ 
++#ifdef VPFE_DEBUG
++	vpfe_stats_dir = proc_mkdir(PROCNAME, NULL);
++	if (vpfe_stats_dir != NULL) {
++		vpfe_stats_dir->owner = THIS_MODULE;
++		vpfe_stats = create_proc_entry("stats", 0644, vpfe_stats_dir);
++		if (vpfe_stats != NULL) {
++			vpfe_stats->read_proc = vpfe_read_proc;
++			vpfe_stats->write_proc = vpfe_write_proc;
++			vpfe_stats->owner = THIS_MODULE;
++			printk(KERN_NOTICE "successfully created proc file\n");
++		} else {
++			printk(KERN_ERR "Error in creating proc file\n");
++		}
++	} else {
++		printk(KERN_ERR "Error in creating proc dir\n");
++	}
++#endif
++
+ 	ccdc_init();
+ 
+ 	if (device_type == TVP5146) {
+@@ -2084,6 +2208,11 @@ static void vpfe_cleanup(void)
+ 		free_reserved_pages((unsigned long)vpfe_device.
+ 				    fbuffers[i], buf_size);
+ 	}
++
++#ifdef VPFE_DEBUG
++	remove_proc_entry("stats", vpfe_stats_dir);
++	remove_proc_entry(PROCNAME, NULL);
++#endif
+ }
+ 
+ module_init(vpfe_init);
+Index: linux-2.6.18/mvl_patches/pro50-1892.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1892.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1892);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,497 @@
+#! /usr/bin/env bash
+# Patch: -ARM_4432_5_davinci_pin_mux_support
+# Date: Fri Sep 19 13:55:40 2008
+# MR: 26832
+# Disposition: Backport from 2.6.23-rc1
+# Adjustments:
+# 
+# From 83f53220f8313f097cdf181928be13bafbb697ea Mon Sep 17 00:00:00 2001
+# From: Vladimir Barinov <vbarinov@ru.mvista.com>
+# Date: Tue, 10 Jul 2007 13:10:04 +0100
+# Subject: [PATCH] [ARM] 4432/5: davinci: pin mux support
+# 
+# Support pin multiplexing configurations driver for TI DaVinci SoC
+# 
+# Signed-off-by: Vladimir Barinov <vbarinov@ru.mvista.com>
+# Acked-by: Kevin Hilman <khilman@mvista.com>
+# Signed-off-by: Russell King <rmk+kernel@arm.linux.org.uk>
+
+PATCHNUM=1502
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 26832
+Disposition: Backport from 2.6.23-rc1
+Adjustments:
+
+From 83f53220f8313f097cdf181928be13bafbb697ea Mon Sep 17 00:00:00 2001
+From: Vladimir Barinov <vbarinov@ru.mvista.com>
+Date: Tue, 10 Jul 2007 13:10:04 +0100
+Subject: [PATCH] [ARM] 4432/5: davinci: pin mux support
+
+Support pin multiplexing configurations driver for TI DaVinci SoC
+
+Signed-off-by: Vladimir Barinov <vbarinov@ru.mvista.com>
+Acked-by: Kevin Hilman <khilman@mvista.com>
+Signed-off-by: Russell King <rmk+kernel@arm.linux.org.uk>
+Index: linux-2.6.18/arch/arm/mach-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Makefile
++++ linux-2.6.18/arch/arm/mach-davinci/Makefile
+@@ -5,7 +5,7 @@
+ 
+ # Common objects
+ obj-y 			:= time.o irq.o clock.o serial.o io.o id.o psc.o \
+-			   gpio.o
++			   gpio.o mux.o
+ 
+ # Board specific
+ obj-$(CONFIG_MACH_DAVINCI_EVM)  += board-evm.o
+Index: linux-2.6.18/arch/arm/mach-davinci/mux.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/mach-davinci/mux.c
+@@ -0,0 +1,41 @@
++/*
++ * DaVinci pin multiplexing configurations
++ *
++ * Author: Vladimir Barinov, MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2007 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/io.h>
++#include <linux/spinlock.h>
++
++#include <asm/hardware.h>
++
++#include <asm/arch/mux.h>
++
++/* System control register offsets */
++#define PINMUX0         0x00
++#define PINMUX1         0x04
++
++static DEFINE_SPINLOCK(mux_lock);
++
++void davinci_mux_peripheral(unsigned int mux, unsigned int enable)
++{
++	u32 pinmux, muxreg = PINMUX0;
++
++	if (mux >= DAVINCI_MUX_LEVEL2) {
++		muxreg = PINMUX1;
++		mux -= DAVINCI_MUX_LEVEL2;
++	}
++
++	spin_lock(&mux_lock);
++	pinmux = davinci_readl(DAVINCI_SYSTEM_MODULE_BASE + muxreg);
++	if (enable)
++		pinmux |= (1 << mux);
++	else
++		pinmux &= ~(1 << mux);
++	davinci_writel(pinmux, DAVINCI_SYSTEM_MODULE_BASE + muxreg);
++	spin_unlock(&mux_lock);
++}
+Index: linux-2.6.18/arch/arm/mach-davinci/psc.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/psc.c
++++ linux-2.6.18/arch/arm/mach-davinci/psc.c
+@@ -25,39 +25,40 @@
+ #include <asm/io.h>
+ #include <asm/hardware.h>
+ #include <asm/arch/psc.h>
++#include <asm/arch/mux.h>
+ 
+-#define PTCMD	     __REG(0x01C41120)
+-#define PDSTAT	     __REG(0x01C41200)
+-#define PDCTL1	     __REG(0x01C41304)
+-#define EPCPR	     __REG(0x01C41070)
+-#define PTSTAT	     __REG(0x01C41128)
+-
+-#define MDSTAT	     IO_ADDRESS(0x01C41800)
+-#define MDCTL	     IO_ADDRESS(0x01C41A00)
+-
+-#define PINMUX0	     __REG(0x01c40000)
+-#define PINMUX1	     __REG(0x01c40004)
+-#define VDD3P3V_PWDN __REG(0x01C40048)
++/* PSC register offsets */
++#define EPCPR		0x070
++#define PTCMD		0x120
++#define PTSTAT		0x128
++#define PDSTAT		0x200
++#define PDCTL1		0x304
++#define MDSTAT		0x800
++#define MDCTL		0xA00
++
++/* System control register offsets */
++#define VDD3P3V_PWDN	0x48
+ 
+ static void davinci_psc_mux(unsigned int id)
+ {
+ 	switch (id) {
+ 	case DAVINCI_LPSC_ATA:
+-		PINMUX0 |= (1 << 17) | (1 << 16);
++		davinci_mux_peripheral(DAVINCI_MUX_HDIREN, 1);
++		davinci_mux_peripheral(DAVINCI_MUX_ATAEN, 1);
+ 		break;
+ 	case DAVINCI_LPSC_MMC_SD:
+ 		/* VDD power manupulations are done in U-Boot for CPMAC
+ 		 * so applies to MMC as well
+ 		 */
+ 		/*Set up the pull regiter for MMC */
+-		VDD3P3V_PWDN = 0x0;
+-		PINMUX1 &= (~(1 << 9));
++		davinci_writel(0, DAVINCI_SYSTEM_MODULE_BASE + VDD3P3V_PWDN);
++		davinci_mux_peripheral(DAVINCI_MUX_MSTK, 0);
+ 		break;
+ 	case DAVINCI_LPSC_I2C:
+-		PINMUX1 |= (1 << 7);
++		davinci_mux_peripheral(DAVINCI_MUX_I2C, 1);
+ 		break;
+ 	case DAVINCI_LPSC_McBSP:
+-		PINMUX1 |= (1 << 10);
++		davinci_mux_peripheral(DAVINCI_MUX_ASP, 1);
+ 		break;
+ 	default:
+ 		break;
+@@ -67,33 +68,59 @@ static void davinci_psc_mux(unsigned int
+ /* Enable or disable a PSC domain */
+ void davinci_psc_config(unsigned int domain, unsigned int id, char enable)
+ {
+-	volatile unsigned int *mdstat = (unsigned int *)((int)MDSTAT + 4 * id);
+-	volatile unsigned int *mdctl = (unsigned int *)((int)MDCTL + 4 * id);
++	u32 epcpr, ptcmd, ptstat, pdstat, pdctl1, mdstat, mdctl, mdstat_mask;
+ 
+ 	if (id < 0)
+ 		return;
+ 
++	mdctl = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + MDCTL + 4 * id);
+ 	if (enable)
+-		*mdctl |= 0x00000003;	/* Enable Module */
++		mdctl |= 0x00000003;	/* Enable Module */
+ 	else
+-		*mdctl &= 0xFFFFFFF2;	/* Disable Module */
+-
+-	if ((PDSTAT & 0x00000001) == 0) {
+-		PDCTL1 |= 0x1;
+-		PTCMD = (1 << domain);
+-		while ((((EPCPR >> domain) & 1) == 0));
++		mdctl &= 0xFFFFFFF2;	/* Disable Module */
++	davinci_writel(mdctl, DAVINCI_PWR_SLEEP_CNTRL_BASE + MDCTL + 4 * id);
+ 
+-		PDCTL1 |= 0x100;
+-		while (!(((PTSTAT >> domain) & 1) == 0));
++	pdstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDSTAT);
++	if ((pdstat & 0x00000001) == 0) {
++		pdctl1 = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++		pdctl1 |= 0x1;
++		davinci_writel(pdctl1, DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++
++		ptcmd = 1 << domain;
++		davinci_writel(ptcmd, DAVINCI_PWR_SLEEP_CNTRL_BASE + PTCMD);
++
++		do {
++			epcpr = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
++					      EPCPR);
++		} while ((((epcpr >> domain) & 1) == 0));
++
++		pdctl1 = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++		pdctl1 |= 0x100;
++		davinci_writel(pdctl1, DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++
++		do {
++			ptstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
++					       PTSTAT);
++		} while (!(((ptstat >> domain) & 1) == 0));
+ 	} else {
+-		PTCMD = (1 << domain);
+-		while (!(((PTSTAT >> domain) & 1) == 0));
++		ptcmd = 1 << domain;
++		davinci_writel(ptcmd, DAVINCI_PWR_SLEEP_CNTRL_BASE + PTCMD);
++
++		do {
++			ptstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
++					       PTSTAT);
++		} while (!(((ptstat >> domain) & 1) == 0));
+ 	}
+ 
+ 	if (enable)
+-		while (!((*mdstat & 0x0000001F) == 0x3));
++		mdstat_mask = 0x3;
+ 	else
+-		while (!((*mdstat & 0x0000001F) == 0x2));
++		mdstat_mask = 0x2;
++
++	do {
++		mdstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
++				       MDSTAT + 4 * id);
++	} while (!((mdstat & 0x0000001F) == mdstat_mask));
+ 
+ 	if (enable)
+ 		davinci_psc_mux(id);
+Index: linux-2.6.18/include/asm-arm/arch-davinci/mux.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/mux.h
+@@ -0,0 +1,55 @@
++/*
++ * DaVinci pin multiplexing defines
++ *
++ * Author: Vladimir Barinov, MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2007 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#ifndef __ASM_ARCH_MUX_H
++#define __ASM_ARCH_MUX_H
++
++#define DAVINCI_MUX_AEAW0	0
++#define DAVINCI_MUX_AEAW1	1
++#define DAVINCI_MUX_AEAW2	2
++#define DAVINCI_MUX_AEAW3	3
++#define DAVINCI_MUX_AEAW4	4
++#define DAVINCI_MUX_AECS4	10
++#define DAVINCI_MUX_AECS5	11
++#define DAVINCI_MUX_VLYNQWD0	12
++#define DAVINCI_MUX_VLYNQWD1	13
++#define DAVINCI_MUX_VLSCREN	14
++#define DAVINCI_MUX_VLYNQEN	15
++#define DAVINCI_MUX_HDIREN	16
++#define DAVINCI_MUX_ATAEN	17
++#define DAVINCI_MUX_RGB666	22
++#define DAVINCI_MUX_RGB888	23
++#define DAVINCI_MUX_LOEEN	24
++#define DAVINCI_MUX_LFLDEN	25
++#define DAVINCI_MUX_CWEN	26
++#define DAVINCI_MUX_CFLDEN	27
++#define DAVINCI_MUX_HPIEN	29
++#define DAVINCI_MUX_1394EN	30
++#define DAVINCI_MUX_EMACEN	31
++
++#define DAVINCI_MUX_LEVEL2	32
++#define DAVINCI_MUX_UART0	(DAVINCI_MUX_LEVEL2 + 0)
++#define DAVINCI_MUX_UART1	(DAVINCI_MUX_LEVEL2 + 1)
++#define DAVINCI_MUX_UART2	(DAVINCI_MUX_LEVEL2 + 2)
++#define DAVINCI_MUX_U2FLO	(DAVINCI_MUX_LEVEL2 + 3)
++#define DAVINCI_MUX_PWM0	(DAVINCI_MUX_LEVEL2 + 4)
++#define DAVINCI_MUX_PWM1	(DAVINCI_MUX_LEVEL2 + 5)
++#define DAVINCI_MUX_PWM2	(DAVINCI_MUX_LEVEL2 + 6)
++#define DAVINCI_MUX_I2C		(DAVINCI_MUX_LEVEL2 + 7)
++#define DAVINCI_MUX_SPI		(DAVINCI_MUX_LEVEL2 + 8)
++#define DAVINCI_MUX_MSTK	(DAVINCI_MUX_LEVEL2 + 9)
++#define DAVINCI_MUX_ASP		(DAVINCI_MUX_LEVEL2 + 10)
++#define DAVINCI_MUX_CLK0	(DAVINCI_MUX_LEVEL2 + 16)
++#define DAVINCI_MUX_CLK1	(DAVINCI_MUX_LEVEL2 + 17)
++#define DAVINCI_MUX_TIMIN	(DAVINCI_MUX_LEVEL2 + 18)
++
++extern void davinci_mux_peripheral(unsigned int mux, unsigned int enable);
++
++#endif /* __ASM_ARCH_MUX_H */
+Index: linux-2.6.18/mvl_patches/pro50-1502.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1502.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1502);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

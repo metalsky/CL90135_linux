@@ -1,0 +1,737 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_musb_host_intr_ep_scheduling
+# Date: Thu Feb 19 14:58:16 2009
+# Source: Texas Instruments, Inc.
+# MR: 29374
+# Type: Enhancement
+# Disposition: needs submitting to linux-usb@vger.kernel.org
+# Signed-off-by: Dmitry Krivoschekov <dkrivoschekov@ru.mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Interrupt endpoint scheduling support. Only IN packets are scheduled for now,
+# OUT packets are not.
+# 
+# While at it, sanitize the code in DaVinci's musb_platform_enable() setting the
+# USB interrupt mask which was doing it in three (!) writes for no reason.
+# 
+#  drivers/usb/musb/Kconfig     |    7 +
+#  drivers/usb/musb/davinci.c   |   19 +---
+#  drivers/usb/musb/musb_core.c |   34 ++++++-
+#  drivers/usb/musb/musb_core.h |    8 +
+#  drivers/usb/musb/musb_host.c |  197 ++++++++++++++++++++++++++++++++++++++++---
+#  drivers/usb/musb/musb_host.h |    7 +
+#  6 files changed, 241 insertions(+), 31 deletions(-)
+# 
+
+PATCHNUM=2068
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Texas Instruments, Inc.
+MR: 29374
+Type: Enhancement
+Disposition: needs submitting to linux-usb@vger.kernel.org
+Signed-off-by: Dmitry Krivoschekov <dkrivoschekov@ru.mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Interrupt endpoint scheduling support. Only IN packets are scheduled for now,
+OUT packets are not.
+
+While at it, sanitize the code in DaVinci's musb_platform_enable() setting the
+USB interrupt mask which was doing it in three (!) writes for no reason.
+
+ drivers/usb/musb/Kconfig     |    7 +
+ drivers/usb/musb/davinci.c   |   19 +---
+ drivers/usb/musb/musb_core.c |   34 ++++++-
+ drivers/usb/musb/musb_core.h |    8 +
+ drivers/usb/musb/musb_host.c |  197 ++++++++++++++++++++++++++++++++++++++++---
+ drivers/usb/musb/musb_host.h |    7 +
+ mvl_patches/pro50-2068.c     |   16 +++
+ 7 files changed, 257 insertions(+), 31 deletions(-)
+
+Index: linux-2.6.18/drivers/usb/musb/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/Kconfig
++++ linux-2.6.18/drivers/usb/musb/Kconfig
+@@ -161,6 +161,13 @@ config	MUSB_RESERVE_ISO_EP
+ 	  then an endpoint is reserved for handling ISO devices and will not be
+ 	  available for handling other types of traffic such as BULK/interrupt.
+ 
++config	MUSB_SCHEDULE_INTR_EP
++	bool "Enable Scheduling of Interrupt Endpoint (EXPERIMENTAL)"
++	depends on USB_MUSB_HDRC_HCD && EXPERIMENTAL
++	help
++	  Schedule multiple USB Interrupt transfers on a single endpoint using
++	  the SOF interrupt.
++
+ config USB_INVENTRA_DMA
+ 	bool
+ 	depends on USB_MUSB_HDRC && !MUSB_PIO_ONLY
+Index: linux-2.6.18/drivers/usb/musb/davinci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/davinci.c
++++ linux-2.6.18/drivers/usb/musb/davinci.c
+@@ -89,20 +89,13 @@ static int dma_off = 1;
+ 
+ void musb_platform_enable(struct musb *musb)
+ {
+-	u32	tmp, old, val;
++	u32	tmp;
+ 
+-	/* workaround:  setup irqs through both register sets */
+-	tmp = (musb->epmask & DAVINCI_USB_TX_ENDPTS_MASK)
+-			<< DAVINCI_USB_TXINT_SHIFT;
+-	musb_writel(musb->ctrl_base, DAVINCI_USB_INT_MASK_SET_REG, tmp);
+-	old = tmp;
+-	tmp = (musb->epmask & (0xfffe & DAVINCI_USB_RX_ENDPTS_MASK))
+-			<< DAVINCI_USB_RXINT_SHIFT;
+-	musb_writel(musb->ctrl_base, DAVINCI_USB_INT_MASK_SET_REG, tmp);
+-	tmp |= old;
+-
+-	val = ~MUSB_INTR_SOF;
+-	tmp |= ((val & 0x01ff) << DAVINCI_USB_USBINT_SHIFT);
++	/* Workaround: setup IRQs through both register sets */
++	tmp = (musb->epmask & DAVINCI_USB_TX_ENDPTS_MASK) <<
++	      DAVINCI_USB_TXINT_SHIFT |
++	      (musb->epmask & (DAVINCI_USB_RX_ENDPTS_MASK & ~1)) <<
++	      DAVINCI_USB_RXINT_SHIFT | DAVINCI_USB_USBINT_MASK;
+ 	musb_writel(musb->ctrl_base, DAVINCI_USB_INT_MASK_SET_REG, tmp);
+ 
+ 	if (is_dma_capable() && !dma_off)
+Index: linux-2.6.18/drivers/usb/musb/musb_core.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.c
++++ linux-2.6.18/drivers/usb/musb/musb_core.c
+@@ -1011,7 +1011,8 @@ static struct fifo_cfg __initdata mode_2
+ { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, },
+ { .hw_ep_num = 2, .style = FIFO_TX,   .maxpacket = 512, },
+ { .hw_ep_num = 2, .style = FIFO_RX,   .maxpacket = 512, },
+-{ .hw_ep_num = 3, .style = FIFO_RXTX, .maxpacket = 256, },
++{ .hw_ep_num = 3, .style = FIFO_TX,   .maxpacket = 512, },
++{ .hw_ep_num = 3, .style = FIFO_RX,   .maxpacket = 512, },
+ { .hw_ep_num = 4, .style = FIFO_RXTX, .maxpacket = 256, },
+ };
+ 
+@@ -1104,6 +1105,10 @@ fifo_setup(struct musb *musb, struct mus
+ 	if (hw_ep->epnum == ISO_EP)
+ 		musb->iso_ep = hw_ep;
+ #endif
++#ifdef CONFIG_MUSB_SCHEDULE_INTR_EP
++	if (hw_ep->epnum == INTR_EP)
++		musb->intr_ep = hw_ep;
++#endif
+ 
+ 	switch (cfg->style) {
+ 	case FIFO_TX:
+@@ -1258,10 +1263,10 @@ static int __init ep_config_from_hw(stru
+ 		/* FIXME set up hw_ep->{rx,tx}_double_buffered */
+ 
+ #ifdef CONFIG_USB_MUSB_HDRC_HCD
+-		/* pick an RX/TX endpoint for bulk */
+-		if (hw_ep->max_packet_sz_tx < 512
+-				|| hw_ep->max_packet_sz_rx < 512)
+-			continue;
++		/* Pick an RX/TX endpoint for bulk */
++		if (hw_ep->max_packet_sz_tx < 512 ||
++		    hw_ep->max_packet_sz_rx < 512)
++			goto small;
+ 
+ 		/*
+ 		 * REVISIT: this algorithm is lazy -- we should at least
+@@ -1274,8 +1279,15 @@ static int __init ep_config_from_hw(stru
+ 		}
+ #endif
+ #ifdef CONFIG_MUSB_RESERVE_ISO_EP
+-		if (musb->iso_ep == NULL)
++		if (musb->iso_ep == NULL) {
+ 			musb->iso_ep = hw_ep;
++			continue;
++		}
++#endif
++small:		;
++#ifdef CONFIG_MUSB_SCHEDULE_INTR_EP
++		if (musb->intr_ep == NULL)
++			musb->intr_ep = hw_ep;
+ #endif
+ #endif
+ 	}
+@@ -1455,6 +1467,12 @@ static int __init musb_core_init(u16 mus
+ 		return -ENOSPC;
+ 	}
+ #endif
++#ifdef CONFIG_MUSB_SCHEDULE_INTR_EP
++	if (musb->intr_ep == NULL) {
++		pr_err("%s: can't reserve interrupt EP\n", musb_driver_name);
++		return -ENOSPC;
++	}
++#endif
+ 
+ 	return 0;
+ }
+@@ -1776,6 +1794,10 @@ allocate_instance(struct device *dev, vo
+ 	INIT_LIST_HEAD(&musb->in_bulk);
+ 	INIT_LIST_HEAD(&musb->out_bulk);
+ #endif
++#ifdef	CONFIG_MUSB_SCHEDULE_INTR_EP
++	INIT_LIST_HEAD(&musb->in_intr);
++	INIT_LIST_HEAD(&musb->out_intr);
++#endif
+ 
+ 	hcd->uses_new_polling = 1;
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_core.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.h
++++ linux-2.6.18/drivers/usb/musb/musb_core.h
+@@ -333,6 +333,8 @@ struct musb {
+ 
+ 	enum musb_h_ep0_state	ep0_stage;
+ 
++	u8 			intr_hold;
++
+ 	/* bulk traffic normally dedicates endpoint hardware, and each
+ 	 * direction has its own ring of host side endpoints.
+ 	 * we try to progress the transfer at the head of each endpoint's
+@@ -340,14 +342,18 @@ struct musb {
+ 	 * endpoint.
+ 	 */
+ 	struct musb_hw_ep	*bulk_ep;
+-
+ 	struct musb_hw_ep	*iso_ep;
++	struct musb_hw_ep	*intr_ep;
+ 
+ 	struct list_head	control;	/* of musb_qh */
+ #ifdef	CONFIG_MUSB_RESERVE_BULK_EP
+ 	struct list_head	in_bulk;	/* of musb_qh */
+ 	struct list_head	out_bulk;	/* of musb_qh */
+ #endif
++#ifdef	CONFIG_MUSB_SCHEDULE_INTR_EP
++	struct list_head	in_intr;	/* of musb_qh */
++	struct list_head	out_intr;	/* of musb_qh */
++#endif
+ #endif
+ 
+ 	/* called with IRQs blocked; ON/nonzero implies starting a session,
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -174,6 +174,21 @@ static struct musb_qh *musb_ep_get_qh(st
+ }
+ 
+ /*
++ * Enable/disable the SOF interrupt.
++ */
++static void musb_sof_intr(struct musb *musb, bool enable)
++{
++	u8 intrusbe = musb_readb(musb->mregs, MUSB_INTRUSBE);
++
++	if (enable)
++		intrusbe |=  MUSB_INTR_SOF;
++	else
++		intrusbe &= ~MUSB_INTR_SOF;
++
++	musb_writeb(musb->mregs, MUSB_INTRUSBE, intrusbe);
++}
++
++/*
+  * Start (or re-start) the URB at the front of an endpoint's queue.
+  * Endpoint must be claimed from the caller.
+  *
+@@ -227,6 +242,37 @@ static void musb_start_urb(struct musb *
+ 		ofs = urb->iso_frame_desc[qh->iso_idx].offset;
+ 		len = urb->iso_frame_desc[qh->iso_idx].length;
+ 		break;
++#ifdef	CONFIG_MUSB_SCHEDULE_INTR_EP
++	case USB_ENDPOINT_XFER_INT:
++		if (usb_pipein(urb->pipe)) {
++			/*
++			 * Choose the appropriate REQPKT hold time depending on
++			 * the device speed based on the observed time that the
++			 * controller takes to issue an IN packet with the  Rx
++			 * interval register programmed to 1 [micro]frame.
++			 *
++			 * High Speed bus:
++			 *	High speed device:	2  microframes
++			 *	Full/low speed device:	12 microframes
++			 * Full/low speed bus/device:	1  frame
++			 */
++			if (USB_SPEED_HIGH == urb->dev->speed)
++				musb->intr_hold = 2;
++			else {
++				if (musb->port1_status &
++				    USB_PORT_STAT_HIGH_SPEED)
++					musb->intr_hold = 12;
++				else
++					musb->intr_hold = 1;
++			}
++
++			qh->interval = urb->interval;
++			if ((musb->port1_status & USB_PORT_STAT_HIGH_SPEED) &&
++			    urb->dev->speed != USB_SPEED_HIGH)
++				qh->interval *= 8;
++		}
++		/* FALLTHROUGH */
++#endif	/* CONFIG_MUSB_SCHEDULE_INTR_EP */
+ 	default:		/* bulk, interrupt */
+ buffer:
+ 		ofs = urb->actual_length;
+@@ -276,9 +322,7 @@ buffer:
+ 			qh->frame = urb->start_frame;
+ 			/* enable SOF interrupt so we can count down */
+ 			DBG(1, "SOF for %d\n", epnum);
+-#if 1 /* ifndef	CONFIG_ARCH_DAVINCI */
+-			musb_writeb(mbase, MUSB_INTRUSBE, 0xff);
+-#endif
++			musb_sof_intr(musb, true);
+ 		}
+ 		break;
+ 	default:
+@@ -405,10 +449,16 @@ static void musb_advance_schedule(struct
+ 		qh->hep->hcpriv = NULL;
+ 
+ 		switch (qh->type) {
+-
+-		case USB_ENDPOINT_XFER_ISOC:
+ 		case USB_ENDPOINT_XFER_INT:
+-			/* this is where periodic bandwidth should be
++#ifdef CONFIG_MUSB_SCHEDULE_INTR_EP
++			list_del(&qh->ring);
++			if (is_in && list_empty(&musb->in_intr))
++				musb_sof_intr(musb, false);
++			/* FALLTHROUGH */
++#endif
++		case USB_ENDPOINT_XFER_ISOC:
++			/*
++			 * This is where periodic bandwidth should be
+ 			 * de-allocated if it's tracked and allocated;
+ 			 * and where we'd update the schedule tree...
+ 			 */
+@@ -432,6 +482,10 @@ no_sched:
+ 			break;
+ 		}
+ 	}
++#ifdef	CONFIG_MUSB_SCHEDULE_INTR_EP
++	else if (is_in && qh->type == USB_ENDPOINT_XFER_INT)
++		qh = NULL;
++#endif
+ 
+ 	if (qh != NULL && qh->is_ready) {
+ 		DBG(4, "... next ep%d %cX urb %p\n",
+@@ -440,6 +494,79 @@ no_sched:
+ 	}
+ }
+ 
++#ifdef CONFIG_MUSB_SCHEDULE_INTR_EP
++/*
++ * Handle scheduling Interrupt requests on the reserved Interrupt EP.
++ *
++ * REVISIT: only IN requests are scheduled for now.
++ * Do we need support for OUT interrupt requests?
++ */
++static void musb_host_intr_schedule(struct musb *musb)
++{
++	struct musb_hw_ep	*hw_ep = musb->intr_ep;
++	void __iomem		*epio = hw_ep->regs;
++	struct urb		*purb, *hurb = NULL;
++	struct musb_qh		*pqh, *hqh = NULL;
++	u16 			csr;
++
++	/*
++	 * Hold the current interrupt request until the IN token is sent to
++	 * the device.  Once the hold period is over, remove the REQPKT bit
++	 * for scheduling other device's interrupt requests.
++	 */
++	if (musb->intr_hold != 0 && --musb->intr_hold == 0) {
++		csr = musb_readw(epio, MUSB_RXCSR);
++		csr &= ~(MUSB_RXCSR_H_ERROR | MUSB_RXCSR_DATAERROR |
++			 MUSB_RXCSR_H_RXSTALL | MUSB_RXCSR_H_REQPKT);
++
++		/* Avoid clearing RXPKTRDY */
++		musb_writew(epio, MUSB_RXCSR, csr | MUSB_RXCSR_RXPKTRDY);
++	}
++
++	list_for_each_entry(pqh, &musb->in_intr, ring) {
++		if (pqh->interval)
++			pqh->interval--;
++		/*
++		 * If a contention occurs in the same frame period
++		 * between several Interrupt requests expiring
++		 * then look for speed as the primary yardstick.
++		 * If they are of the same speed then look for the
++		 * lesser polling interval request.
++		 */
++		if (pqh->interval <= 0 && musb->intr_hold == 0) {
++			purb = next_urb(pqh);
++			if (hurb) {
++				if (hurb->dev->speed == purb->dev->speed) {
++					if (hurb->interval <= purb->interval)
++						continue;
++				} else if (hurb->dev->speed > purb->dev->speed)
++					continue;
++			}
++			hurb = purb;
++			hqh  = pqh;
++		}
++	}
++
++	/*
++	 * If a request is chosen to be scheduled, check to see if RXPKTRDY
++	 * is set.  If so, delay until this can be processed by the driver.
++	 */
++	if (hqh && hurb) {
++		csr = musb_readw(epio, MUSB_RXCSR);
++
++		if (csr & MUSB_RXCSR_RXPKTRDY)
++			return;
++
++		pqh = hw_ep->in_qh;
++		if (pqh)
++			musb_save_toggle(pqh, 1, next_urb(pqh));
++
++		hw_ep->rx_reinit = 1;
++		musb_start_urb(musb, 1, hqh);
++	}
++}
++#endif	/* CONFIG_MUSB_SCHEDULE_INTR_EP */
++
+ #ifdef CONFIG_MUSB_RESERVE_BULK_EP
+ static int use_bulk_timeout = 1;
+ 
+@@ -738,6 +865,12 @@ static void musb_ep_program(struct musb 
+ 
+ 	/* candidate for DMA? */
+ 	dma_controller = musb->dma_controller;
++#ifdef CONFIG_MUSB_SCHEDULE_INTR_EP
++	if (qh->type == USB_ENDPOINT_XFER_INT)
++		/* Interrupt EP scheduling fails at least with CPPI DMA */
++		dma_channel = NULL;
++	else
++#endif
+ 	if (is_dma_capable() && epnum && dma_controller) {
+ 		dma_channel = is_out ? hw_ep->tx_channel : hw_ep->rx_channel;
+ 		if (!dma_channel) {
+@@ -1129,9 +1262,9 @@ done:
+ }
+ 
+ /*
+- * REVISIT: this would be for multiplexing periodic endpoints or supporting
+- * transfer phasing to prevent exceeding ISO bandwidth limits of a given frame
+- * or microframe...
++ * REVISIT: this is for multiplexing periodic endpoints and could be used for
++ * supporting transfer phasing to prevent exceeding ISO bandwidth limits of a
++ * given frame or microframe...
+  */
+ void musb_host_sof(struct musb *musb)
+ {
+@@ -1158,6 +1291,8 @@ void musb_host_sof(struct musb *musb)
+ 				cppi_hostdma_start(musb, epnum);
+ 		}
+ 	}
++#elif defined(CONFIG_MUSB_SCHEDULE_INTR_EP)
++	musb_host_intr_schedule(musb);
+ #endif
+ }
+ 
+@@ -1763,7 +1898,10 @@ static int musb_schedule(
+ 	struct musb_hw_ep	*hw_ep = NULL;
+ 	struct list_head	*head = NULL;
+ 
+-	/* Use fixed hardware for control and (optionally) bulk transfers. */
++	/*
++	 * Use the fixed hardware endpoints for the control, and (optionally)
++	 * bulk/interrupt transfers.
++	 */
+ 	switch (qh->type) {
+ 	case USB_ENDPOINT_XFER_CONTROL:
+ 		head = &musb->control;
+@@ -1795,6 +1933,35 @@ static int musb_schedule(
+ 				return -EBUSY;
+ 		}
+ 		break;
++#ifdef CONFIG_MUSB_SCHEDULE_INTR_EP
++	case USB_ENDPOINT_XFER_INT:
++		hw_ep = musb->intr_ep;
++		if (is_in) {
++			head = &musb->in_intr;
++			maxpacket = hw_ep->max_packet_sz_rx;
++		} else {
++			head = &musb->out_intr;
++			maxpacket = hw_ep->max_packet_sz_tx;
++		}
++
++		if (qh->maxpacket > maxpacket)
++			return -EMSGSIZE;
++
++		/* For now, we only schedule the IN transfers */
++		if (!is_in)
++			break;
++
++		/*
++		 * Schedule the Interrupt request on the next SOF interrupt;
++		 * start the URB when its [micro]frame counter decrements to 0.
++		 */
++		if (list_empty(head))
++			musb_sof_intr(musb, true);
++
++		idle = 0;
++		list_add_tail(&qh->ring, head);
++		goto success;
++#endif	/* CONFIG_MUSB_SCHEDULE_INTR_EP */
+ 	}
+ 	if (head) {
+ 		idle = list_empty(head);
+@@ -1821,7 +1988,9 @@ static int musb_schedule(
+ 		if (musb_ep_get_qh(hw_ep, is_in) != NULL)
+ 			continue;
+ 
+-		if (hw_ep == musb->bulk_ep || hw_ep == musb->iso_ep)
++		if (hw_ep == musb->bulk_ep ||
++		    hw_ep == musb->iso_ep  ||
++		    hw_ep == musb->intr_ep)
+ 			continue;
+ 
+ 		diff  = is_in ? hw_ep->max_packet_sz_rx :
+@@ -1925,6 +2094,12 @@ static int musb_urb_enqueue(
+ 	/* Precompute RXINTERVAL/TXINTERVAL register */
+ 	switch (qh->type) {
+ 	case USB_ENDPOINT_XFER_INT:
++#ifdef CONFIG_MUSB_SCHEDULE_INTR_EP
++		if (usb_pipein(urb->pipe)) {
++			interval = 1;
++			break;
++		}
++#endif
+ 		/*
+ 		 * Full/low speeds use the  linear encoding,
+ 		 * high speed uses the logarithmic encoding.
+Index: linux-2.6.18/drivers/usb/musb/musb_host.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.h
++++ linux-2.6.18/drivers/usb/musb/musb_host.h
+@@ -43,6 +43,10 @@
+ #define ISO_EP			2
+ #endif
+ 
++#ifdef	CONFIG_MUSB_SCHEDULE_INTR_EP
++#define INTR_EP 		3
++#endif
++
+ static inline struct usb_hcd *musb_to_hcd(struct musb *musb)
+ {
+ 	return container_of((void *) musb, struct usb_hcd, hcd_priv);
+@@ -77,6 +81,9 @@ struct musb_qh {
+ 	u16			maxpacket;
+ 	u16			frame;		/* for periodic schedule */
+ 	unsigned		iso_idx;	/* in urb->iso_frame_desc[] */
++#ifdef	CONFIG_MUSB_SCHEDULE_INTR_EP
++	int			interval;
++#endif
+ };
+ 
+ /* map from control or bulk queue head to the first qh on that ring */
+Index: linux-2.6.18/mvl_patches/pro50-2068.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2068.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2068);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,1104 @@
+#! /usr/bin/env bash
+# Patch: -pro_davinci_6467_emac
+# Date: Fri Sep 19 13:59:22 2008
+# Source: MontaVista Software, Inc.
+# MR: 27583 
+# Type: Enhancement 
+# Disposition: local
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description: add dm6467 support to davinci dm6446 emac driver.
+# 
+#  arch/arm/mach-davinci/Kconfig  |    2 
+#  arch/arm/mach-davinci/Makefile |    2 
+#  drivers/net/Kconfig            |    8 
+#  drivers/net/davinci_emac.c     |  351 +++++++++++++++++++++++++++++++++++++----
+#  drivers/net/davinci_emac_phy.c |   96 ++++++++++-
+#  5 files changed, 416 insertions(+), 43 deletions(-)
+# 
+
+PATCHNUM=1556
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 27583 
+Type: Enhancement 
+Disposition: local
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description: add dm6467 support to davinci dm6446 emac driver.
+
+ arch/arm/mach-davinci/Kconfig  |    2 
+ arch/arm/mach-davinci/Makefile |    2 
+ drivers/net/Kconfig            |    8 
+ drivers/net/davinci_emac.c     |  351 +++++++++++++++++++++++++++++++++++++----
+ drivers/net/davinci_emac_phy.c |   96 ++++++++++-
+ mvl_patches/pro50-1556.c       |   16 +
+ 6 files changed, 432 insertions(+), 43 deletions(-)
+
+Index: linux-2.6.18/drivers/net/davinci_emac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac.c
++++ linux-2.6.18/drivers/net/davinci_emac.c
+@@ -85,6 +85,7 @@
+ #include <asm/page.h>
+ #include <asm/arch/memory.h>
+ #include <asm/arch/hardware.h>
++#include <asm/arch/cpu.h>
+ 
+ #include "davinci_emac_phy.h"
+ 
+@@ -143,11 +144,23 @@ typedef void *emac_net_data_token;
+ #define EMAC_WRAPPER_RAM_SIZE  (8 << 10)
+ #define EMAC_MDIO_BASE_ADDR    IO_ADDRESS(DAVINCI_MDIO_CNTRL_REGS_BASE)
+ 
++/* DM646X defines */
++#define EMAC_DM646X_INTERRUPT         24
++#define EMAC_DM646X_NUM_INTERRUPTS    4
++/* NOTE:: on DavinciHD emac freqency is PLL0/4 = ARM Freq/2, update */
++#define EMAC_DM646X_BUS_FREQUENCY     148500000 /* PLL/4 i.e 148.5 MHz */
++#define EMAC_DM646X_MDIO_FREQUENCY    2200000   /* PHY bus frequency */
++#define EMAC_DM646X_PHY_MASK          0x3       /* PHY chip is at address 1 */
++
++/* DM644X defines */
+ #define EMAC_INTERRUPT         13
++#define EMAC_NUM_INTERRUPTS      1
+ #define EMAC_BUS_FREQUENCY     76500000	/* PLL/6 i.e 76.5 MHz */
+ #define EMAC_MDIO_FREQUENCY    2200000	/* PHY bus frequency */
+ #define EMAC_PHY_MASK          0x2	/* PHY chip is located at address 1 */
++#define EMAC_MAX_INTERRUPTS  EMAC_DM646X_NUM_INTERRUPTS
+ 
++#define EMAC_MAX_INTNAME_LENTH 20
+ /* Note: For DaVinci, Buffer Descriptors are located in Wrapper RAM
+  * (4K).  Half of the Wrapper memory is for RX BD's and other half for
+  * TX BD's
+@@ -333,10 +346,25 @@ typedef void *emac_net_data_token;
+ #define EMAC_RX_BUFFER_OFFSET_MASK             0xFFFF
+ 
+ /* MAC_IN_VECTOR (0x180) register bit fields */
+-#define EMAC_MAC_IN_VECTOR_HOST_INT            (0x20000)
+-#define EMAC_MAC_IN_VECTOR_STATPEND_INT        (0x10000)
+-#define EMAC_MAC_IN_VECTOR_RX_INT_VEC          (0xFF00)
+-#define EMAC_MAC_IN_VECTOR_TX_INT_VEC          (0xFF)
++#define EMAC_MAC_IN_VECTOR_HOST_INT		(0x20000)
++#define EMAC_MAC_IN_VECTOR_STATPEND_INT		(0x10000)
++#define EMAC_MAC_IN_VECTOR_RX_INT_VEC		(0xFF00)
++#define EMAC_MAC_IN_VECTOR_TX_INT_VEC		(0xFF)
++#define EMAC_MAC_IN_VECTOR_RX_INT_SHIFT		(8)
++
++/** NOTE:: For davincihd the IN_VECTOR has changed*/
++#define EMAC_DM646X_MAC_IN_VECTOR_HOST_INT		(0x04000000)
++#define EMAC_DM646X_MAC_IN_VECTOR_STATPEND_INT		(0x08000000)
++#define EMAC_DM646X_MAC_IN_VECTOR_RX_INT_VEC		(0xFF)
++#define EMAC_DM646X_MAC_IN_VECTOR_TX_INT_VEC		(0xFF0000)
++#define EMAC_DM646X_MAC_IN_VECTOR_TX_INT_SHIFT		(16)
++#define EMAC_DM646X_MAC_IN_VECTOR_RX_INT_SHIFT		(0)
++
++/* EMAC EOI codes for C0 */
++#define EMAC_DM646X_MAC_EOI_C0_RXTHRESH               (0x00)
++#define EMAC_DM646X_MAC_EOI_C0_RXEN                  (0x01)
++#define EMAC_DM646X_MAC_EOI_C0_TXEN                  (0x02)
++#define EMAC_DM646X_MAC_EOI_C0_MISCEN                (0x03)
+ 
+ /* CPPI bit positions */
+ #define EMAC_CPPI_SOP_BIT                      (1 << 31)
+@@ -1316,6 +1344,8 @@ typedef struct {
+ 	u32 base_address;
+ 	u32 e_wrap_base_address;
+ 	u32 intr_line;
++        u32 num_intr_lines;
++        char interrupt_name[EMAC_MAX_INTERRUPTS][EMAC_MAX_INTNAME_LENTH];
+ 	u32 reset_line;
+ 	u32 mdio_base_address;
+ 	u32 mdio_reset_line;
+@@ -1364,9 +1394,51 @@ typedef struct {
+  * Register Overlay Structure
+  **************************************************************************/
+ typedef struct {
+-	u32 RSVD0;
+-	u32 EWCTL;
+-	u32 EWINTTCNT;
++        u32 IDVER;
++        u32 SOFTRST;
++        u32 EMCTRL;
++        u32 INTCTRL;
++        u32 C0_RXTHRESHEN;
++        u32 C0_RXINTEN;
++        u32 C0_TXINTEN;
++        u32 C0_MISCEN;
++        u32 C1_RXTHRESHEN;
++        u32 C1_RXINTEN;
++        u32 C1_TXINTEN;
++        u32 C1_MISCEN;
++        u32 C2_RXTHRESHEN;
++        u32 C2_RXINTEN;
++        u32 C2_TXINTEN;
++        u32 C2_MISCEN;
++        u32 C0_RXTHRESHSTAT;
++        u32 C0_RXINTSTAT;
++        u32 C0_TXINTSTAT;
++        u32 C0_MISCSTAT;
++        u32 C1_RXTHRESHSTAT;
++        u32 C1_RXINTSTAT;
++        u32 C1_TXINTSTAT;
++        u32 C1_MISCSTAT;
++        u32 C2_RXTHRESHSTAT;
++        u32 C2_RXINTSTAT;
++        u32 C2_TXINTSTAT;
++        u32 C2_MISCSTAT;
++        u32 C0_RXIMAX;
++        u32 C0_TXIMAX;
++        u32 C1RXIMAX;
++        u32 C1_TXIMAX;
++        u32 C2_RXIMAX;
++        u32 C2_TXIMAX;
++} ewrap_dm646x_regs;
++
++typedef struct {
++        u32 RSVD0;
++        u32 EWCTL;
++        u32 EWINTCNT;
++} ewrap_dm644x_regs;
++
++typedef union {
++        ewrap_dm646x_regs wrapper_646x_regs;
++        ewrap_dm644x_regs wrapper_644x_regs;
+ } ewrap_regs;
+ 
+ /*
+@@ -1573,6 +1645,12 @@ typedef struct emac_dev_s {
+ 	ewrap_regs *e_wrap_regs;
+ 
+ 	struct mib2_if_hccounters mib2if_hccounter;
++
++        /*Interrupt enable Mask state variables */
++        u32 rx_thresh_en;
++        u32 rx_en;
++        u32 tx_en;
++        u32 misc_en;
+ } emac_dev_t;
+ 
+ /* ---------------------------------------------------------------
+@@ -1597,7 +1675,7 @@ static int emac_devices_installed = 0;	/
+ 
+ static struct proc_dir_entry *gp_stats_file = NULL;	/* proc entries */
+ 
+-static char emac_cfg[EMAC_MAX_INSTANCES][200];
++static char emac_cfg[EMAC_MAX_INSTANCES][260];
+ 
+ /* clock frequency for EMAC */
+ static struct clk *emac_clk;
+@@ -1611,6 +1689,9 @@ static const char emac_ddcversion_string
+ static u32 emac_debug = 0x0;	/* no debug flags by default */
+ static u32 emac_wrapper_ptr = EMAC_WRAPPER_RAM_ADDR;
+ 
++static bool device_is_dm646x = FALSE;
++static bool device_is_dm644x = FALSE;
++
+ /* ---------------------------------------------------------------
+  * prototypes
+  * --------------------------------------------------------------- */
+@@ -1692,6 +1773,10 @@ static void emac_p_tick_timer_expiry(ema
+ 
+ static int emac_dev_set_mac_addr(struct net_device *netdev, void *addr);
+ 
++static void emac_disable_interrupt(emac_dev_t *edev);
++
++static void emac_enable_interrupt(emac_dev_t *edev, int ack_eoi);
++
+ /* function prototype for emac_p_tick_timer_expiry() function as per
+  * linux timer API */
+ typedef void (*timer_tick_func) (unsigned long);
+@@ -1861,8 +1946,25 @@ static int emac_cfg_build(int connect, i
+ 
+ 	speed = (external_switch) ? CONFIG_EMAC_NOPHY : 0;
+ 
++	if (device_is_dm646x)
++        sprintf(emac_cfg[cfg_instance],
++                "%d:%x:%d:%d:%u:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%x:%d:%d:%u:%u:%x:%d:%d:%s:%s:%s:%s:",
++                cfg_instance, EMAC_BASE_ADDR,
++                EMAC_DM646X_INTERRUPT, 0, EMAC_DM646X_BUS_FREQUENCY,
++                g_link_speed, g_link_mode, EMAC_DEFAULT_PROMISCOUS_ENABLE,
++		EMAC_DEFAULT_BROADCAST_ENABLE,
++                EMAC_DEFAULT_MULTICAST_ENABLE,
++                EMAC_DEFAULT_MAX_FRAME_SIZE,
++                EMAC_DEFAULT_TX_NUM_BD,
++                EMAC_DEFAULT_TX_MAX_SERVICE, EMAC_DEFAULT_RX_NUM_BD,
++                EMAC_DEFAULT_RX_MAX_SERVICE, 0,
++                EMAC_MDIO_BASE_ADDR, 0, 0,
++                EMAC_DM646X_BUS_FREQUENCY, EMAC_DM646X_MDIO_FREQUENCY,
++		EMAC_DM646X_PHY_MASK, 10,EMAC_DM646X_NUM_INTERRUPTS,
++		"EMAC RX Threshold","EMAC Receive","EMAC Transmit","EMAC Misc");
++	else
+ 	sprintf(emac_cfg[cfg_instance],
+-		"%d:%x:%d:%d:%u:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%x:%d:%d:%u:%u:%x:%d",
++		"%d:%x:%d:%d:%u:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%x:%d:%d:%u:%u:%x:%d:%d:%s:",
+ 		cfg_instance, EMAC_BASE_ADDR,
+ 		EMAC_INTERRUPT, 0, EMAC_BUS_FREQUENCY,
+ 		g_link_speed, g_link_mode, EMAC_DEFAULT_PROMISCOUS_ENABLE,
+@@ -1873,7 +1975,8 @@ static int emac_cfg_build(int connect, i
+ 		EMAC_DEFAULT_TX_MAX_SERVICE, EMAC_DEFAULT_RX_NUM_BD,
+ 		EMAC_DEFAULT_RX_MAX_SERVICE, 0,
+ 		EMAC_MDIO_BASE_ADDR, 0, 0,
+-		EMAC_BUS_FREQUENCY, EMAC_MDIO_FREQUENCY, EMAC_PHY_MASK, 10);
++		EMAC_BUS_FREQUENCY, EMAC_MDIO_FREQUENCY, EMAC_PHY_MASK,10,
++		EMAC_NUM_INTERRUPTS,"EMAC");
+ 
+ 	DBG("Driver Config:\n%s\n", emac_cfg[cfg_instance]);
+ 
+@@ -2070,8 +2173,8 @@ static int emac_net_get_config(emac_dev_
+ 	emac_init_config *i_cfg = &dev->init_cfg;
+ 	emac_ch_info *tx_ch_cfg = &dev->tx_ch_info[0];
+ 	emac_ch_info *rx_ch_cfg = &dev->rx_ch_info[0];
+-	int speed, duplex, extra;
+-	char local_string_val[200];
++	int speed, duplex, extra, i;
++	char local_string_val[260];
+ 	char *local_string = NULL;
+ 	char *tok;
+ 	char *p_holder = NULL;
+@@ -2189,7 +2292,18 @@ static int emac_net_get_config(emac_dev_
+ 	DBG("\ni_cfg->PhyMask=%08X", i_cfg->phy_mask);
+ 
+ 	i_cfg->mdio_tick_msec = EMAC_TOKEN_GET_INTEGER;
++	EMAC_TOKEN_PARSE(&local_string);
+ 	DBG("\ni_cfg->MdioTickMSec=%d", i_cfg->mdio_tick_msec);
++
++	i_cfg->num_intr_lines = EMAC_TOKEN_GET_INTEGER;
++	EMAC_TOKEN_PARSE(&local_string);
++	DBG("\ni_cfg->num_intr_lines=%d", i_cfg->num_intr_lines);
++
++        for (i = 0; i < i_cfg->num_intr_lines; i++) {
++		strncpy(i_cfg->interrupt_name[i],tok,EMAC_MAX_INTNAME_LENTH);
++	        EMAC_TOKEN_PARSE(&local_string);
++		DBG("\ni_cfg->interrupt_name[%d]=%s",i, i_cfg->interrupt_name[i]);
++	}
+ 	DBG("\n");
+ 
+ 	i_cfg->mib64cnt_msec = CONFIG_EMAC_MIB_TIMER_TIMEOUT;
+@@ -2227,8 +2341,13 @@ static int emac_net_get_config(emac_dev_
+ 		} else {
+ 			if (duplex == PHY_DUPLEX_FULL) {
+ 				i_cfg->phy_mode = SNWAY_FD10 | SNWAY_FD100;
++                                if (device_is_dm646x)
++                                        i_cfg->phy_mode |= SNWAY_FD1000;
++
+ 			} else {
+ 				i_cfg->phy_mode = SNWAY_HD10 | SNWAY_HD100;
++                                if (device_is_dm646x)
++                                        i_cfg->phy_mode |= SNWAY_HD1000;
+ 			}
+ 		}
+ 	}
+@@ -3386,7 +3505,6 @@ static int emac_dev_init(struct net_devi
+ 		default_mac_string = "08.00.28.32.06.08";
+ 		break;
+ 	}
+-
+ 	mac_string = default_mac_string;
+ 	emac_str_to_ethaddr(dev->mac_addr, mac_string);
+ 	for (cnt = 0; cnt <= ETH_ALEN; cnt++) {
+@@ -3506,6 +3624,7 @@ static int emac_dev_init(struct net_devi
+ static int emac_dev_open(struct net_device *netdev)
+ {
+ 	emac_dev_t *dev = NETDEV_PRIV(netdev);
++	int i;
+ 
+ 	if (!g_init_enable_flag) {
+ 		if (emac_p_dev_enable(dev)) {
+@@ -3514,13 +3633,15 @@ static int emac_dev_open(struct net_devi
+ 		}
+ 	}
+ 
+-	if (request_irq(dev->init_cfg.intr_line, emac_hal_isr, SA_INTERRUPT,
+-			"EMAC", dev)) {
+-		ERR("Failed to register the irq %d for TI DaVinci EMAC %s.\n",
+-		    dev->init_cfg.intr_line, netdev->name);
++        /** NOTE: we can have multiple interrupt lines running to the CPU */
++        for (i = 0; i < dev->init_cfg.num_intr_lines; i++) {
++                if (request_irq((dev->init_cfg.intr_line+i), emac_hal_isr,
++                    SA_INTERRUPT, dev->init_cfg.interrupt_name[i], dev)) {
++                        ERR("Failed to register the irq %d for TI DaVinci EMAC "                            "%s.\n", dev->init_cfg.intr_line+i, netdev->name);
++                        return (-1);
++                }
++        }
+ 
+-		return (-1);
+-	}
+ 	if (netif_carrier_ok(netdev))
+ 		netif_start_queue(netdev);
+ 	else
+@@ -3535,12 +3656,16 @@ static int emac_dev_open(struct net_devi
+ static int emac_dev_close(struct net_device *netdev)
+ {
+ 	emac_dev_t *dev = NETDEV_PRIV(netdev);
++	int i;
+ 
+ 	if (!g_init_enable_flag)
+ 		emac_p_dev_disable(dev);
+ 
+ 	/* free ISR */
+-	free_irq(dev->init_cfg.intr_line, dev);
++	/* NOTE: we can have multiple interrupt lines running to the CPU */
++	for (i = 0; i < dev->init_cfg.num_intr_lines; i++) {
++		free_irq((dev->init_cfg.intr_line + i), dev);
++	}
+ 
+ 	return (0);
+ }
+@@ -4362,6 +4487,7 @@ static int emac_open(emac_dev_t * _dev, 
+ 	u32 mii_mod_id, mii_rev_maj, mii_rev_min;
+ 	int ret_val;
+ 	emac_init_config *init_cfg;
++        ewrap_dm646x_regs *dm646x_wrap = NULL;
+ 
+ 	LOGMSG(EMAC_DEBUG_FUNCTION_ENTRY, "");
+ 
+@@ -4378,9 +4504,17 @@ static int emac_open(emac_dev_t * _dev, 
+ 	/* set the BD memory pointer */
+ 	emac_wrapper_ptr = EMAC_WRAPPER_RAM_ADDR;
+ 
+-	/* bring EMAC out of reset - for clean implementation, reset
+-	 * and then unreset the module */
+-	/* for EMAC 2.6 and beyond, reset is internal to the module */
++        if (device_is_dm646x) {
++		/* bring EMAC out of reset - for clean implementation, reset
++		 * and then unreset the module */
++		/* for EMAC 2.6 and beyond, reset is internal to the module */
++                dm646x_wrap = &dev->e_wrap_regs->wrapper_646x_regs;
++                dm646x_wrap->SOFTRST = 1;
++                while (dm646x_wrap->SOFTRST) {
++                        /* wait for reset to complete */
++                }
++        }
++
+ 	dev->regs->soft_reset = 1;
+ 
+ 	while (dev->regs->soft_reset) {
+@@ -4409,6 +4543,12 @@ static int emac_open(emac_dev_t * _dev, 
+ 	/* enable adapter check interrupts - disable stats interupt */
+ 	dev->regs->mac_int_mask_set = EMAC_MAC_HOST_ERR_INTMASK_VAL;
+ 
++	if (device_is_dm646x) {
++		/* update wrapper book-keeping fields */
++		dev->misc_en = (EMAC_MAC_HOST_ERR_INTMASK_VAL);
++		dm646x_wrap->C0_MISCEN = EMAC_MAC_HOST_ERR_INTMASK_VAL;
++	}
++
+ 	/* set device state - opened - useful when opening channels */
+ 	dev->drv_state = DRV_OPENED;
+ 
+@@ -4512,7 +4652,7 @@ static int emac_open(emac_dev_t * _dev, 
+ 			(void *)init_cfg->mib64cnt_msec, NULL);
+ 
+ 	/* enable interrupts via module control (wrapper) */
+-	((volatile ewrap_regs *)dev->e_wrap_regs)->EWCTL = 0x1;
++	emac_enable_interrupt(dev, 1);
+ 
+ 	LOGMSG(EMAC_DEBUG_FUNCTION_EXIT, "");
+ 
+@@ -4582,7 +4722,7 @@ static int emac_close(emac_dev_t * _dev,
+ 	}
+ 
+ 	/* disable interrupts via module control (wrapper) */
+-	((volatile ewrap_regs *)dev->e_wrap_regs)->EWCTL = 0x0;
++	emac_disable_interrupt(dev);
+ 
+ 	/* put EMAC in reset */
+ 	dev->regs->soft_reset = 1;
+@@ -5296,12 +5436,26 @@ static int emac_enable_channel(emac_dev_
+ 			if (mac_cfg->tx_interrupt_disable == TRUE) {
+ 				/* disable channel interrupt */
+ 				dev->regs->tx_int_mask_clear = (1 << channel);
++				if (device_is_dm646x) {
++					/* update wrapper book-keeping fields */
++					dev->tx_en &= (~(1 << channel));
++					((volatile ewrap_dm646x_regs)dev->
++						e_wrap_regs->wrapper_646x_regs).
++						C0_TXINTEN = dev->tx_en;
++				}
+ 				dev->tx_interrupt_disable = TRUE;
+ 				dev->tx_int_threshold[channel] =
+ 				    dev->tx_cppi[channel]->ch_info.service_max;
+ 			} else {
+ 				/* enable channel interrupt */
+ 				dev->regs->tx_int_mask_set = (1 << channel);
++				if (device_is_dm646x) {
++					/* update wrapper book-keeping fields */
++					dev->tx_en = (1 << channel);
++					((volatile ewrap_dm646x_regs)dev->
++					e_wrap_regs->wrapper_646x_regs).
++						C0_TXINTEN = (1 << channel);
++				}
+ 				dev->tx_interrupt_disable = FALSE;
+ 			}
+ 		}
+@@ -5329,6 +5483,14 @@ static int emac_enable_channel(emac_dev_
+ 		/* enable channel interrupt */
+ 		dev->regs->rx_int_mask_set = (1 << channel);
+ 
++		if (device_is_dm646x) {
++		/* update wrapper book-keeping fields */
++			dev->rx_en = (1 << channel);
++			((volatile ewrap_dm646x_regs)dev->
++				e_wrap_regs->wrapper_646x_regs).
++				C0_RXINTEN = (1 << channel);
++                }
++
+ 		/* mark queue active */
+ 		rx_cppi->queue_active = TRUE;
+ 
+@@ -5390,6 +5552,14 @@ static int emac_disable_channel(emac_dev
+ 
+ 		/* disable interrupt */
+ 		dev->regs->tx_int_mask_clear = (1 << channel);
++                if (device_is_dm646x) {
++                /* update wrapper book-keeping fields */
++                        dev->tx_en &= (~(1 << channel));
++                        ((volatile ewrap_dm646x_regs)dev->
++                                e_wrap_regs->wrapper_646x_regs).
++                                C0_TXINTEN = dev->tx_en;
++                }
++
+ 
+ 		/* disable DMA */
+ 
+@@ -5955,16 +6125,40 @@ static int emac_pkt_process(emac_dev_t *
+ 	u32 handle_pkts_and_status = 0;
+ 	u32 vector_channel = 0;
+ 	int pkts_processed = 0;
++	u32 mac_in_vector_tx_int_vec;
++	u32 mac_in_vector_tx_int_shift;
++	u32 mac_in_vector_rx_int_vec;
++	u32 mac_in_vector_rx_int_shift;
++	u32 mac_in_vector_host_int_vec;
++
++	if (device_is_dm646x) {
++		mac_in_vector_tx_int_vec = EMAC_DM646X_MAC_IN_VECTOR_TX_INT_VEC;
++		mac_in_vector_tx_int_shift =
++			EMAC_DM646X_MAC_IN_VECTOR_TX_INT_SHIFT;
++		mac_in_vector_rx_int_vec = EMAC_DM646X_MAC_IN_VECTOR_RX_INT_VEC;
++		mac_in_vector_host_int_vec = EMAC_DM646X_MAC_IN_VECTOR_HOST_INT;
++		mac_in_vector_rx_int_shift =
++			EMAC_DM646X_MAC_IN_VECTOR_RX_INT_SHIFT;
++	} else {
++		mac_in_vector_tx_int_vec = EMAC_MAC_IN_VECTOR_TX_INT_VEC;
++		mac_in_vector_tx_int_shift = 0;
++		mac_in_vector_rx_int_vec = EMAC_MAC_IN_VECTOR_RX_INT_VEC;
++		mac_in_vector_rx_int_shift =
++			EMAC_MAC_IN_VECTOR_RX_INT_SHIFT;
++		mac_in_vector_host_int_vec = EMAC_MAC_IN_VECTOR_HOST_INT;
++	}
+ 
+ 	/* disable interrupts via module control (wrapper) */
+-	((volatile ewrap_regs *)dev->e_wrap_regs)->EWCTL = 0x0;
++	emac_disable_interrupt(dev);
+ 	vector = dev->regs->mac_in_vector;
+ 
+ 	/* handle packet transmit completion */
+-	if (vector & EMAC_MAC_IN_VECTOR_TX_INT_VEC) {
++	if (vector & mac_in_vector_tx_int_vec) {
+ 		bool is_eoq;
+ 
+-		vector_channel = (vector & EMAC_MAC_IN_VECTOR_TX_INT_VEC);
++                vector_channel = ((vector & mac_in_vector_tx_int_vec) >>
++                                  mac_in_vector_tx_int_shift);
++
+ 		for (channel = 0; channel < 8; channel++) {
+ 			if (vector_channel & 0x1)
+ 				break;
+@@ -5991,6 +6185,13 @@ static int emac_pkt_process(emac_dev_t *
+ 			if (!handle_pkts_and_status && is_eoq)
+ 				/* disable channel interrupt */
+ 				dev->regs->tx_int_mask_clear = (1 << channel);
++				if (device_is_dm646x) {
++					/* update wrapper book-keeping fields */
++					dev->tx_en &= (~(1 << channel));
++					((volatile ewrap_dm646x_regs)dev->
++						e_wrap_regs->wrapper_646x_regs).
++							C0_TXINTEN = dev->tx_en;
++					}
+ 		}
+ 		*pkts_pending = handle_pkts_and_status;	/* status. */
+ 	}
+@@ -6000,9 +6201,9 @@ static int emac_pkt_process(emac_dev_t *
+ 	 * reducing the latency (- but an equally opposite argument
+ 	 * can also be made)
+ 	 */
+-	if (vector & EMAC_MAC_IN_VECTOR_RX_INT_VEC) {
+-		vector_channel = (vector & EMAC_MAC_IN_VECTOR_RX_INT_VEC);
+-		vector_channel >>= 8;
++	if (vector & mac_in_vector_rx_int_vec) {
++	vector_channel = ((vector & mac_in_vector_rx_int_vec) >>
++				mac_in_vector_rx_int_shift);
+ 		for (channel = 0; channel < 8; channel++) {
+ 			if (vector_channel & 0x1)
+ 				break;
+@@ -6028,7 +6229,7 @@ static int emac_pkt_process(emac_dev_t *
+ 
+ 	/* handle host errors - being handled last does not mean its
+ 	 * of least priority */
+-	if (vector & EMAC_MAC_IN_VECTOR_HOST_INT) {
++	if (vector & mac_in_vector_host_int_vec) {
+ 		emac_process_host_error(_dev);
+ 	}
+ 
+@@ -6047,7 +6248,7 @@ static int emac_pkt_process_end(emac_dev
+ 	emac_dev_t *dev = (emac_dev_t *) _dev;
+ 
+ 	/* enable interrupts via module control (wrapper) */
+-	((volatile ewrap_regs *)dev->e_wrap_regs)->EWCTL = 0x1;
++	emac_enable_interrupt(dev, 1); /*TODO: ack_eoi=0,1?*/
+ 
+ 	return (EMAC_SUCCESS);
+ }
+@@ -6168,6 +6369,15 @@ static int emac_send(emac_dev_t * _dev, 
+ 			if (dev->tx_interrupt_disable == TRUE) {
+ 				/* enable channel interrupt */
+ 				dev->regs->tx_int_mask_set = (1 << channel);
++				if (device_is_dm646x) {
++					ewrap_dm646x_regs *dm646x_wrap;
++					dm646x_wrap = &dev->e_wrap_regs->
++					wrapper_646x_regs;
++					/* update wrapper book-keeping fields*/
++					dev->tx_en = (1 << channel);
++					dm646x_wrap->C0_TXINTEN =
++						(1 << channel);
++				}
+ 			}
+ 		}
+ 	}
+@@ -6731,6 +6941,76 @@ static int emac_dev_tx(struct sk_buff *s
+ 	return (-1);
+ }
+ 
++/* emac_disable_interrupt : Turns of the interrupts from the
++ * peripheral to the CPU. we have four interrupt lines
++ * running to the CPU, we handle them as a set*/
++static void emac_disable_interrupt(emac_dev_t *edev)
++{
++        if (device_is_dm646x) {
++                unsigned long flags;
++                ewrap_dm646x_regs *dm646x_wrap;
++
++                dm646x_wrap = &edev->e_wrap_regs->wrapper_646x_regs;
++                local_irq_save(flags);
++                /* Program C0_Int_En to zero to turn off
++                 * interrupts to the CPU */
++                dm646x_wrap->C0_RXTHRESHEN = 0x0;
++                dm646x_wrap->C0_RXINTEN = 0x0;
++                dm646x_wrap->C0_TXINTEN = 0x0;
++                dm646x_wrap->C0_MISCEN = 0x0;
++
++                local_irq_restore(flags);
++        } else {
++                ewrap_dm644x_regs *dm644x_wrap;
++
++                dm644x_wrap = &edev->e_wrap_regs->wrapper_644x_regs;
++                dm644x_wrap->EWCTL = 0x0;
++        }
++}
++
++static void emac_enable_interrupt(emac_dev_t *edev, int ack_eoi)
++{
++        if (device_is_dm646x) {
++                unsigned long flags;
++                ewrap_dm646x_regs *dm646x_wrap;
++
++                dm646x_wrap = &edev->e_wrap_regs->wrapper_646x_regs;
++
++                local_irq_save(flags);
++
++                /* Program C0_Int_En to zero to appropriate values */
++                dm646x_wrap->C0_RXTHRESHEN = edev->rx_thresh_en;
++                dm646x_wrap->C0_RXINTEN = edev->rx_en;
++                dm646x_wrap->C0_TXINTEN = edev->tx_en;
++                dm646x_wrap->C0_MISCEN = edev->misc_en;
++
++                if (ack_eoi) {
++
++                        /* In addition to turning on interrupt Enable, we need
++                         * ack by writing appropriate values to the EOI
++                         * register*/
++                        /* ack rxthresh- only then a new pulse is generated */
++                        edev->regs->mac_EOI_vector =
++                            EMAC_DM646X_MAC_EOI_C0_RXTHRESH;
++                        /*ack rxen only then a new pulse will be generated */                        edev->regs->mac_EOI_vector =
++                            EMAC_DM646X_MAC_EOI_C0_RXEN;
++                        /*ack txen- only then a new pulse will be generated */
++                        edev->regs->mac_EOI_vector =
++                            EMAC_DM646X_MAC_EOI_C0_TXEN;
++                        /*ack macen- only then a new pulse will be generated
++*/
++                        edev->regs->mac_EOI_vector =
++                            EMAC_DM646X_MAC_EOI_C0_MISCEN;
++                }
++
++                local_irq_restore(flags);
++        } else {
++                ewrap_dm644x_regs *dm644x_wrap;
++
++                dm644x_wrap = &edev->e_wrap_regs->wrapper_644x_regs;
++                dm644x_wrap->EWCTL = 0x1;
++        }
++}
+ /******************************************************************************
+  *  Linux Driver Model
+  *****************************************************************************/
+@@ -6775,6 +7055,11 @@ static int __init emac_dev_probe(void)
+ 	int unit;
+ 	int instance_count = EMAC_MAX_INSTANCES;
+ 
++        if (cpu_is_davinci_dm6467())
++                device_is_dm646x = TRUE;
++        else
++                device_is_dm644x = TRUE;
++
+ 	/* obtain clock rate from kernel clock API's */
+ 	emac_clk = clk_get(0, "EMACCLK");
+ 	if (IS_ERR(emac_clk)) {
+Index: linux-2.6.18/drivers/net/davinci_emac_phy.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac_phy.c
++++ linux-2.6.18/drivers/net/davinci_emac_phy.c
+@@ -30,7 +30,7 @@
+  *           					use PHY_DUPLEX_* constants
+  */
+ #include <linux/kernel.h>
+-
++#include <asm/arch/cpu.h>
+ #include "davinci_emac_phy.h"
+ 
+ #define EMAC_PHY_DEBUG
+@@ -52,6 +52,7 @@
+ #define MII_PHY_ISOLATE         (1<<10)
+ #define MII_RENEGOTIATE         (1<<9)
+ #define MII_PHY_FD              (1<<8)
++#define MII_PHY_1000            (1<<6)
+ 
+ #define PHY_STATUS_REG        	1
+ #define MII_NWAY_COMPLETE       (1<<5)
+@@ -66,6 +67,22 @@
+ #define MII_NWAY_HD10           (1<<5)
+ #define MII_NWAY_SEL            (1<<0)
+ 
++#define GBE_CONTROL_REG         9
++#define MII_LOC_FD1000          (1<<9)
++#define MII_LOC_HD1000          (1<<8)
++#define GBE_STATUS_REG          10
++#define MII_LOC_RX_STAT         (1<<13)
++#define MII_REM_RX_STAT         (1<<12)
++#define MII_REM_FD1000          (1<<11)
++#define MII_REM_HD1000          (1<<10)
++
++#define PHY_CONFIG_REG          22
++#define PHY_FIFO_DEPTH_32       (3<<12)
++#define PHY_FIFO_DEPTH_8        (1<<12)
++#define PHY_EN_TX_CLK           (1<<5)
++#define PHY_EN_SYS_CLK          (1<<4)
++#define PHY_GTX_CLK             (1<<1)
++
+ /* Timeout values - since timer tikc is expected to be 10 mSecs fixed these
+  * values are in (value * 10 mSecs) */
+ #define PHY_FIND_TIMEOUT (2)
+@@ -379,6 +396,7 @@ void emac_mdio_found_state(void)
+ 	unsigned int phy_num;
+ 	unsigned int cnt;
+ 	unsigned int nway_advertise;
++        unsigned int gbe_advertise;
+ 
+ 	/* Check if there is any phy mode requested by the user */
+ 	if (emac_phy->phy_mode == 0) {
+@@ -436,6 +454,12 @@ void emac_mdio_found_state(void)
+ 	if (emac_phy->phy_mode & NWAY_HD10)
+ 		nway_advertise |= MII_NWAY_HD10;
+ 
++        gbe_advertise = 0;
++        if (cpu_is_davinci_dm6467()) {
++                if (emac_phy->phy_mode & NWAY_FD1000)
++                        gbe_advertise |= MII_LOC_FD1000;
++        }
++
+ 	phy_status = emac_mdio_read(emac_phy->phy_addr, PHY_STATUS_REG);
+ 
+ 	if ((phy_status & MII_NWAY_CAPABLE) && (emac_phy->phy_mode & NWAY_AUTO)) {
+@@ -443,6 +467,11 @@ void emac_mdio_found_state(void)
+ 		/* NWAY Phy Detected - following procedure for NWAY compliant Phys */
+ 		emac_mdio_write(emac_phy->phy_addr, NWAY_ADVERTIZE_REG,
+ 				nway_advertise);
++
++                if (cpu_is_davinci_dm6467())
++                        emac_mdio_write(emac_phy->phy_addr, GBE_CONTROL_REG,
++                                        gbe_advertise);
++
+ 		if (emac_phy->debug_mode) {
+ 			DPRINTK("NWAY Advertising: ");
+ 			if (nway_advertise & MII_NWAY_FD100)
+@@ -471,7 +500,11 @@ void emac_mdio_found_state(void)
+ 		nway_advertise &= ~MII_NWAY_SEL;
+ 		phy_status = 0;
+ 
+-		if (nway_advertise & (MII_NWAY_FD100 | MII_NWAY_HD100)) {
++                if (gbe_advertise & (MII_LOC_FD1000 | MII_LOC_HD1000)) {
++                        phy_status = MII_PHY_1000;      /* Set 1000 Mbps */
++                        gbe_advertise &= (MII_LOC_FD1000 | MII_LOC_HD1000);
++                        emac_phy->speed = 1000;
++                } else if (nway_advertise & (MII_NWAY_FD100 | MII_NWAY_HD100)) {
+ 			phy_status = MII_PHY_100;	/* Set 100 Mbps if requested */
+ 			nway_advertise &= (MII_NWAY_FD100 | MII_NWAY_HD100);
+ 		} else {
+@@ -482,6 +515,10 @@ void emac_mdio_found_state(void)
+ 			phy_status |= MII_PHY_FD;	/* Set Full duplex if requested */
+ 		}
+ 
++                if (cpu_is_davinci_dm6467())
++                        emac_mdio_write(emac_phy->phy_addr, GBE_CONTROL_REG,
++                                        gbe_advertise);
++
+ 		/* Set requested speed and duplex mode on phy */
+ 		emac_mdio_write(emac_phy->phy_addr, PHY_CONTROL_REG,
+ 				phy_status);
+@@ -527,6 +564,7 @@ void emac_mdio_nwaywait_state(void)
+ {
+ 	unsigned int status;
+ 	unsigned int my_cap, partner_cap, neg_mode;
++        unsigned int gbe_cap, rgbe_cap, gbe_mode;
+ 
+ 	/* Check if nway negotiation complete */
+ 	status = emac_mdio_read(emac_phy->phy_addr, PHY_STATUS_REG);
+@@ -538,6 +576,19 @@ void emac_mdio_nwaywait_state(void)
+ 		partner_cap =
+ 		    emac_mdio_read(emac_phy->phy_addr, NWAY_REMADVERTISE_REG);
+ 
++                if (cpu_is_davinci_dm6467()) {
++                        gbe_cap = emac_mdio_read(emac_phy->phy_addr,
++                                                 GBE_CONTROL_REG);
++                        rgbe_cap = emac_mdio_read(emac_phy->phy_addr,
++                                                  GBE_STATUS_REG);
++                        gbe_mode = (gbe_cap & (rgbe_cap >> 2)) &
++                            (MII_LOC_FD1000);
++                } else {
++                        gbe_cap = 0;
++                        rgbe_cap = 0;
++                        gbe_mode = 0;
++                }
++
+ 		/* Negotiated mode is what we and partnet have in common */
+ 		neg_mode = my_cap & partner_cap;
+ 		if (emac_phy->debug_mode) {
+@@ -554,6 +605,11 @@ void emac_mdio_nwaywait_state(void)
+ 			DPRINTK
+ 			    ("WARNING: Negotiation complete but NO agreement, default is 10HD\n");
+ 
++
++                if (gbe_mode & MII_LOC_FD1000)
++                        DPRINTK("1000 Mbps FullDuplex");
++                if (gbe_mode & MII_LOC_HD1000)
++                        DPRINTK("1000 Mbps HalfDuplex");
+ 		if (neg_mode & MII_NWAY_FD100)
+ 			DPRINTK("100 Mbps FullDuplex");
+ 		if (neg_mode & MII_NWAY_HD100)
+@@ -564,7 +620,7 @@ void emac_mdio_nwaywait_state(void)
+ 			DPRINTK("10 Mbps HalfDuplex");
+ 		DPRINTK("\n");
+ 
+-		if (neg_mode != 0) {
++                if ((neg_mode != 0) || (gbe_mode != 0)) {
+ 			if (status & MII_PHY_LINKED) {
+ 				emac_phy->state = PHY_LINKED;
+ 			} else {
+@@ -573,12 +629,20 @@ void emac_mdio_nwaywait_state(void)
+ 		}
+ 
+ 		/* Set the phy speed and duplex mode */
+-		emac_phy->speed =
+-		    (neg_mode & (MII_NWAY_FD100 | MII_NWAY_HD100)) ? 100 : 10;
+-		emac_phy->duplex =
+-		    (neg_mode & (MII_NWAY_FD100 | MII_NWAY_FD10)) ?
++                if (gbe_mode & (MII_LOC_FD1000 | MII_LOC_HD1000)) {
++                        emac_mdio_write(emac_phy->phy_addr, PHY_CONFIG_REG,
++                                        (PHY_FIFO_DEPTH_8 | PHY_EN_SYS_CLK |
++                                         PHY_GTX_CLK));
++                        emac_phy->speed = 1000;
++                        emac_phy->duplex = (gbe_mode & MII_LOC_FD1000) ?
++                            PHY_DUPLEX_FULL : PHY_DUPLEX_HALF;
++                } else 	{
++			emac_phy->speed =
++				(neg_mode & (MII_NWAY_FD100 | MII_NWAY_HD100)) ? 100 : 10;
++			emac_phy->duplex =
++				(neg_mode & (MII_NWAY_FD100 | MII_NWAY_FD10)) ?
+ 				PHY_DUPLEX_FULL : PHY_DUPLEX_HALF;
+-
++		}
+ 	} else {
+ 
+ 		if (emac_phy->timeout) {
+@@ -687,6 +751,22 @@ void emac_mdio_phy_dump(void)
+ 	     status & MII_NWAY_HD100 ? "Yes" : "No",
+ 	     status & MII_NWAY_FD10 ? "Yes" : "No",
+ 	     status & MII_NWAY_HD10 ? "Yes" : "No");
++
++        if (cpu_is_davinci_dm6467()) {
++	        /* 9: GBE control register */
++                status = emac_mdio_read(emac_phy->phy_addr, GBE_CONTROL_REG);
++                DPRINTK
++                    ("PhyMyGBECapability: %04X, 1000FD=%s, 1000HD=%s\n",
++                     status, status & MII_LOC_FD1000 ? "Yes" : "No",
++                     status & MII_LOC_HD1000 ? "Yes" : "No");
++
++                /* 10: GBE status register */
++                status = emac_mdio_read(emac_phy->phy_addr, GBE_STATUS_REG);
++                DPRINTK
++                    ("PhyPartnerGBECapability: %04X, 1000FD=%s, 1000HD=%s\n",
++                     status, status & MII_REM_FD1000 ? "Yes" : "No",
++                     status & MII_REM_HD1000 ? "Yes" : "No");
++        }
+ }
+ 
+ /* emac_mdio_tick is called every 10 mili seconds to process Phy states */
+Index: linux-2.6.18/arch/arm/mach-davinci/Kconfig
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Kconfig
++++ linux-2.6.18/arch/arm/mach-davinci/Kconfig
+@@ -80,7 +80,7 @@ config DAVINCI_MUX_WARNINGS
+ config DAVINCI_I2C_EXPANDER
+ 	bool "TI DaVinci I2C Expander"
+ 	default y
+-	depends on I2C && ARCH_DAVINCI644x
++	depends on I2C && ARCH_DAVINCI644x || ARCH_DAVINCI_DM646x
+ 	help
+ 	  Configure this option to specify whether the board used
+ 	  has I2C exapnder with ATA, USB, CF.
+Index: linux-2.6.18/arch/arm/mach-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Makefile
++++ linux-2.6.18/arch/arm/mach-davinci/Makefile
+@@ -9,6 +9,6 @@ obj-y 			:= time.o irq.o clock.o serial.
+ 
+ # Board specific
+ obj-$(CONFIG_MACH_DAVINCI_EVM)  += board-evm.o i2c-emac.o
+-obj-$(CONFIG_MACH_DAVINCI_DM6467_EVM)  += board-dm6467-evm.o
++obj-$(CONFIG_MACH_DAVINCI_DM6467_EVM)  += board-dm6467-evm.o i2c-emac.o
+ obj-$(CONFIG_MACH_DAVINCI_DM355_EVM)  += board-dm355-evm.o
+ obj-$(CONFIG_DAVINCI_I2C_EXPANDER)      += i2c-client.o
+Index: linux-2.6.18/drivers/net/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/net/Kconfig
++++ linux-2.6.18/drivers/net/Kconfig
+@@ -2785,4 +2785,12 @@ config NETPOLL_TRAP
+ config NET_POLL_CONTROLLER
+ 	def_bool NETPOLL
+ 
++config TI_DAVINCI_EMAC
++	tristate "TI DaVinci DM6467 EMAC Support"
++	depends on NETDEVICES && MACH_DAVINCI_DM6467_EVM
++	help
++	  This driver supports TI's DaVinci DM6467 Ethernet.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called ti_davinci_emac.  This is recommended.
+ endmenu
+Index: linux-2.6.18/mvl_patches/pro50-1556.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1556.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1556);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,636 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_clock_add_multi_psc_support
+# Date: Thu Feb 19 15:03:35 2009
+# Source: MontaVista Software, Inc.
+# MR: 28546
+# Type: Enhancement
+# Disposition: needs submitting to DaVinci community
+# Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+#     DaVinci: add multi-PSC support to the clock code
+# 
+#     The original DaVinci has only one PSC, DA8xx has two. Add a new parameter
+#     to davinci_psc_config(), and add davinci_psc_register() call to set up the
+#     PSC base addresses.
+# 
+#  arch/arm/mach-davinci/board-dm355-evm.c  |   31 +++++++++--------
+#  arch/arm/mach-davinci/board-dm6467-evm.c |   39 +++++++++------------
+#  arch/arm/mach-davinci/board-evm.c        |   25 +++++++-------
+#  arch/arm/mach-davinci/clock.c            |    4 ++
+#  arch/arm/plat-davinci/clock.c            |   55 ++++++++++++++++++-------------
+#  include/asm-arm/arch-davinci/clock.h     |    5 ++
+#  include/asm-arm/arch-davinci/mux.h       |    2 -
+#  7 files changed, 88 insertions(+), 73 deletions(-)
+# 
+
+PATCHNUM=2143
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28546
+Type: Enhancement
+Disposition: needs submitting to DaVinci community
+Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+    DaVinci: add multi-PSC support to the clock code
+
+    The original DaVinci has only one PSC, DA8xx has two. Add a new parameter
+    to davinci_psc_config(), and add davinci_psc_register() call to set up the
+    PSC base addresses.
+
+ arch/arm/mach-davinci/board-dm355-evm.c  |   31 +++++++++--------
+ arch/arm/mach-davinci/board-dm6467-evm.c |   39 +++++++++------------
+ arch/arm/mach-davinci/board-evm.c        |   25 +++++++-------
+ arch/arm/mach-davinci/clock.c            |    4 ++
+ arch/arm/plat-davinci/clock.c            |   55 ++++++++++++++++++-------------
+ include/asm-arm/arch-davinci/clock.h     |    5 ++
+ include/asm-arm/arch-davinci/mux.h       |    2 -
+ mvl_patches/pro50-2143.c                 |   16 +++++++++
+ 8 files changed, 104 insertions(+), 73 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm355-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+@@ -389,8 +389,8 @@ static struct platform_device mmc1_devic
+ 
+ static void setup_mmc(void)
+ {
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_MMC_SD0, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_MMC_SD1, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_MMC_SD0, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_MMC_SD1, 1);
+ }
+ #else
+ #define setup_mmc()
+@@ -482,23 +482,27 @@ static const u8 dm355_default_priorities
+ 
+ static void board_init(void)
+ {
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_VPSSMSTR, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_VPSSSLV, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_TPCC, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_TPTC0, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_TPTC1, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_GPIO, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_McBSP1, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_SPI, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_VPSSMSTR, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_VPSSSLV, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_TPCC, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_TPTC0, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_TPTC1, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_GPIO, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_McBSP1, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_SPI, 1);
+ 
+ 	/* Turn on WatchDog timer LPSC.  Needed for RESET to work */
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_TIMER2, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_TIMER2, 1);
++
+ 	davinci_writel(0x56837210, DAVINCI_VPSS_REGS_BASE + 0x810);
+ 	davinci_writel(0x7b3c0004, DAVINCI_VPSS_REGS_BASE + 0x814);
+ }
+ 
+-static void dm355_setup_pinmux(unsigned int id)
++static void dm355_setup_pinmux(unsigned ctlr, unsigned id)
+ {
++	if (ctlr)
++		return;
++
+ 	switch (id) {
+ 	case DAVINCI_LPSC_ATA:
+ 		/* DAVINCI_LPSC_PWM3 */
+@@ -506,7 +510,6 @@ static void dm355_setup_pinmux(unsigned 
+ 		davinci_cfg_reg(DM355_PWM3_G70);
+ 		davinci_cfg_reg(DM355_PWM3_G74);
+ 		davinci_cfg_reg(DM355_PWM3_G75);
+-
+ 		break;
+ 	case DAVINCI_LPSC_MMC_SD0:
+ 		davinci_cfg_reg(DM355_MMCSD0);
+@@ -543,8 +546,6 @@ static void dm355_setup_pinmux(unsigned 
+ 		davinci_cfg_reg(DM355_PWM2_G78);
+ 		davinci_cfg_reg(DM355_PWM2_G79);
+ 		break;
+-	default:
+-		break;
+ 	}
+ }
+ 
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm6467-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+@@ -272,39 +272,42 @@ static const u8 dm646x_default_prioritie
+ };
+ static void board_init(void)
+ {
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_VLYNQ, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_VLYNQ, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_HDVICP0, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_HDVICP1, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_SPI, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_TPCC, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_TPTC0, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_TPTC1, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_TPTC2, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_TPTC3, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_AEMIF, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_GPIO, 1);
+ /*
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_TSIF0, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN,
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0,
+ 			   DAVINCI_DM646X_LPSC_TSIF1, 1);
+ */
+ }
+ 
+-static void dm646x_setup_pinmux(unsigned int id)
++static void dm646x_setup_pinmux(unsigned ctlr, unsigned id)
+ {
+ 	unsigned int val;
+ 
++	if (ctlr)
++		return;
++
+ 	switch (id) {
+ 	case DAVINCI_LPSC_ATA:
+ 		davinci_cfg_reg(DM646X_ATAEN);
+@@ -314,14 +317,6 @@ static void dm646x_setup_pinmux(unsigned
+ 		val = davinci_readl(DAVINCI_VDD3P3V_PWDN);
+ 		davinci_writel(val & 0xEFFFFFFF, DAVINCI_VDD3P3V_PWDN);
+ 		break;
+-	case DAVINCI_DM646X_LPSC_I2C:
+-		break;
+-	case DAVINCI_DM646X_LPSC_PWM0:
+-		break;
+-	case DAVINCI_DM646X_LPSC_PWM1:
+-		break;
+-	default:
+-		break;
+ 	}
+ }
+ 
+Index: linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+@@ -272,7 +272,7 @@ static struct platform_device mmc0_devic
+ 
+ static void setup_mmc(void)
+ {
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_MMC_SD0, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_MMC_SD0, 1);
+ }
+ #else
+ #define setup_mmc()
+@@ -320,8 +320,11 @@ static struct platform_device *davinci_e
+ #endif
+ };
+ 
+-static void dm644x_setup_pinmux(unsigned int id)
++static void dm644x_setup_pinmux(unsigned ctlr, unsigned id)
+ {
++	if (ctlr)
++		return;
++
+ 	switch (id) {
+ 	case DAVINCI_LPSC_ATA:
+ 		davinci_cfg_reg(DM644X_HDIREN);
+@@ -354,8 +357,6 @@ static void dm644x_setup_pinmux(unsigned
+ 		davinci_cfg_reg(DM644X_VLINQEN);
+ 		davinci_cfg_reg(DM644X_VLINQWD);
+ 		break;
+-	default:
+-		break;
+ 	}
+ }
+ 
+@@ -372,18 +373,18 @@ davinci_evm_map_io(void)
+ 
+ static void __init davinci_psc_init(void)
+ {
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_VPSSMSTR, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_VPSSSLV, 1);
+- 	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_TPCC, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_TPTC0, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_TPTC1, 1);
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_GPIO, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_VPSSMSTR, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_VPSSSLV, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_TPCC, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_TPTC0, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_TPTC1, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_GPIO, 1);
+ #if defined(CONFIG_USB_MUSB_HDRC) || defined(CONFIG_USB_MUSB_HDRC_MODULE)
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_USB, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_USB, 1);
+ #endif
+ 
+ 	/* Turn on WatchDog timer LPSC.	 Needed for RESET to work */
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_TIMER2, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_TIMER2, 1);
+ }
+ 
+ static __init void davinci_evm_i2c_expander_setup(void)
+Index: linux-2.6.18/arch/arm/mach-davinci/clock.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/clock.c
++++ linux-2.6.18/arch/arm/mach-davinci/clock.c
+@@ -296,12 +296,16 @@ static struct clk davinci_dm355_clks[] =
+ 	},
+ };
+ 
++static unsigned long davinci_psc_base[] = { DAVINCI_PWR_SLEEP_CNTRL_BASE };
++
+ int __init davinci_clk_init(void)
+ {
+ 	struct clk *clk_list;
+ 	int num_clks;
+ 	u32 pll_mult;
+ 
++	davinci_psc_register(davinci_psc_base, 1);
++
+ 	pll_mult = davinci_readl(DAVINCI_PLL_CNTRL0_BASE + PLLM);
+ 	commonrate = ((pll_mult + 1) * 27000000) / 6;
+ 	armrate = ((pll_mult + 1) * 27000000) / 2;
+Index: linux-2.6.18/arch/arm/plat-davinci/clock.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/clock.c
++++ linux-2.6.18/arch/arm/plat-davinci/clock.c
+@@ -25,58 +25,69 @@ static LIST_HEAD(clocks);
+ static DEFINE_MUTEX(clocks_mutex);
+ static DEFINE_SPINLOCK(clockfw_lock);
+ 
+-void (*davinci_pinmux_setup)(unsigned int id);
++void (*davinci_pinmux_setup)(unsigned ctlr, unsigned id);
++
++static unsigned long *psc_bases;
++static unsigned psc_num;
++
++void __init davinci_psc_register(unsigned long *bases, unsigned num)
++{
++	psc_bases = bases;
++	psc_num = num;
++}
+ 
+ /* Enable or disable a PSC domain */
+-void davinci_psc_config(unsigned domain, unsigned id, int enable)
++void davinci_psc_config(unsigned domain, unsigned ctlr, unsigned id, int enable)
+ {
+ 	u32 epcpr, ptcmd, ptstat, pdstat, pdctl1, mdstat, mdctl;
+ 	u32 state = enable ? 0x00000003 : 0x00000002;
++	unsigned long psc_base;
++
++	if (ctlr >= psc_num)
++		return;
++
++	psc_base = psc_bases[ctlr];
+ 
+-	mdctl = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + MDCTL(id));
++	mdctl = davinci_readl(psc_base + MDCTL(id));
+ 	mdctl &= ~0x0000001F;
+ 	mdctl |= state;
+-	davinci_writel(mdctl, DAVINCI_PWR_SLEEP_CNTRL_BASE + MDCTL(id));
++	davinci_writel(mdctl, psc_base + MDCTL(id));
+ 
+-	pdstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDSTAT);
++	pdstat = davinci_readl(psc_base + PDSTAT);
+ 	if (!(pdstat & 0x00000001)) {
+-		pdctl1 = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++		pdctl1 = davinci_readl(psc_base + PDCTL1);
+ 		pdctl1 |= 0x1;
+-		davinci_writel(pdctl1, DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++		davinci_writel(pdctl1, psc_base + PDCTL1);
+ 
+ 		ptcmd = 1 << domain;
+-		davinci_writel(ptcmd, DAVINCI_PWR_SLEEP_CNTRL_BASE + PTCMD);
++		davinci_writel(ptcmd, psc_base + PTCMD);
+ 
+ 		do {
+-			epcpr = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
+-					      EPCPR);
++			epcpr = davinci_readl(psc_base + EPCPR);
+ 		} while (!((epcpr >> domain) & 1));
+ 
+-		pdctl1 = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++		pdctl1 = davinci_readl(psc_base + PDCTL1);
+ 		pdctl1 |= 0x100;
+-		davinci_writel(pdctl1, DAVINCI_PWR_SLEEP_CNTRL_BASE + PDCTL1);
++		davinci_writel(pdctl1, psc_base + PDCTL1);
+ 
+ 		do {
+-			ptstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
+-					       PTSTAT);
++			ptstat = davinci_readl(psc_base + PTSTAT);
+ 		} while ((ptstat >> domain) & 1);
+ 	} else {
+ 		ptcmd = 1 << domain;
+-		davinci_writel(ptcmd, DAVINCI_PWR_SLEEP_CNTRL_BASE + PTCMD);
++		davinci_writel(ptcmd, psc_base + PTCMD);
+ 
+ 		do {
+-			ptstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
+-					       PTSTAT);
++			ptstat = davinci_readl(psc_base + PTSTAT);
+ 		} while ((ptstat >> domain) & 1);
+ 	}
+ 
+ 	do {
+-		mdstat = davinci_readl(DAVINCI_PWR_SLEEP_CNTRL_BASE +
+-				       MDSTAT(id));
++		mdstat = davinci_readl(psc_base + MDSTAT(id));
+ 	} while ((mdstat & 0x0000001F) != state);
+ 
+ 	if (enable && davinci_pinmux_setup)
+-		davinci_pinmux_setup(id);
++		davinci_pinmux_setup(ctlr, id);
+ }
+ 
+ /*
+@@ -127,7 +138,7 @@ static int __clk_enable(struct clk *clk)
+ 	if (clk->flags & ALWAYS_ENABLED)
+ 		return 0;
+ 
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, clk->lpsc, 1);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, clk->ctlr, clk->lpsc, 1);
+ 	return 0;
+ }
+ 
+@@ -136,7 +147,7 @@ static void __clk_disable(struct clk *cl
+ 	if (clk->usecount)
+ 		return;
+ 
+-	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, clk->lpsc, 0);
++	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, clk->ctlr, clk->lpsc, 0);
+ }
+ 
+ int clk_enable(struct clk *clk)
+Index: linux-2.6.18/include/asm-arm/arch-davinci/clock.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/clock.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/clock.h
+@@ -25,6 +25,7 @@ struct clk {
+ 	s8			usecount;
+ 	u8			flags;
+ 	u8			lpsc;
++	u8			ctlr;
+ };
+ 
+ /* Clock flags */
+@@ -38,7 +39,9 @@ struct clk {
+ extern int  clk_register(struct clk *clk);
+ extern void clk_unregister(struct clk *clk);
+ extern int  davinci_clk_init(void);
+-extern void davinci_psc_config(unsigned domain, unsigned id, int enable);
++extern void davinci_psc_register(unsigned long *bases, unsigned num);
++extern void davinci_psc_config(unsigned domain, unsigned ctlr, unsigned id,
++			       int enable);
+ extern int  davinci_enable_clks(struct clk *clk_list, int num_clks);
+ 
+ #endif
+Index: linux-2.6.18/include/asm-arm/arch-davinci/mux.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/mux.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/mux.h
+@@ -215,6 +215,6 @@ static inline void davinci_mux_init(void
+ static inline int  davinci_cfg_reg(unsigned index) { return 0; }
+ #endif
+ 
+-extern void (*davinci_pinmux_setup)(unsigned int id);
++extern void (*davinci_pinmux_setup)(unsigned ctlr, unsigned id);
+ 
+ #endif
+Index: linux-2.6.18/mvl_patches/pro50-2143.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2143.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2143);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

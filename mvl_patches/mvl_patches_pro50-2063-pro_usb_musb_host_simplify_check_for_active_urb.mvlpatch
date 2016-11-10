@@ -1,0 +1,368 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_musb_host_simplify_check_for_active_urb
+# Date: Thu Feb 19 14:57:56 2009
+# Source: MontaVista Software, Inc.
+# MR: 29374
+# Type: Enhancement
+# Disposition: needs submitting to linux-usb@vger.kernel.org
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# The existance of the scheduling list shouldn't matter in determining whether
+# there's currectly an URB executing on a hardware endpoint. What should actually
+# matter is the 'in_qh' or 'out_qh' fields of the 'struct musb_hw_ep' -- those
+# are set in musb_start_urb() and cleared in musb_giveback() when the endpoint's
+# URB list drains.
+# 
+# While at it, add 'is_in' variable to musb_urb_dequeue(), remove the unnecessary
+# 'epnum' variable from musb_h_disable(), fix the comment style in the vicinity.
+# 
+#  drivers/usb/musb/musb_host.c |   66 ++++++++-----------------------------------
+#  1 files changed, 13 insertions(+), 53 deletions(-)
+# 
+
+PATCHNUM=2063
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 29374
+Type: Enhancement
+Disposition: needs submitting to linux-usb@vger.kernel.org
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+The existance of the scheduling list shouldn't matter in determining whether
+there's currectly an URB executing on a hardware endpoint. What should actually
+matter is the 'in_qh' or 'out_qh' fields of the 'struct musb_hw_ep' -- those
+are set in musb_start_urb() and cleared in musb_giveback() when the endpoint's
+URB list drains.
+
+While at it, add 'is_in' variable to musb_urb_dequeue(), remove the unnecessary
+'epnum' variable from musb_h_disable(), fix the comment style in the vicinity.
+
+ drivers/usb/musb/musb_host.c |   66 ++++++++-----------------------------------
+ mvl_patches/pro50-2063.c     |   16 ++++++++++
+ 2 files changed, 29 insertions(+), 53 deletions(-)
+
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -2049,15 +2049,15 @@ static int musb_urb_dequeue(struct usb_h
+ {
+ 	struct musb		*musb = hcd_to_musb(hcd);
+ 	struct musb_qh		*qh;
+-	struct list_head	*sched;
+ 	struct urb		*tmp;
+ 	unsigned long		flags;
++	int			is_in  = usb_pipein(urb->pipe);
+ 	int			status = -ENOENT;
+ 
+ 	DBG(4, "urb=%p, dev%d ep%d%s\n", urb,
+ 			usb_pipedevice(urb->pipe),
+ 			usb_pipeendpoint(urb->pipe),
+-			usb_pipein(urb->pipe) ? "in" : "out");
++			is_in ? "in" : "out");
+ 
+ 	spin_lock_irqsave(&musb->lock, flags);
+ 
+@@ -2087,40 +2087,20 @@ static int musb_urb_dequeue(struct usb_h
+ 	if (status)
+ 		goto done;
+ 
+-	/* Any URB not actively programmed into endpoint hardware can be
++	/*
++	 * Any URB not actively programmed into the endpoint hardware can be
+ 	 * immediately given back.  Such an URB must be at the head of its
+ 	 * endpoint queue, unless someday we get real DMA queues.  And even
+ 	 * then, it might not be known to the hardware...
+ 	 *
+-	 * Otherwise abort current transfer, pending dma, etc.; urb->status
++	 * Otherwise abort current transfer, pending DMA, etc.; urb->status
+ 	 * has already been updated.  This is a synchronous abort; it'd be
+ 	 * OK to hold off until after some IRQ, though.
++	 *
++	 * NOTE: qh is invalid unless !list_empty(&hep->urb_list)
+ 	 */
+-	if (!qh->is_ready || urb->urb_list.prev != &qh->hep->urb_list)
+-		status = -EINPROGRESS;
+-	else {
+-		switch (qh->type) {
+-		case USB_ENDPOINT_XFER_CONTROL:
+-			sched = &musb->control;
+-			break;
+-		case USB_ENDPOINT_XFER_BULK:
+-			if (usb_pipein(urb->pipe))
+-				sched = &musb->in_bulk;
+-			else
+-				sched = &musb->out_bulk;
+-			break;
+-		default:
+-			/* REVISIT when we get a schedule tree, periodic
+-			 * transfers won't always be at the head of a
+-			 * singleton queue...
+-			 */
+-			sched = NULL;
+-			break;
+-		}
+-	}
+-
+-	/* NOTE:  qh is invalid unless !list_empty(&hep->urb_list) */
+-	if (status < 0 || (sched && qh != first_qh(sched))) {
++	if (!qh->is_ready || urb->urb_list.prev != &qh->hep->urb_list ||
++	    musb_ep_get_qh(qh->hw_ep, is_in) != qh) {
+ 		int	ready = qh->is_ready;
+ 
+ 		status = 0;
+@@ -2150,13 +2130,11 @@ done:
+ static void
+ musb_h_disable(struct usb_hcd *hcd, struct usb_host_endpoint *hep)
+ {
+-	u8			epnum = hep->desc.bEndpointAddress;
++	u8			is_in = hep->desc.bEndpointAddress & USB_DIR_IN;
+ 	unsigned long		flags;
+ 	struct musb		*musb = hcd_to_musb(hcd);
+-	u8			is_in = epnum & USB_DIR_IN;
+ 	struct musb_qh		*qh;
+ 	struct urb		*urb;
+-	struct list_head	*sched;
+ 
+ 	spin_lock_irqsave(&musb->lock, flags);
+ 
+@@ -2164,29 +2142,11 @@ musb_h_disable(struct usb_hcd *hcd, stru
+ 	if (qh == NULL)
+ 		goto exit;
+ 
+-	switch (qh->type) {
+-	case USB_ENDPOINT_XFER_CONTROL:
+-		sched = &musb->control;
+-		break;
+-	case USB_ENDPOINT_XFER_BULK:
+-		if (is_in)
+-			sched = &musb->in_bulk;
+-		else
+-			sched = &musb->out_bulk;
+-		break;
+-	default:
+-		/* REVISIT when we get a schedule tree, periodic transfers
+-		 * won't always be at the head of a singleton queue...
+-		 */
+-		sched = NULL;
+-		break;
+-	}
+-
+-	/* NOTE:  qh is invalid unless !list_empty(&hep->urb_list) */
++	/* NOTE: qh is invalid unless !list_empty(&hep->urb_list) */
+ 
+-	/* kick first urb off the hardware, if needed */
++	/* Kick the first URB off the hardware, if needed */
+ 	qh->is_ready = 0;
+-	if (!sched || qh == first_qh(sched)) {
++	if (musb_ep_get_qh(qh->hw_ep, is_in) == qh) {
+ 		urb = next_urb(qh);
+ 
+ 		/* make software (then hardware) stop ASAP */
+Index: linux-2.6.18/mvl_patches/pro50-2063.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2063.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2063);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

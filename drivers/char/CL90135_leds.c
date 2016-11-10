@@ -1,0 +1,286 @@
+/*
+ * CL90135 leds
+ *
+ * Copyright (C) 2011 Michele Sponchiado
+ *
+ * Based on code written by Paul Gortmaker and Ralf Baechle.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ */
+#include <linux/CL90135_leds.h>
+#include <linux/types.h>
+#include <linux/errno.h>
+#include <linux/miscdevice.h>
+#include <linux/slab.h>
+#include <linux/ioport.h>
+#include <linux/fcntl.h>
+#include <linux/init.h>
+#include <linux/poll.h>
+#include <linux/rtc.h>
+#include <linux/spinlock.h>
+#include <linux/bcd.h>
+#include <linux/proc_fs.h>
+#include <asm/arch/gpio.h>
+
+#include <asm/uaccess.h>
+#include <asm/system.h>
+
+#include <linux/platform_device.h>
+
+#include <asm/mach-types.h>
+
+
+// Michele: driver per cl90135 leds
+#define CL90135_LED_VERSION		"1.0"
+// nome del device...
+#define CL90135_LED_driver_path "driver/CL90135_led"
+#define DEV_NAME "CL90135_led"
+
+
+
+static int CL90135_LED_ioctl(struct inode *inode, struct file *file,unsigned int cmd, unsigned long arg);
+
+static int CL90135_LED_read_proc(char *page, char **start, off_t off,int count, int *eof, void *data);
+
+typedef enum{
+    enumCL90135_LED_ON=0,
+    enumCL90135_LED_OFF=1,
+ }enumCL90135_LED_ON_OFF;
+ 
+// Permits set/reset of a single led
+// Inputs:
+//   the led enum
+//   the led value to set (enumCL90135_LED_ON or enumCL90135_LED_OFF)
+// Returns:
+//  1-->all ok
+//  0-->error, the led id is inavlid or the gpio can't be requested
+unsigned int uiCL90135_led_set(enum_CL90135_led theLed, enumCL90135_LED_ON_OFF uiOnOff){
+    // is the led id correct?
+    if (theLed>=sizeof(init_CL90135_leds)/sizeof(init_CL90135_leds[0]))
+        return 0;
+    // can I request the led?
+    if (gpio_request(init_CL90135_leds[theLed].uiGPIO, init_CL90135_leds[theLed].name)) {
+	    printk(KERN_ERR "%s: could not request GPIOs for %s \n", __func__,init_CL90135_leds[theLed].name);
+	    return 0;
+    }
+    // set the value as requested
+    gpio_set_value(init_CL90135_leds[theLed].uiGPIO, uiOnOff);
+    // free the resource
+    gpio_free(init_CL90135_leds[theLed].uiGPIO);
+    // all ok!
+    return 1;
+}//unsigned int uiCL90135_led_set(enum_CL90135_led theLed, enumCL90135_LED_ON_OFF uiOnOff)
+
+//retrieve current led status
+// Inputs:
+//   the led enum
+//   the led pointer value to get (value will be enumCL90135_LED_ON or enumCL90135_LED_OFF)
+// Returns:
+//  1-->all ok
+//  0-->error, the led id is inavlid or the gpio can't be requested
+unsigned int uiCL90135_led_get(enum_CL90135_led theLed, enumCL90135_LED_ON_OFF *puiOnOff){
+    // is the led id correct?
+    if (theLed>=sizeof(init_CL90135_leds)/sizeof(init_CL90135_leds[0]))
+        return 0;
+    // can I request the led?
+    if (gpio_request(init_CL90135_leds[theLed].uiGPIO, init_CL90135_leds[theLed].name)) {
+	    printk(KERN_ERR "%s: could not request GPIOs for %s \n", __func__,init_CL90135_leds[theLed].name);
+	    return 0;
+    }
+    // set the value as requested
+    switch(gpio_get_value(init_CL90135_leds[theLed].uiGPIO)){
+        case 0:
+            // watch! 0 means led is ON
+            *puiOnOff=enumCL90135_LED_ON;
+            break;
+        default:
+            // else led is OFF
+            *puiOnOff=enumCL90135_LED_OFF;
+            break;
+    }
+    // free the resource
+    gpio_free(init_CL90135_leds[theLed].uiGPIO);
+    // all ok!
+    return 1;
+}//unsigned int uiCL90135_led_set(enum_CL90135_led theLed, enumCL90135_LED_ON_OFF uiOnOff)
+
+
+
+static int CL90135_LED_ioctl(struct inode *inode, struct file *file,unsigned int cmd, unsigned long arg){
+    TipoStruct_CL90135Led_Command theCommand;
+	switch (cmd) {
+        case CL90135_LED_COMMAND:
+        {
+            if (copy_from_user(&theCommand, (TipoStruct_CL90135Led_Command*)arg,sizeof(TipoStruct_CL90135Led_Command)))
+                return -EFAULT;
+            if (theCommand.theLed>=enum_CL90135_led_numOf)
+		        return -EINVAL;
+            if (theCommand.theAction>=enumCL90135_Led_command_numof)
+		        return -EINVAL;
+            switch(theCommand.theAction){
+                case enumCL90135_Led_command_all_off:{
+                    int i;
+                    for (i=0;i<enum_CL90135_led_numOf;i++)
+                        uiCL90135_led_set(i, enumCL90135_LED_OFF);
+                    break;
+                }
+                case enumCL90135_Led_command_all_on:{
+                    int i;
+                    for (i=0;i<enum_CL90135_led_numOf;i++)
+                        uiCL90135_led_set(i, enumCL90135_LED_ON);
+                    break;
+                }
+                case enumCL90135_Led_command_all_toggle:{
+                    int i;
+	                enumCL90135_LED_ON_OFF cl90135_LED_ON_OFF;
+                    for (i=0;i<enum_CL90135_led_numOf;i++){
+                        uiCL90135_led_get(i, &cl90135_LED_ON_OFF);
+                        uiCL90135_led_set(i, (cl90135_LED_ON_OFF==enumCL90135_LED_ON)?enumCL90135_LED_OFF:enumCL90135_LED_ON);
+                    }
+                    break;
+                }
+            
+                case enumCL90135_Led_command_on:
+                    uiCL90135_led_set(theCommand.theLed, enumCL90135_LED_ON);
+                    break;
+                case enumCL90135_Led_command_off:
+                    uiCL90135_led_set(theCommand.theLed, enumCL90135_LED_OFF);
+                    break;
+                case enumCL90135_Led_command_toggle:
+	            {
+	                enumCL90135_LED_ON_OFF cl90135_LED_ON_OFF;
+	                if (!uiCL90135_led_get(theCommand.theLed, &cl90135_LED_ON_OFF))
+		                return -EINVAL;
+                    if (!uiCL90135_led_set(theCommand.theLed,(cl90135_LED_ON_OFF==enumCL90135_LED_ON)?enumCL90135_LED_OFF:enumCL90135_LED_ON))
+		                return -EINVAL;
+		            break;
+	            }
+                case enumCL90135_Led_command_get_value:
+	            {
+	                enumCL90135_LED_ON_OFF cl90135_LED_ON_OFF;
+	                if (!uiCL90135_led_get(theCommand.theLed, &cl90135_LED_ON_OFF))
+		                return -EINVAL;
+                    switch(cl90135_LED_ON_OFF){
+                        case enumCL90135_LED_ON:
+                            theCommand.uiTheValue=1;
+                            break;
+                        default:
+                            theCommand.uiTheValue=1;
+                            break;
+                    }
+		            break;
+	            }
+                default:
+	                return -EINVAL;
+            }
+            if (copy_to_user((void*)arg, (TipoStruct_CL90135Led_Command*)&theCommand,sizeof theCommand))
+                return -EFAULT;
+            return 0;
+        }
+        default:
+            return -EINVAL;
+    }// switch
+//	return copy_to_user((void *)arg, &wtime, sizeof wtime) ? -EFAULT : 0;
+}
+
+
+static int CL90135_LED_open(struct inode *inode, struct file *file)
+{
+	return 0;
+
+}
+
+static int CL90135_LED_release(struct inode *inode, struct file *file)
+{
+
+	return 0;
+}
+
+/*
+ *	The various file operations we support.
+ */
+
+static const struct file_operations CL90135_fops = {
+	.llseek		= no_llseek,
+	.ioctl		= CL90135_LED_ioctl,
+	.open		= CL90135_LED_open,
+	.release	= CL90135_LED_release,
+};
+
+static struct miscdevice CL90135_dev=
+{
+	.minor	= RTC_MINOR+34,
+	.name	= DEV_NAME,
+	.fops	= &CL90135_fops,
+};
+
+static int __init CL90135_LED_init(void)
+{
+	int err;
+
+	printk(KERN_INFO "CL90135 LED DRIVER v%s\n", CL90135_LED_VERSION);
+
+	err = misc_register(&CL90135_dev);
+	if (err)
+		goto out;
+
+	if (!create_proc_read_entry(CL90135_LED_driver_path, 0, 0, CL90135_LED_read_proc, NULL)) {
+		err = -ENOMEM;
+
+		goto out_deregister;
+	}
+	printk(KERN_INFO "CL90135 LED DRIVER v%s init ok\n", CL90135_LED_VERSION);
+
+	return 0;
+
+out_deregister:
+	misc_deregister(&CL90135_dev);
+
+out:
+	return err;
+}
+
+static void __exit CL90135_LED_exit(void)
+{
+	remove_proc_entry(CL90135_LED_driver_path, NULL);
+	misc_deregister(&CL90135_dev);
+}
+
+
+/*
+ *	Info exported via "/proc/rtc".
+ */
+static int CL90135_LED_proc_output(char *buf)
+{
+	char *p;
+
+	p = buf;
+	p += sprintf(p,"Hello from CL90135 led driver\n");
+
+	return  p - buf;
+}
+
+static int CL90135_LED_read_proc(char *page, char **start, off_t off,int count, int *eof, void *data)
+{
+	int len = CL90135_LED_proc_output (page);
+	if (len <= off+count) *eof = 1;
+	*start = page + off;
+	len -= off;
+	if (len>count)
+		len = count;
+	if (len<0)
+		len = 0;
+
+	return len;
+}
+
+
+module_init(CL90135_LED_init);
+module_exit(CL90135_LED_exit);
+
+MODULE_AUTHOR("Michele Sponchiado");
+MODULE_LICENSE("GPL");
+MODULE_ALIAS_MISCDEV(RTC_MINOR);

@@ -1,0 +1,473 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_pPrivateData_with_priv
+# Date: Fri Sep 19 14:09:02 2008
+# From 61314da5b873d449470c30f5d794a436c9ddb143 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Mon, 13 Aug 2007 04:52:24 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace pPrivateData with private_data
+# 
+# Search and replace pPrivateData with private_data
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit d35a42cbb959e8f0d82d35501e90edba96a1dccf)
+
+PATCHNUM=1694
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 61314da5b873d449470c30f5d794a436c9ddb143 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Mon, 13 Aug 2007 04:52:24 -0700
+Subject: [PATCH] musb_hdrc: Search and replace pPrivateData with private_data
+
+Search and replace pPrivateData with private_data
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit d35a42cbb959e8f0d82d35501e90edba96a1dccf)
+Index: linux-2.6.18/drivers/usb/musb/cppi_dma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/cppi_dma.c
++++ linux-2.6.18/drivers/usb/musb/cppi_dma.c
+@@ -102,7 +102,7 @@ static void __init cppi_pool_init(struct
+ 	c->Channel.bStatus = MGC_DMA_STATUS_UNKNOWN;
+ 	c->pController = cppi;
+ 	c->bLastModeRndis = 0;
+-	c->Channel.pPrivateData = c;
++	c->Channel.private_data = c;
+ 	c->bdPoolHead = NULL;
+ 
+ 	/* build the BD Free list for the channel */
+@@ -325,7 +325,7 @@ cppi_channel_allocate(struct dma_control
+ 	otgCh->Channel.bStatus = MGC_DMA_STATUS_FREE;
+ 
+ 	DBG(4, "Allocate CPPI%d %cX\n", chNum, bTransmit ? 'T' : 'R');
+-	otgCh->Channel.pPrivateData = otgCh;
++	otgCh->Channel.private_data = otgCh;
+ 	return &otgCh->Channel;
+ }
+ 
+@@ -953,7 +953,7 @@ static int cppi_channel_program(struct d
+ 		u16 wPacketSz, u8 mode,
+ 		dma_addr_t dma_addr, u32 dwLength)
+ {
+-	struct cppi_channel	*otgChannel = pChannel->pPrivateData;
++	struct cppi_channel	*otgChannel = pChannel->private_data;
+ 	struct cppi		*pController = otgChannel->pController;
+ 	struct musb		*musb = pController->musb;
+ 
+@@ -1316,7 +1316,7 @@ dma_controller_create(struct musb *musb,
+ 	/* Initialize the Cppi DmaController  structure */
+ 	pController->pCoreBase = pCoreBase;
+ 	pController->musb = musb;
+-	pController->Controller.pPrivateData = pController;
++	pController->Controller.private_data = pController;
+ 	pController->Controller.start = cppi_controller_start;
+ 	pController->Controller.stop = cppi_controller_stop;
+ 	pController->Controller.channel_alloc = cppi_channel_allocate;
+Index: linux-2.6.18/drivers/usb/musb/dma.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/dma.h
++++ linux-2.6.18/drivers/usb/musb/dma.h
+@@ -100,7 +100,7 @@ struct dma_controller;
+ 
+ /**
+  * struct dma_channel - A DMA channel.
+- * @pPrivateData: channel-private data
++ * @private_data: channel-private data
+  * @wMaxLength: the maximum number of bytes the channel can move in one
+  *	transaction (typically representing many USB maximum-sized packets)
+  * @dwActualLength: how many bytes have been transferred
+@@ -111,7 +111,7 @@ struct dma_controller;
+  * one usb transfer.
+  */
+ struct dma_channel {
+-	void			*pPrivateData;
++	void			*private_data;
+ 	// FIXME not void* private_data, but a dma_controller *
+ 	size_t			dwMaxLength;
+ 	size_t			dwActualLength;
+@@ -156,7 +156,7 @@ dma_channel_status(struct dma_channel *c
+ 
+ /**
+  * struct dma_controller - A DMA Controller.
+- * @pPrivateData: controller-private data;
++ * @private_data: controller-private data;
+  * @start: call this to start a DMA controller;
+  *	return 0 on success, else negative errno
+  * @stop: call this to stop a DMA controller
+@@ -169,7 +169,7 @@ dma_channel_status(struct dma_channel *c
+  * Controllers manage dma channels.
+  */
+ struct dma_controller {
+-	void			*pPrivateData;
++	void			*private_data;
+ 	int			(*start)(struct dma_controller *);
+ 	int			(*stop)(struct dma_controller *);
+ 	struct dma_channel	*(*channel_alloc)(struct dma_controller *,
+Index: linux-2.6.18/drivers/usb/musb/musbhsdma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbhsdma.c
++++ linux-2.6.18/drivers/usb/musb/musbhsdma.c
+@@ -143,7 +143,7 @@ static struct dma_channel* dma_channel_a
+ 			pImplChannel->epnum = hw_ep->epnum;
+ 			pImplChannel->bTransmit = bTransmit;
+ 			pChannel = &(pImplChannel->Channel);
+-			pChannel->pPrivateData = pImplChannel;
++			pChannel->private_data = pImplChannel;
+ 			pChannel->bStatus = MGC_DMA_STATUS_FREE;
+ 			pChannel->dwMaxLength = 0x10000;
+ 			/* Tx => mode 1; Rx => mode 0 */
+@@ -158,7 +158,7 @@ static struct dma_channel* dma_channel_a
+ static void dma_channel_release(struct dma_channel *pChannel)
+ {
+ 	struct musb_dma_channel *pImplChannel =
+-		(struct musb_dma_channel *) pChannel->pPrivateData;
++		(struct musb_dma_channel *) pChannel->private_data;
+ 
+ 	pChannel->dwActualLength = 0;
+ 	pImplChannel->dwStartAddress = 0;
+@@ -175,7 +175,7 @@ static void configure_channel(struct dma
+ 				dma_addr_t dma_addr, u32 dwLength)
+ {
+ 	struct musb_dma_channel *pImplChannel =
+-		(struct musb_dma_channel *) pChannel->pPrivateData;
++		(struct musb_dma_channel *) pChannel->private_data;
+ 	struct musb_dma_controller *pController = pImplChannel->pController;
+ 	u8 *mbase = pController->pCoreBase;
+ 	u8 bChannel = pImplChannel->bIndex;
+@@ -225,7 +225,7 @@ static int dma_channel_program(struct dm
+ 				dma_addr_t dma_addr, u32 dwLength)
+ {
+ 	struct musb_dma_channel *pImplChannel =
+-			(struct musb_dma_channel *) pChannel->pPrivateData;
++			(struct musb_dma_channel *) pChannel->private_data;
+ 
+ 	DBG(2, "ep%d-%s pkt_sz %d, dma_addr 0x%x length %d, mode %d\n",
+ 		pImplChannel->epnum,
+@@ -254,7 +254,7 @@ static int dma_channel_program(struct dm
+ static int dma_channel_abort(struct dma_channel *pChannel)
+ {
+ 	struct musb_dma_channel *pImplChannel =
+-		(struct musb_dma_channel *) pChannel->pPrivateData;
++		(struct musb_dma_channel *) pChannel->private_data;
+ 	u8 bChannel = pImplChannel->bIndex;
+ 	u8 *mbase = pImplChannel->pController->pCoreBase;
+ 	u16 csr;
+@@ -294,10 +294,10 @@ static int dma_channel_abort(struct dma_
+ 	return 0;
+ }
+ 
+-static irqreturn_t dma_controller_irq(int irq, void *pPrivateData)
++static irqreturn_t dma_controller_irq(int irq, void *private_data)
+ {
+ 	struct musb_dma_controller *pController =
+-		(struct musb_dma_controller *)pPrivateData;
++		(struct musb_dma_controller *)private_data;
+ 	struct musb_dma_channel *pImplChannel;
+ 	u8 *mbase = pController->pCoreBase;
+ 	struct dma_channel *pChannel;
+@@ -374,7 +374,7 @@ done:
+ void dma_controller_destroy(struct dma_controller *c)
+ {
+ 	struct musb_dma_controller *pController =
+-		(struct musb_dma_controller *) c->pPrivateData;
++		(struct musb_dma_controller *) c->private_data;
+ 
+ 	if (!pController)
+ 		return;
+@@ -383,7 +383,7 @@ void dma_controller_destroy(struct dma_c
+ 		free_irq(pController->irq, c);
+ 
+ 	kfree(pController);
+-	c->pPrivateData = NULL;
++	c->private_data = NULL;
+ }
+ 
+ struct dma_controller *__init
+@@ -407,7 +407,7 @@ dma_controller_create(struct musb *musb,
+ 	pController->pDmaPrivate = musb;
+ 	pController->pCoreBase = pCoreBase;
+ 
+-	pController->Controller.pPrivateData = pController;
++	pController->Controller.private_data = pController;
+ 	pController->Controller.start = dma_controller_start;
+ 	pController->Controller.stop = dma_controller_stop;
+ 	pController->Controller.channel_alloc = dma_channel_allocate;
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -1810,7 +1810,7 @@ static void musb_free(struct musb *musb)
+ 	if (is_dma_capable() && musb->dma_controller) {
+ 		struct dma_controller	*c = musb->dma_controller;
+ 
+-		(void) c->stop(c->pPrivateData);
++		(void) c->stop(c->private_data);
+ 		dma_controller_destroy(c);
+ 	}
+ 
+@@ -1923,7 +1923,7 @@ musb_init_controller(struct device *dev,
+ 		c = dma_controller_create(musb, musb->mregs);
+ 		musb->dma_controller = c;
+ 		if (c)
+-			(void) c->start(c->pPrivateData);
++			(void) c->start(c->private_data);
+ 	}
+ #endif
+ 	/* ideally this would be abstracted in platform setup */
+Index: linux-2.6.18/drivers/usb/musb/tusb6010_omap.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010_omap.c
++++ linux-2.6.18/drivers/usb/musb/tusb6010_omap.c
+@@ -32,7 +32,7 @@
+ #define dmareq_works()		1
+ #endif
+ 
+-#define to_chdat(c)		(struct tusb_omap_dma_ch *)(c)->pPrivateData
++#define to_chdat(c)		(struct tusb_omap_dma_ch *)(c)->private_data
+ 
+ #define MAX_DMAREQ		5	/* REVISIT: Really 6, but req5 not OK */
+ 
+@@ -524,7 +524,7 @@ tusb_omap_dma_allocate(struct dma_contro
+ 		if (ch->bStatus == MGC_DMA_STATUS_UNKNOWN) {
+ 			ch->bStatus = MGC_DMA_STATUS_FREE;
+ 			channel = ch;
+-			chdat = ch->pPrivateData;
++			chdat = ch->private_data;
+ 			break;
+ 		}
+ 	}
+@@ -640,8 +640,8 @@ void dma_controller_destroy(struct dma_c
+ 	for (i = 0; i < MAX_DMAREQ; i++) {
+ 		struct dma_channel *ch = dma_channel_pool[i];
+ 		if (ch) {
+-			if (ch->pPrivateData)
+-				kfree(ch->pPrivateData);
++			if (ch->private_data)
++				kfree(ch->private_data);
+ 			kfree(ch);
+ 		}
+ 	}
+@@ -686,7 +686,7 @@ dma_controller_create(struct musb *musb,
+ 	tusb_dma->controller.channel_release = tusb_omap_dma_release;
+ 	tusb_dma->controller.channel_program = tusb_omap_dma_program;
+ 	tusb_dma->controller.channel_abort = tusb_omap_dma_abort;
+-	tusb_dma->controller.pPrivateData = tusb_dma;
++	tusb_dma->controller.private_data = tusb_dma;
+ 
+ 	for (i = 0; i < MAX_DMAREQ; i++) {
+ 		struct dma_channel	*ch;
+@@ -703,7 +703,7 @@ dma_controller_create(struct musb *musb,
+ 			goto cleanup;
+ 
+ 		ch->bStatus = MGC_DMA_STATUS_UNKNOWN;
+-		ch->pPrivateData = chdat;
++		ch->private_data = chdat;
+ 	}
+ 
+ 	return &tusb_dma->controller;
+Index: linux-2.6.18/mvl_patches/pro50-1694.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1694.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1694);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,497 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_musb_undo_cppi_tx_dma_solution
+# Date: Thu Feb 19 14:56:36 2009
+# Source: MontaVista Software, Inc.
+# MR: 29116
+# Type: Defect Fix
+# Disposition: local
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# TI's CPPI 3.0 "Tx DMA solution" failed miserably for the isochronous transfers
+# (locking up the board on an attempt to playing audio). Undo the patch, so that
+# a patch containing an alternate solution fitting for upstream submission can
+# follow up...
+# 
+#  drivers/usb/musb/cppi_dma.c  |   22 +++++++++++++++-
+#  drivers/usb/musb/musb_core.c |   48 ------------------------------------
+#  drivers/usb/musb/musb_core.h |    4 ---
+#  drivers/usb/musb/musb_host.c |   57 +++++--------------------------------------
+#  drivers/usb/musb/musb_host.h |    1 
+#  5 files changed, 28 insertions(+), 104 deletions(-)
+# 
+
+PATCHNUM=2043
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 29116
+Type: Defect Fix
+Disposition: local
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+TI's CPPI 3.0 "Tx DMA solution" failed miserably for the isochronous transfers
+(locking up the board on an attempt to playing audio). Undo the patch, so that
+a patch containing an alternate solution fitting for upstream submission can
+follow up...
+
+ drivers/usb/musb/cppi_dma.c  |   22 +++++++++++++++-
+ drivers/usb/musb/musb_core.c |   48 ------------------------------------
+ drivers/usb/musb/musb_core.h |    4 ---
+ drivers/usb/musb/musb_host.c |   57 +++++--------------------------------------
+ drivers/usb/musb/musb_host.h |    1 
+ mvl_patches/pro50-2043.c     |   16 ++++++++++++
+ 6 files changed, 44 insertions(+), 104 deletions(-)
+
+Index: linux-2.6.18/drivers/usb/musb/cppi_dma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/cppi_dma.c
++++ linux-2.6.18/drivers/usb/musb/cppi_dma.c
+@@ -1250,7 +1250,27 @@ void cppi_completion(struct musb *musb, 
+ 
+ 				hw_ep = tx_ch->hw_ep;
+ 
+-				musb_dma_completion(musb, index + 1, 1);
++				/* Peripheral role never repurposes the
++				 * endpoint, so immediate completion is
++				 * safe.  Host role waits for the fifo
++				 * to empty (TXPKTRDY irq) before going
++				 * to the next queued bulk transfer.
++				 */
++				if (is_host_active(cppi->musb)) {
++#if 0
++					/* WORKAROUND because we may
++					 * not always get TXKPTRDY ...
++					 */
++					int	csr;
++
++					csr = musb_readw(hw_ep->regs,
++						MUSB_TXCSR);
++					if (csr & MUSB_TXCSR_TXPKTRDY)
++#endif
++						completed = false;
++				}
++				if (completed)
++					musb_dma_completion(musb, index + 1, 1);
+ 
+ 			} else {
+ 				/* Bigger transfer than we could fit in
+Index: linux-2.6.18/drivers/usb/musb/musb_core.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.c
++++ linux-2.6.18/drivers/usb/musb/musb_core.c
+@@ -373,43 +373,6 @@ void musb_hnp_stop(struct musb *musb)
+ 
+ #endif
+ 
+-void musb_fifo_check_tasklet(unsigned long data)
+-{
+-	struct musb *musb = (struct musb *)data;
+-	u8 epnum = 1, sch_tsklt = 0;
+-	struct musb_hw_ep *hw_ep = NULL;
+-	unsigned long flags;
+-	u16 csr;
+-	void __iomem	*epio = hw_ep->regs;
+-
+-	do {
+-		hw_ep = musb->endpoints + epnum;
+-		epio = hw_ep->regs;
+-		spin_lock_irqsave(&musb->lock, flags);
+-		if (hw_ep->fifo_flush_check) {
+-			csr = musb_readw(epio, MUSB_TXCSR);
+-			if ((csr & MUSB_TXCSR_FIFONOTEMPTY) ||
+-				(csr & MUSB_TXCSR_TXPKTRDY)) {
+-				sch_tsklt = 1;
+-				DBG(1, "Rescheduling %d\n",
+-						hw_ep->epnum);
+-			} else {
+-				hw_ep->fifo_flush_check = 0;
+-				musb->fifo_check_complete(hw_ep);
+-				DBG(1, "Completed Tasklet %d\n",
+-						hw_ep->epnum);
+-			}
+-		}
+-
+-		spin_unlock_irqrestore(&musb->lock, flags);
+-		/* REVISIT: we should check TX eps only */
+-		epnum++;
+-	} while (epnum < MUSB_C_NUM_EPS);
+-
+-	if (sch_tsklt)
+-		tasklet_schedule(&musb->fifo_check);
+-}
+-
+ /*
+  * Interrupt Service Routine to record USB "global" interrupts.
+  * Since these do not happen often and signify things of
+@@ -644,8 +607,6 @@ static irqreturn_t musb_stage0_irq(struc
+ 
+ 		MUSB_HST_MODE(musb);
+ 
+-		musb->fifo_check_complete = musb_h_fifo_check_complete;
+-
+ 		/* indicate new connection to OTG machine */
+ 		switch (musb->xceiv.state) {
+ 		case OTG_STATE_B_PERIPHERAL:
+@@ -1918,9 +1879,6 @@ static void musb_free(struct musb *musb)
+ 		clk_put(musb->clock);
+ 	}
+ 
+-	tasklet_disable(&musb->fifo_check);
+-	tasklet_kill(&musb->fifo_check);
+-
+ #ifdef CONFIG_USB_MUSB_OTG
+ 	put_device(musb->xceiv.dev);
+ #endif
+@@ -2057,12 +2015,6 @@ bad_config:
+ 	if (enable_irq_wake(nIrq) == 0)
+ 		device_init_wakeup(dev, 1);
+ 
+-	/* Initialize the tasklet to check for FIFO status on completion of
+-	 * a request
+-	 */
+-	tasklet_init(&musb->fifo_check, musb_fifo_check_tasklet,
+-			(unsigned long)musb);
+-
+ 	pr_info("%s: USB %s mode controller at %p using %s, IRQ %d\n",
+ 			musb_driver_name,
+ 			({char *s;
+Index: linux-2.6.18/drivers/usb/musb/musb_core.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.h
++++ linux-2.6.18/drivers/usb/musb/musb_core.h
+@@ -295,7 +295,6 @@ struct musb_hw_ep {
+ 	struct usb_iso_packet_descriptor	*iso_frame_desc;
+ 	int			num_iso_packets;
+ 	u8			iso_idx;
+-	u8 			fifo_flush_check;
+ };
+ 
+ static inline struct usb_request *next_in_request(struct musb_hw_ep *hw_ep)
+@@ -449,9 +448,6 @@ struct musb {
+ #ifdef MUSB_CONFIG_PROC_FS
+ 	struct proc_dir_entry *proc_entry;
+ #endif
+-
+-	struct tasklet_struct fifo_check;
+-	void (*fifo_check_complete) (struct musb_hw_ep *ep);
+ };
+ 
+ static inline void musb_set_vbus(struct musb *musb, int is_on)
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -155,10 +155,6 @@ static inline void cppi_host_txdma_start
+ 	/* NOTE: no locks here; caller should lock and select EP */
+ 	txcsr = musb_readw(ep->regs, MUSB_TXCSR);
+ 	txcsr |= MUSB_TXCSR_DMAENAB | MUSB_TXCSR_H_WZC_BITS;
+-
+-	if (is_cppi_enabled() && ep->musb->dma_controller)
+-		txcsr |= MUSB_TXCSR_DMAMODE;
+-
+ 	musb_writew(ep->regs, MUSB_TXCSR, txcsr);
+ }
+ 
+@@ -471,38 +467,6 @@ musb_advance_schedule(struct musb *musb,
+ 	}
+ }
+ 
+-void musb_h_fifo_check_complete(struct musb_hw_ep *ep)
+-{
+-	struct musb_qh		*qh = ep->is_shared_fifo ? ep->in_qh
+-							 : ep->out_qh;
+-
+-	musb_advance_schedule(ep->musb, next_urb(qh), ep, USB_DIR_OUT);
+-}
+-
+-/*
+- *	Invoke tasklet and update the EP with information for tasklet to
+- *	probe for fifo flush.
+- */
+-void musb_tx_tasklet_invoke(struct musb *musb, struct musb_hw_ep *ep)
+-{
+-	void __iomem	*epio = ep->regs;
+-	u16 csr;
+-	struct musb_qh		*qh = ep->is_shared_fifo ? ep->in_qh
+-							 : ep->out_qh;
+-
+-	csr = musb_readw(epio, MUSB_TXCSR);
+-
+-	if ((csr & MUSB_TXCSR_FIFONOTEMPTY) || (csr & MUSB_TXCSR_TXPKTRDY)) {
+-		ep->fifo_flush_check = 1;
+-		DBG(1, "Host TX csr: %02x\n", csr);
+-		tasklet_schedule(&musb->fifo_check);
+-	} else {
+-		ep->fifo_flush_check = 0;
+-		musb_advance_schedule(ep->musb, next_urb(qh), ep,
+-					USB_DIR_OUT);
+-	}
+-}
+-
+ static inline u16 musb_h_flush_rxfifo(struct musb_hw_ep *hw_ep, u16 csr)
+ {
+ 	/* we don't want fifo to fill itself again;
+@@ -739,17 +703,14 @@ static void musb_ep_program(struct musb 
+ 	/* OUT/transmit/EP0 or IN/receive? */
+ 	if (is_out) {
+ 		u16	csr;
+-		u16	int_txe = 0;
++		u16	int_txe;
+ 		u16	load_count;
+ 
+ 		csr = musb_readw(epio, MUSB_TXCSR);
+ 
+-		if (!is_cppi_enabled() && !musb->dma_controller) {
+-			/* disable interrupt in case we flush */
+-			int_txe = musb_readw(mbase, MUSB_INTRTXE);
+-			musb_writew(mbase, MUSB_INTRTXE,
+-						    int_txe & ~(1 << epnum));
+-		}
++		/* disable interrupt in case we flush */
++		int_txe = musb_readw(mbase, MUSB_INTRTXE);
++		musb_writew(mbase, MUSB_INTRTXE, int_txe & ~(1 << epnum));
+ 
+ 		/* general endpoint setup */
+ 		if (epnum) {
+@@ -909,9 +870,8 @@ static void musb_ep_program(struct musb 
+ 			musb_write_fifo(hw_ep, load_count, buf);
+ 		}
+ 
+-		if (!is_cppi_enabled() && !musb->dma_controller)
+-			/* re-enable interrupt */
+-			musb_writew(mbase, MUSB_INTRTXE, int_txe);
++		/* re-enable interrupt */
++		musb_writew(mbase, MUSB_INTRTXE, int_txe);
+ 
+ 	/* IN/receive */
+ 	} else {
+@@ -1369,10 +1329,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 		/* set status */
+ 		urb->status = status;
+ 		urb->actual_length = qh->offset;
+-		if (is_cppi_enabled())
+-			musb_tx_tasklet_invoke(musb, hw_ep);
+-		else
+-			musb_advance_schedule(musb, urb, hw_ep, USB_DIR_OUT);
++		musb_advance_schedule(musb, urb, hw_ep, USB_DIR_OUT);
+ 
+ 	} else if (!(tx_csr & MUSB_TXCSR_DMAENAB)) {
+ 		/* WARN_ON(!buf); */
+Index: linux-2.6.18/drivers/usb/musb/musb_host.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.h
++++ linux-2.6.18/drivers/usb/musb/musb_host.h
+@@ -83,7 +83,6 @@ static inline struct musb_qh *first_qh(s
+ 	return list_entry(q->next, struct musb_qh, ring);
+ }
+ 
+-extern void musb_h_fifo_check_complete(struct musb_hw_ep *ep);
+ 
+ extern void musb_root_disconnect(struct musb *musb);
+ 
+Index: linux-2.6.18/mvl_patches/pro50-2043.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2043.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2043);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

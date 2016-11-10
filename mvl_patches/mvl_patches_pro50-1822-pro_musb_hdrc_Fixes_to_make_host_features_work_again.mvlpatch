@@ -1,0 +1,449 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Fixes_to_make_host_features_work_again
+# Date: Fri Sep 19 14:22:12 2008
+# From 0a252d0f054a37670f92b291464bd24dfb43d3d6 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Tue, 27 Nov 2007 18:07:00 -0800
+# Subject: [PATCH] musb_hdrc: Fixes to make host features work again
+# 
+# Fixes to make host features work again
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit c54864a546ecb54e1ea6a2a8085bc861631533ec)
+
+PATCHNUM=1822
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 0a252d0f054a37670f92b291464bd24dfb43d3d6 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Tue, 27 Nov 2007 18:07:00 -0800
+Subject: [PATCH] musb_hdrc: Fixes to make host features work again
+
+Fixes to make host features work again
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit c54864a546ecb54e1ea6a2a8085bc861631533ec)
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -268,18 +268,6 @@ __musb_giveback(struct musb *musb, struc
+ __releases(musb->lock)
+ __acquires(musb->lock)
+ {
+-	if ((urb->transfer_flags & URB_SHORT_NOT_OK)
+-			&& (urb->actual_length < urb->transfer_buffer_length)
+-			&& status == 0
+-			&& usb_pipein(urb->pipe))
+-		status = -EREMOTEIO;
+-
+-	spin_lock(&urb->lock);
+-	urb->hcpriv = NULL;
+-	if (urb->status == -EINPROGRESS)
+-		urb->status = status;
+-	spin_unlock(&urb->lock);
+-
+ 	DBG(({ int level; switch (urb->status) {
+ 				case 0:
+ 					level = 4;
+@@ -304,7 +292,7 @@ __acquires(musb->lock)
+ 			);
+ 
+ 	spin_unlock(&musb->lock);
+-	usb_hcd_giveback_urb(musb_to_hcd(musb), urb);
++	usb_hcd_giveback_urb(musb_to_hcd(musb), urb, status);
+ 	spin_lock(&musb->lock);
+ }
+ 
+@@ -365,6 +353,8 @@ musb_giveback(struct musb_qh *qh, struct
+ 		break;
+ 	}
+ 
++	usb_hcd_unlink_urb_from_ep(musb_to_hcd(musb), urb);
++
+ 	qh->is_ready = 0;
+ 	__musb_giveback(musb, urb, status);
+ 	qh->is_ready = ready;
+@@ -1738,15 +1728,15 @@ success:
+ 
+ static int musb_urb_enqueue(
+ 	struct usb_hcd			*hcd,
+-	struct usb_host_endpoint	*hep,
+ 	struct urb			*urb,
+ 	gfp_t				mem_flags)
+ {
+ 	unsigned long			flags;
+ 	struct musb			*musb = hcd_to_musb(hcd);
++	struct usb_host_endpoint	*hep = urb->ep;
+ 	struct musb_qh			*qh = hep->hcpriv;
+ 	struct usb_endpoint_descriptor	*epd = &hep->desc;
+-	int				status;
++	int				ret;
+ 	unsigned			type_reg;
+ 	unsigned			interval;
+ 
+@@ -1754,6 +1744,10 @@ static int musb_urb_enqueue(
+ 	if (!is_host_active(musb) || !musb->is_active)
+ 		return -ENODEV;
+ 
++	ret = usb_hcd_link_urb_to_ep(hcd, urb);
++	if (ret)
++		return ret;
++
+ 	/* DMA mapping was already done, if needed, and this urb is on
+ 	 * hep->urb_list ... so there's little to do unless hep wasn't
+ 	 * yet scheduled onto a live qh.
+@@ -1774,8 +1768,10 @@ static int musb_urb_enqueue(
+ 	 * for bugs in other kernel code to break this driver...
+ 	 */
+ 	qh = kzalloc(sizeof *qh, mem_flags);
+-	if (!qh)
++	if (!qh) {
++		usb_hcd_unlink_urb_from_ep(hcd, urb);
+ 		return -ENOMEM;
++	}
+ 
+ 	qh->hep = hep;
+ 	qh->dev = urb->dev;
+@@ -1786,7 +1782,7 @@ static int musb_urb_enqueue(
+ 
+ 	/* no high bandwidth support yet */
+ 	if (qh->maxpacket & ~0x7ff) {
+-		status = -EMSGSIZE;
++		ret = -EMSGSIZE;
+ 		goto done;
+ 	}
+ 
+@@ -1870,12 +1866,12 @@ static int musb_urb_enqueue(
+ 		 * odd, rare, error prone, but legal.
+ 		 */
+ 		kfree(qh);
+-		status = 0;
++		ret = 0;
+ 	} else
+-		status = musb_schedule(musb, qh,
++		ret = musb_schedule(musb, qh,
+ 				epd->bEndpointAddress & USB_ENDPOINT_DIR_MASK);
+ 
+-	if (status == 0) {
++	if (ret == 0) {
+ 		urb->hcpriv = qh;
+ 		/* FIXME set urb->start_frame for iso/intr, it's tested in
+ 		 * musb_start_urb(), but otherwise only konicawc cares ...
+@@ -1884,9 +1880,11 @@ static int musb_urb_enqueue(
+ 	spin_unlock_irqrestore(&musb->lock, flags);
+ 
+ done:
+-	if (status != 0)
++	if (ret != 0) {
++		usb_hcd_unlink_urb_from_ep(hcd, urb);
+ 		kfree(qh);
+-	return status;
++	}
++	return ret;
+ }
+ 
+ 
+@@ -1950,14 +1948,13 @@ static int musb_cleanup_urb(struct urb *
+ 	return status;
+ }
+ 
+-static int musb_urb_dequeue(struct usb_hcd *hcd, struct urb *urb)
++static int musb_urb_dequeue(struct usb_hcd *hcd, struct urb *urb, int status)
+ {
+ 	struct musb		*musb = hcd_to_musb(hcd);
+ 	struct musb_qh		*qh;
+ 	struct list_head	*sched;
+-	struct urb		*tmp;
+ 	unsigned long		flags;
+-	int			status = -ENOENT;
++	int			ret;
+ 
+ 	DBG(4, "urb=%p, dev%d ep%d%s\n", urb,
+ 			usb_pipedevice(urb->pipe),
+@@ -1965,31 +1962,12 @@ static int musb_urb_dequeue(struct usb_h
+ 			usb_pipein(urb->pipe) ? "in" : "out");
+ 
+ 	spin_lock_irqsave(&musb->lock, flags);
+-
+-	/* make sure the urb is still queued and not completed */
+-	spin_lock(&urb->lock);
+-	qh = urb->hcpriv;
+-	if (qh) {
+-		struct usb_host_endpoint	*hep;
+-
+-		hep = qh->hep;
+-		list_for_each_entry(tmp, &hep->urb_list, urb_list) {
+-			if (urb == tmp) {
+-				status = 0;
+-				break;
+-			}
+-		}
+-	}
+-	spin_unlock(&urb->lock);
+-
+-	/* already completed */
+-	if (!qh) {
+-		status = 0;
++	ret = usb_hcd_check_unlink_urb(hcd, urb, status);
++	if (ret)
+ 		goto done;
+-	}
+ 
+-	/* still queued but not found on the list */
+-	if (status)
++	qh = urb->hcpriv;
++	if (!qh)
+ 		goto done;
+ 
+ 	/* Any URB not actively programmed into endpoint hardware can be
+@@ -2002,7 +1980,7 @@ static int musb_urb_dequeue(struct usb_h
+ 	 * OK to hold off until after some IRQ, though.
+ 	 */
+ 	if (!qh->is_ready || urb->urb_list.prev != &qh->hep->urb_list)
+-		status = -EINPROGRESS;
++		ret = -EINPROGRESS;
+ 	else {
+ 		switch (qh->type) {
+ 		case USB_ENDPOINT_XFER_CONTROL:
+@@ -2025,18 +2003,18 @@ static int musb_urb_dequeue(struct usb_h
+ 	}
+ 
+ 	/* NOTE:  qh is invalid unless !list_empty(&hep->urb_list) */
+-	if (status < 0 || (sched && qh != first_qh(sched))) {
++	if (ret < 0 || (sched && qh != first_qh(sched))) {
+ 		int	ready = qh->is_ready;
+ 
+-		status = 0;
++		ret = 0;
+ 		qh->is_ready = 0;
+ 		__musb_giveback(musb, urb, 0);
+ 		qh->is_ready = ready;
+ 	} else
+-		status = musb_cleanup_urb(urb, qh, urb->pipe & USB_DIR_IN);
++		ret = musb_cleanup_urb(urb, qh, urb->pipe & USB_DIR_IN);
+ done:
+ 	spin_unlock_irqrestore(&musb->lock, flags);
+-	return status;
++	return ret;
+ }
+ 
+ /* disable an endpoint */
+@@ -2082,10 +2060,8 @@ musb_h_disable(struct usb_hcd *hcd, stru
+ 		urb = next_urb(qh);
+ 
+ 		/* make software (then hardware) stop ASAP */
+-		spin_lock(&urb->lock);
+-		if (urb->status == -EINPROGRESS)
++		if (!urb->unlinked)
+ 			urb->status = -ESHUTDOWN;
+-		spin_unlock(&urb->lock);
+ 
+ 		/* cleanup */
+ 		musb_cleanup_urb(urb, qh, urb->pipe & USB_DIR_IN);
+Index: linux-2.6.18/mvl_patches/pro50-1822.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1822.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1822);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

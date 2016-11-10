@@ -1,0 +1,641 @@
+#! /usr/bin/env bash
+# Patch: -pro_emac_remove_dead_code
+# Date: Thu Feb 19 15:02:13 2009
+# Source: MontaVista Software, Inc.
+# MR: 28780
+# Type: Enhancement
+# Disposition: local 
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Remove some dead code from the DaVinci EMAC driver.
+# 
+#  drivers/net/davinci_emac.c |  285 -----------------------------------
+#  1 file changed, 5 insertions(+), 280 deletions(-)
+# 
+
+PATCHNUM=2126
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28780
+Type: Enhancement
+Disposition: local 
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Remove some dead code from the DaVinci EMAC driver.
+
+ drivers/net/davinci_emac.c |  285 ---------------------------------------------
+ mvl_patches/pro50-2126.c   |   16 ++
+ 2 files changed, 21 insertions(+), 280 deletions(-)
+
+Index: linux-2.6.18/drivers/net/davinci_emac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac.c
++++ linux-2.6.18/drivers/net/davinci_emac.c
+@@ -47,11 +47,6 @@
+         events.  Note: BY DEFAULT THIS DRIVER HANDLES MULTIPLE TX
+         COMPLETE VIA ITS CALLBACK IN THE SAME FUNCTION FOR SINGLE
+         PACKET COMPLETE NOTIFY.
+-
+-
+-    (3) CONFIG_EMAC_INIT_BUF_MALLOC - Not required for DaVinci driver
+-        - feature was added for another TI platform
+-
+  */
+ #include <linux/module.h>
+ #include <linux/kernel.h>
+@@ -142,8 +137,6 @@ typedef void *emac_net_data_token;
+ #define EMAC_WRAPPER_REGS_ADDR IO_ADDRESS(DAVINCI_EMAC_WRAPPER_CNTRL_REGS_BASE)
+ #define EMAC_WRAPPER_RAM_ADDR  IO_ADDRESS(DAVINCI_EMAC_WRAPPER_RAM_BASE)
+ #define EMAC_WRAPPER_RAM_SIZE  (8 << 10)
+-#define EMAC_TX_BD_MEM  EMAC_WRAPPER_RAM_ADDR
+-#define EMAC_RX_BD_MEM (EMAC_WRAPPER_RAM_ADDR + (EMAC_WRAPPER_RAM_SIZE >> 1))
+ 
+ /* feature macros here */
+ 
+@@ -779,167 +772,7 @@ struct emac_regs {
+ 	u32 rx_HDP[8];
+ 	u32 tx_CP[8];
+ 	u32 rx_CP[8];
+-} emac_regs;
+-#if 0
+-typedef volatile emac_regs *emac_regs_ovly;
+-#endif
+-
+-/**
+- *  EMAC Peripheral Device Register Enumerations
+- */
+-typedef enum {
+-	tx_id_ver = 0,
+-	tx_control,
+-	tx_teardown,
+-	rx_id_ver = 4,
+-	rx_control,
+-	rx_teardown,
+-	rx_MBP_enable = 64,
+-	rx_unicast_set,
+-	rx_unicast_clear,
+-	rx_maxlen,
+-	rx_buffer_offset,
+-
+-	rx_filter_low_thresh,
+-	rx0_flow_thresh = 72,
+-	rx1_flow_thresh,
+-	rx2_flow_thresh,
+-	rx3_flow_thresh,
+-	rx4_flow_thresh,
+-
+-	rx5_flow_thresh,
+-	rx6_flow_thresh,
+-	rx7_flow_thresh,
+-	rx0_free_buffer,
+-
+-	rx1_free_buffer,
+-	rx2_free_buffer,
+-	rx3_free_buffer,
+-	rx4_free_buffer,
+-
+-	rx5_free_buffer,
+-	rx6_free_buffer,
+-	rx7_free_buffer,
+-	mac_control,
+-	mac_status,
+-
+-	EMControl,
+-	tx_fifo_control,
+-	tx_int_stat_raw,
+-	tx_int_stat_masked,
+-
+-	tx_int_mask_set,
+-	tx_int_mask_clear,
+-	mac_in_vector,
+-	mac_EOI_vector,
+-	mac_cfig,
+-
+-	rx_int_stat_raw = 100,
+-	rx_int_stat_masked,
+-	rx_int_mask_set,
+-	rx_int_mask_clear,
+-	mac_int_stat_raw,
+-
+-	mac_int_stat_masked,
+-	mac_int_mask_set,
+-	mac_int_mask_clear,
+-	mac_src_addr_lo = 116,
+-	mac_src_addr_hi,
+-	mac_hash1,
+-	mac_hash2,
+-	boff_test,
+-	tpace_test,
+-	rx_pause,
+-
+-	tx_pause,
+-	rx_good_frames = 128,
+-	rx_broadcast_frames,
+-	rx_multicast_frames,
+-	rx_pause_frames,
+-	rx_crcerrors,
+-
+-	rx_align_code_errors,
+-	rx_oversized_frames,
+-	rx_jabber_frames,
+-	rx_undersized_frames,
+-
+-	rx_fragments,
+-	rx_filtered_frames,
+-	rx_qos_filtered_frames,
+-	rx_octets,
+-
+-	tx_good_frames,
+-	tx_broadcast_frames,
+-	tx_multicast_frames,
+-	tx_pause_frames,
+-
+-	tx_deferred_frames,
+-	tx_collision_frames,
+-	tx_single_coll_frames,
+-	tx_mult_coll_frames,
+-
+-	tx_excessive_collisions,
+-	tx_late_collisions,
+-	tx_underrun,
+-	tx_carrier_sense_errors,
+-
+-	tx_octets,
+-	reg64octet_frames,
+-	reg65t127octet_frames,
+-	reg128t255octet_frames,
+-
+-	reg256t511octet_frames,
+-	reg512t1023octet_frames,
+-	reg1024t_upoctet_frames,
+-
+-	net_octets,
+-	rx_sof_overruns,
+-	rx_mof_overruns,
+-	rx_dma_overruns,
+-
+-	RX_FIFO_processor_test_access = 192,	/* first word of RX FIFO */
+-	TX_FIFO_processor_test_access = 256,	/* first word of TX FIFO */
+-	mac_addr_lo = 320,
+-	mac_addr_hi,
+-	mac_index,
+-	tx0_HDP = 384,
+-	tx1_HDP,
+-	tx2_HDP,
+-	tx3_HDP,
+-	tx4_HDP,
+-	tx5_HDP,
+-	tx6_HDP,
+-
+-	tx7_HDP,
+-	rx0_HDP,
+-	rx1_HDP,
+-	rx2_HDP,
+-	rx3_HDP,
+-	rx4_HDP,
+-
+-	rx5_HDP,
+-	rx6_HDP,
+-	rx7_HDP,
+-	tx0_CP,
+-	tx1_CP,
+-	tx2_CP,
+-	tx3_CP,
+-
+-	tx4_CP,
+-	tx5_CP,
+-	tx6_CP,
+-	tx7_CP,
+-	rx0_CP,
+-	rx1_CP,
+-	rx2_CP,
+-
+-	rx3_CP,
+-	rx4_CP,
+-	rx5_CP,
+-	rx6_CP,
+-	rx7_CP,
+-	stateram_test_access = 448	/* first word of state RAM */
+-} emac_reg_ids;
++};
+ 
+ /**
+  *  EMAC Addressing Type
+@@ -1502,8 +1335,6 @@ struct emac_dev {
+ static int g_link_speed = 0;	/* 0=auto negotiate, 100=100mbps, 10=10mbps */
+ static int g_link_mode = 0;	/* 0=Auto Negotiate, Full Duplex = 3;
+ 				 * Half Duplex = 2 Unknown = 1 */
+-static int g_init_enable_flag = 0;
+-
+ static LIST_HEAD(emac_devices);
+ 
+ /* clock frequency for EMAC */
+@@ -1624,10 +1455,6 @@ static void emac_add_bdto_rx_queue(struc
+ 
+ static int emac_update_phy_status(struct emac_dev *dev);
+ 
+-static int emac_init(struct emac_dev *dev, struct emac_init_config *init_cfg);
+-
+-static int emac_de_init(struct emac_dev *dev, void *param);
+-
+ static int emac_open(struct emac_dev *dev, void *param);
+ 
+ static int emac_close(struct emac_dev *dev, void *param);
+@@ -3119,7 +2946,6 @@ struct ethtool_ops ethtool_ops = {
+ static int emac_dev_init(struct net_device *netdev)
+ {
+ 	int cnt, init_status = 0;
+-	int ret_code;
+ 	struct emac_dev *dev = NETDEV_PRIV(netdev);
+ 	unsigned char mac_eeprom[20];
+ 
+@@ -3148,26 +2974,6 @@ static int emac_dev_init(struct net_devi
+ 
+ 	init_status = 1;	/* instance created */
+ 
+-	/* initialize instance by passing initial configuration struct */
+-	ret_code = emac_init(dev, &dev->init_cfg);
+-
+-	if (ret_code != EMAC_SUCCESS) {
+-		ERR("Error %08X from Init()\n", ret_code);
+-		goto emac_dev_init_exit;
+-	}
+-
+-	init_status = 1;	/* instance created */
+-
+-	/* initialize instance by passing initial configuration struct */
+-	ret_code = emac_init(dev, &dev->init_cfg);
+-
+-	if (ret_code != EMAC_SUCCESS) {
+-		ERR("Error %08X from Init()\n", ret_code);
+-		goto emac_dev_init_exit;
+-	}
+-
+-	init_status = 2;	/* instance initialized */
+-
+ 	/* init spin lock */
+ 	spin_lock_init(&dev->tx_lock);
+ 	spin_lock_init(&dev->rx_lock);
+@@ -3230,30 +3036,9 @@ static int emac_dev_init(struct net_devi
+ 	request_mem_region(netdev->base_addr, EMAC_DEFAULT_EMAC_SIZE,
+ 			   netdev->name);
+ 
+-	/* if following flag ON then open DDC */
+-	if (g_init_enable_flag) {
+-		if (emac_p_dev_enable(dev)) {
+-			ERR("device could not OPEN\n");
+-			goto emac_dev_init_exit;
+-		}
+-	}
+-
+ 	return (0);
+ 
+       emac_dev_init_exit:
+-	/* all resources allocated are freed - call the un-init
+-	   sequence on DDC */
+-	switch (init_status) {
+-
+-	case 2:
+-		ret_code = emac_de_init(dev, NULL);
+-
+-		if (ret_code != EMAC_SUCCESS)
+-			ERR("%s: Error %08X from Deinit()\n",
+-			    netdev->name, ret_code);
+-	default:
+-		break;
+-	}
+ 
+ 	return (-1);
+ }
+@@ -3268,11 +3053,9 @@ static int emac_dev_open(struct net_devi
+ 	struct emac_dev *dev = NETDEV_PRIV(netdev);
+ 	int i;
+ 
+-	if (!g_init_enable_flag) {
+-		if (emac_p_dev_enable(dev)) {
+-			ERR("%s error: device could not OPEN\n", netdev->name);
+-			return (-1);
+-		}
++	if (emac_p_dev_enable(dev)) {
++		ERR("%s error: device could not OPEN\n", netdev->name);
++		return -1;
+ 	}
+ 
+         /** NOTE: we can have multiple interrupt lines running to the CPU */
+@@ -3304,8 +3087,7 @@ static int emac_dev_close(struct net_dev
+ 	struct emac_dev *dev = NETDEV_PRIV(netdev);
+ 	int i;
+ 
+-	if (!g_init_enable_flag)
+-		emac_p_dev_disable(dev);
++	emac_p_dev_disable(dev);
+ 
+ 	/* free ISR */
+ 	/* NOTE: we can have multiple interrupt lines running to the CPU */
+@@ -4072,41 +3854,6 @@ static void emac_set_mac_hw_cfg(struct e
+ }
+ 
+ /**
+- * EMAC Init
+- *  - validates max TX/RX channels and stores initial configuration
+- *
+- * Initial configuration passed by via the "init_cfg" parameter
+- */
+-static int emac_init(struct emac_dev *dev, struct emac_init_config *init_cfg)
+-{
+-	LOGMSG(EMAC_DEBUG_FUNCTION_ENTRY, "");
+-
+-	/* validate num_tx and num_rx channels */
+-	if ((init_cfg->num_tx_channels > EMAC_MAX_TX_CHANNELS) ||
+-	    (init_cfg->num_rx_channels > EMAC_MAX_RX_CHANNELS)) {
+-		LOGERR("Invalid number of TX/RX channels");
+-		return (EMAC_INVALID_PARAM);
+-	}
+-
+-	/* save config info for later use */
+-	dev->init_cfg = *init_cfg;	/* structure copy */
+-
+-	LOGMSG(EMAC_DEBUG_FUNCTION_EXIT, "");
+-	return (EMAC_SUCCESS);
+-}
+-
+-/* EMAC DDC DeInit
+- * Stub function - no functionality required as per this implementation
+- */
+-static int emac_de_init(struct emac_dev *dev, void *param)
+-{
+-	LOGMSG(EMAC_DEBUG_FUNCTION_ENTRY, "");
+-	LOGMSG(EMAC_DEBUG_FUNCTION_EXIT, "");
+-
+-	return (EMAC_SUCCESS);
+-}
+-
+-/**
+  * EMAC DDC Open
+  *  - Brings module out of reset
+  *  - Open's CSL, programs mandatory hardware init registers
+@@ -6724,9 +6471,6 @@ static int __init davinci_emac_probe(str
+ 	SET_NETDEV_DEV(netdev, &(pdev->dev));
+ 	memcpy(&dev->init_cfg, pdata, sizeof(struct emac_init_config));
+ 
+-#if defined CONFIG_EMAC_INIT_BUF_MALLOC
+-	g_init_enable_flag = 1;
+-#endif
+ 	emac_p_detect_manual_cfg(cfg_link_speed, cfg_link_mode);
+ 
+ 	platform_set_drvdata(pdev, netdev);
+@@ -6746,10 +6490,6 @@ static int __init davinci_emac_probe(str
+ 	list_add(&dev->emac_devices, &emac_devices);
+ 
+ 	printk("%s\n", emac_version_string);
+-#if defined CONFIG_EMAC_INIT_BUF_MALLOC
+-	printk
+-	    ("TI DAVINCI EMAC driver is allocating buffer memory at init time.\n");
+-#endif
+ 
+ err:
+ 	return err;
+@@ -6760,30 +6500,15 @@ static int __devexit davinci_emac_remove
+ {
+ 	struct net_device *netdev = platform_get_drvdata(pdev);
+ 	struct emac_dev *dev = NETDEV_PRIV(netdev);
+-	int ret_code;
+ 
+  	list_del(&dev->emac_devices);
+  
+ 	/* free EMAC clock */
+ 	clk_disable(emac_clk);
+ 
+-	if (g_init_enable_flag)
+-		emac_p_dev_disable(dev);
+-
+-	/* deinit DDC */
+-	ret_code = emac_de_init(dev, NULL);
+-
+ 	/* delete the proc entry */
+ 	delete_proc_entries_for_dev(dev);
+ 
+-	if (g_init_enable_flag)
+-		emac_p_dev_disable(dev);
+-
+-	/* deinit DDC */
+-	ret_code = emac_de_init(dev, NULL);
+-	if (ret_code != EMAC_SUCCESS)
+-		ERR("Error %08X from Deinit()\n", ret_code);
+-
+ 	/* release memory region and unregister the device */
+ 	release_mem_region(netdev->base_addr, EMAC_DEFAULT_EMAC_SIZE);
+ 	unregister_netdev(netdev);
+Index: linux-2.6.18/mvl_patches/pro50-2126.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2126.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2126);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,381 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Allow_tusb3.0_and_greater_to_use_multicha
+# Date: Fri Sep 19 14:20:25 2008
+# From c2b2c29418726ccaf30ba5a5dad98e3743769752 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Fri, 14 Sep 2007 15:32:58 -0700
+# Subject: [PATCH] musb_hdrc: Allow tusb3.0 and greater to use multichannel DMA
+# 
+# Allow tusb3.0 and greater to use multichannel DMA
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 13f21fc8f52c21334b04632c6ee7af1d9c5de226)
+
+PATCHNUM=1805
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From c2b2c29418726ccaf30ba5a5dad98e3743769752 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Fri, 14 Sep 2007 15:32:58 -0700
+Subject: [PATCH] musb_hdrc: Allow tusb3.0 and greater to use multichannel DMA
+
+Allow tusb3.0 and greater to use multichannel DMA
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 13f21fc8f52c21334b04632c6ee7af1d9c5de226)
+Index: linux-2.6.18/drivers/usb/musb/tusb6010.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010.c
++++ linux-2.6.18/drivers/usb/musb/tusb6010.c
+@@ -34,7 +34,7 @@ static void tusb_source_power(struct mus
+  * Checks the revision. We need to use the DMA register as 3.0 does not
+  * have correct versions for TUSB_PRCM_REV or TUSB_INT_CTRL_REV.
+  */
+-static u8 tusb_get_revision(struct musb *musb)
++u8 tusb_get_revision(struct musb *musb)
+ {
+ 	void __iomem	*tbase = musb->ctrl_base;
+ 	u32		die_id;
+Index: linux-2.6.18/drivers/usb/musb/tusb6010.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010.h
++++ linux-2.6.18/drivers/usb/musb/tusb6010.h
+@@ -13,6 +13,8 @@
+ #ifndef __TUSB6010_H__
+ #define __TUSB6010_H__
+ 
++extern u8 tusb_get_revision(struct musb *musb);
++
+ #ifdef CONFIG_USB_TUSB6010
+ #define musb_in_tusb()			1
+ #else
+Index: linux-2.6.18/drivers/usb/musb/tusb6010_omap.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010_omap.c
++++ linux-2.6.18/drivers/usb/musb/tusb6010_omap.c
+@@ -20,18 +20,6 @@
+ 
+ #include "musb_core.h"
+ 
+-/*
+- * REVISIT: With TUSB2.0 only one dmareq line can be used at a time.
+- * This should get fixed in hardware at some point.
+- */
+-#define BROKEN_DMAREQ
+-
+-#ifdef BROKEN_DMAREQ
+-#define dmareq_works()		0
+-#else
+-#define dmareq_works()		1
+-#endif
+-
+ #define to_chdat(c)		(struct tusb_omap_dma_ch *)(c)->private_data
+ 
+ #define MAX_DMAREQ		5	/* REVISIT: Really 6, but req5 not OK */
+@@ -67,6 +55,7 @@ struct tusb_omap_dma {
+ 	int				ch;
+ 	s8				dmareq;
+ 	s8				sync_dev;
++	unsigned			multichannel:1;
+ };
+ 
+ static int tusb_omap_dma_start(struct dma_controller *c)
+@@ -91,8 +80,6 @@ static int tusb_omap_dma_stop(struct dma
+ 	return 0;
+ }
+ 
+-#ifdef BROKEN_DMAREQ
+-
+ /*
+  * Allocate dmareq0 to the current channel unless it's already taken
+  */
+@@ -128,11 +115,6 @@ static inline void tusb_omap_free_shared
+ 	musb_writel(chdat->tbase, TUSB_DMA_EP_MAP, 0);
+ }
+ 
+-#else
+-#define tusb_omap_use_shared_dmareq(x, y)	do {} while (0)
+-#define tusb_omap_free_shared_dmareq(x, y)	do {} while (0)
+-#endif
+-
+ /*
+  * See also musb_dma_completion in plat_uds.c and musb_g_[tx|rx]() in
+  * musb_gadget.c.
+@@ -151,7 +133,7 @@ static void tusb_omap_dma_cb(int lch, u1
+ 
+ 	spin_lock_irqsave(&musb->lock, flags);
+ 
+-	if (dmareq_works())
++	if (tusb_dma->multichannel)
+ 		ch = chdat->ch;
+ 	else
+ 		ch = tusb_dma->ch;
+@@ -201,7 +183,7 @@ static void tusb_omap_dma_cb(int lch, u1
+ 		channel->actual_len += pio;
+ 	}
+ 
+-	if (!dmareq_works())
++	if (!tusb_dma->multichannel)
+ 		tusb_omap_free_shared_dmareq(chdat);
+ 
+ 	channel->status = MUSB_DMA_STATUS_FREE;
+@@ -283,7 +265,6 @@ static int tusb_omap_dma_program(struct 
+ 		return false;
+ 	}
+ 
+-
+ 	chdat->transfer_len = len & ~0x1f;
+ 
+ 	if (len < packet_sz)
+@@ -291,7 +272,7 @@ static int tusb_omap_dma_program(struct 
+ 	else
+ 		chdat->transfer_packet_sz = packet_sz;
+ 
+-	if (dmareq_works()) {
++	if (tusb_dma->multichannel) {
+ 		ch = chdat->ch;
+ 		dmareq = chdat->dmareq;
+ 		sync_dev = chdat->sync_dev;
+@@ -441,7 +422,7 @@ static int tusb_omap_dma_abort(struct dm
+ 	struct tusb_omap_dma_ch	*chdat = to_chdat(channel);
+ 	struct tusb_omap_dma	*tusb_dma = chdat->tusb_dma;
+ 
+-	if (!dmareq_works()) {
++	if (!tusb_dma->multichannel) {
+ 		if (tusb_dma->ch >= 0) {
+ 			omap_stop_dma(tusb_dma->ch);
+ 			omap_free_dma(tusb_dma->ch);
+@@ -574,7 +555,7 @@ tusb_omap_dma_allocate(struct dma_contro
+ 	channel->desired_mode = 0;
+ 	channel->actual_len = 0;
+ 
+-	if (dmareq_works()) {
++	if (tusb_dma->multichannel) {
+ 		ret = tusb_omap_dma_allocate_dmareq(chdat);
+ 		if (ret != 0)
+ 			goto free_dmareq;
+@@ -668,7 +649,7 @@ void dma_controller_destroy(struct dma_c
+ 		}
+ 	}
+ 
+-	if (!dmareq_works() && tusb_dma && tusb_dma->ch >= 0)
++	if (!tusb_dma->multichannel && tusb_dma && tusb_dma->ch >= 0)
+ 		omap_free_dma(tusb_dma->ch);
+ 
+ 	kfree(tusb_dma);
+@@ -710,6 +691,9 @@ dma_controller_create(struct musb *musb,
+ 	tusb_dma->controller.channel_abort = tusb_omap_dma_abort;
+ 	tusb_dma->controller.private_data = tusb_dma;
+ 
++	if (tusb_get_revision(musb) >= TUSB_REV_30)
++		tusb_dma->multichannel = 1;
++
+ 	for (i = 0; i < MAX_DMAREQ; i++) {
+ 		struct dma_channel	*ch;
+ 		struct tusb_omap_dma_ch	*chdat;
+Index: linux-2.6.18/mvl_patches/pro50-1805.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1805.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1805);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,620 @@
+#! /usr/bin/env bash
+# Patch: -pro_mtd_flash_addr_latch
+# Date: Thu Feb 19 15:11:46 2009
+# Source: MontaVista Software, Inc.
+# MR: 31602
+# Type: Enhancement
+# Disposition: needs submitting to linux-mtd
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# MTD map driver which allows flashes to be partially physically addressed and
+# have the upper address lines set by a board specific code.
+# 
+#  drivers/mtd/maps/Kconfig             |    9 +
+#  drivers/mtd/maps/Makefile            |    1 
+#  drivers/mtd/maps/latch-addr-flash.c  |  307 +++++++++++++++++++++++++++++++++++
+#  include/linux/mtd/latch-addr-flash.h |   29 +++
+#  4 files changed, 346 insertions(+)
+# 
+
+PATCHNUM=2256
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 31602
+Type: Enhancement
+Disposition: needs submitting to linux-mtd
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+MTD map driver which allows flashes to be partially physically addressed and
+have the upper address lines set by a board specific code.
+
+ drivers/mtd/maps/Kconfig             |    9 +
+ drivers/mtd/maps/Makefile            |    1 
+ drivers/mtd/maps/latch-addr-flash.c  |  307 +++++++++++++++++++++++++++++++++++
+ include/linux/mtd/latch-addr-flash.h |   29 +++
+ mvl_patches/pro50-2256.c             |   16 +
+ 5 files changed, 362 insertions(+)
+
+Index: linux-2.6.18/drivers/mtd/maps/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/mtd/maps/Kconfig
++++ linux-2.6.18/drivers/mtd/maps/Kconfig
+@@ -649,5 +649,14 @@ config MTD_MXC
+           This enables access to the flash chips on Freescale MXC based
+           platforms. If you have such a board, say 'Y'.
+ 
++config MTD_LATCH_ADDR
++	tristate "Latch-assisted Flash Chip Support"
++	depends on MTD_COMPLEX_MAPPINGS
++	help
++	  Map driver which allows flashes to be partially physically addressed
++	  and have the upper address lines set by a board specific code.
++
++	  If compiled as a module, it will be called latch-addr-flash.
++
+ endmenu
+ 
+Index: linux-2.6.18/drivers/mtd/maps/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/mtd/maps/Makefile
++++ linux-2.6.18/drivers/mtd/maps/Makefile
+@@ -73,3 +73,4 @@ obj-$(CONFIG_MTD_OMAP_NOR)	+= omap_nor.o
+ obj-$(CONFIG_MTD_MTX1)		+= mtx-1_flash.o
+ obj-$(CONFIG_MTD_TQM834x)	+= tqm834x.o
+ obj-$(CONFIG_MTD_MXC)           += mxc_nor.o
++obj-$(CONFIG_MTD_LATCH_ADDR)	+= latch-addr-flash.o
+Index: linux-2.6.18/drivers/mtd/maps/latch-addr-flash.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/mtd/maps/latch-addr-flash.c
+@@ -0,0 +1,307 @@
++/*
++ * Interface for NOR flash driver whose high address lines are latched
++ *
++ * Copyright 2000 Nicolas Pitre <nico@cam.org>
++ * Copyright 2005-2008 Analog Devices Inc.
++ * Coyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/map.h>
++#include <linux/mtd/partitions.h>
++#include <linux/platform_device.h>
++#include <linux/mtd/latch-addr-flash.h>
++
++#define DRIVER_NAME "latch-addr-flash"
++
++struct latch_addr_flash_info {
++	struct mtd_info		*mtd;
++	struct map_info		map;
++	struct resource		*res;
++
++	void			(*set_window)(unsigned long offset, void *data);
++	void			*data;
++
++	/* cache; could be found out of res */
++	unsigned long		win_mask;
++
++#ifdef CONFIG_MTD_PARTITIONS
++	int			nr_parts;
++	struct mtd_partition	*parts;
++#endif
++	spinlock_t		lock;
++};
++
++static map_word lf_read(struct map_info *map, unsigned long ofs)
++{
++	struct latch_addr_flash_info *info;
++	map_word datum;
++
++	info = (struct latch_addr_flash_info *)map->map_priv_1;
++
++	spin_lock(&info->lock);
++
++	info->set_window(ofs, info->data);
++	mb();
++	datum = inline_map_read(map, info->win_mask & ofs);
++
++	spin_unlock(&info->lock);
++
++	return datum;
++}
++
++static void lf_write(struct map_info *map, map_word datum, unsigned long ofs)
++{
++	struct latch_addr_flash_info *info;
++
++	info = (struct latch_addr_flash_info *)map->map_priv_1;
++
++	spin_lock(&info->lock);
++
++	info->set_window(ofs, info->data);
++	mb();
++	inline_map_write(map, datum, info->win_mask & ofs);
++
++	spin_unlock(&info->lock);
++}
++
++static void lf_copy_from(struct map_info *map, void *to,
++		unsigned long from, ssize_t len)
++{
++	struct latch_addr_flash_info *info =
++		(struct latch_addr_flash_info *) map->map_priv_1;
++	unsigned n;
++
++	while (len > 0) {
++		n = info->win_mask + 1 - (from & info->win_mask);
++		if (n > len)
++			n = len;
++
++		spin_lock(&info->lock);
++
++		info->set_window(from, info->data);
++		mb();
++		memcpy_fromio(to, map->virt + (from & info->win_mask), n);
++
++		spin_unlock(&info->lock);
++
++		to += n;
++		from += n;
++		len -= n;
++	}
++}
++
++static void lf_copy_to(struct map_info *map, unsigned long to,
++		const void *from, ssize_t len)
++{
++	struct latch_addr_flash_info *info =
++		(struct latch_addr_flash_info *) map->map_priv_1;
++	unsigned n;
++
++	while (len > 0) {
++		n = info->win_mask + 1 - (to & info->win_mask);
++		if (n > len)
++			n = len;
++
++		spin_lock(&info->lock);
++
++		info->set_window(to, info->data);
++		mb();
++		memcpy_toio(map->virt + (to & info->win_mask), from, n);
++
++		spin_unlock(&info->lock);
++
++		to += n;
++		from += n;
++		len -= n;
++	}
++}
++
++static const char *rom_probe_types[] =
++	{ "cfi_probe", "jedec_probe", "map_rom", NULL };
++#ifdef CONFIG_MTD_PARTITIONS
++static const char *part_probe_types[] = { "cmdlinepart", "RedBoot", NULL };
++#endif
++
++static int latch_addr_flash_remove(struct platform_device *dev)
++{
++	struct latch_addr_flash_info *info;
++	struct latch_addr_flash_data *latch_addr_data;
++
++	info = platform_get_drvdata(dev);
++	if (info == NULL)
++		return 0;
++	platform_set_drvdata(dev, NULL);
++
++	latch_addr_data = dev->dev.platform_data;
++
++	if (info->mtd != NULL) {
++#ifdef CONFIG_MTD_PARTITIONS
++		if (info->nr_parts) {
++			del_mtd_partitions(info->mtd);
++			kfree(info->parts);
++		} else if (latch_addr_data->nr_parts)
++			del_mtd_partitions(info->mtd);
++		else
++			del_mtd_device(info->mtd);
++#else
++		del_mtd_device(info->mtd);
++#endif
++		map_destroy(info->mtd);
++	}
++
++
++	if (info->map.virt != NULL)
++		iounmap(info->map.virt);
++
++	if (info->res != NULL)
++		release_mem_region(info->res->start,
++				   info->res->end - info->res->start + 1);
++
++	kfree(info);
++
++	if (latch_addr_data->done)
++		latch_addr_data->done(latch_addr_data->data);
++
++	return 0;
++}
++
++static int __devinit latch_addr_flash_probe(struct platform_device *dev)
++{
++	struct latch_addr_flash_data *latch_addr_data;
++	struct latch_addr_flash_info *info;
++	resource_size_t win_base = dev->resource->start;
++	resource_size_t win_size = dev->resource->end - win_base + 1;
++	const char **probe_type;
++	int err;
++
++	latch_addr_data = dev->dev.platform_data;
++	if (latch_addr_data == NULL)
++		return -ENODEV;
++
++	printk(KERN_NOTICE "latch-addr platform flash device: %#llx byte "
++	       "window at %#.8llx\n",
++	       (unsigned long long)win_size, (unsigned long long)win_base);
++
++	if (latch_addr_data->init) {
++		err = latch_addr_data->init(latch_addr_data->data);
++		if (err != 0)
++			return err;
++	}
++
++	info = kzalloc(sizeof(struct latch_addr_flash_info), GFP_KERNEL);
++	if (info == NULL) {
++		err = -ENOMEM;
++		goto done;
++	}
++
++	platform_set_drvdata(dev, info);
++
++	info->res = request_mem_region(win_base, win_size, dev->dev.bus_id);
++	if (info->res == NULL) {
++		dev_err(&dev->dev, "Could not reserve memory region\n");
++		err = -EBUSY;
++		goto free_info;
++	}
++
++	info->map.name	     = dev->dev.bus_id;
++	info->map.size	     = latch_addr_data->size;
++	info->map.bankwidth  = latch_addr_data->width;
++
++	info->map.phys	     = NO_XIP;
++	info->map.virt	     = ioremap(win_base, win_size);
++	if (!info->map.virt) {
++		err = -ENOMEM;
++		goto free_res;
++	}
++
++	info->map.map_priv_1 = (unsigned long)info;
++
++	info->map.read       = lf_read;
++	info->map.copy_from  = lf_copy_from;
++	info->map.write      = lf_write;
++	info->map.copy_to    = lf_copy_to;
++
++	info->set_window     = latch_addr_data->set_window;
++	info->data	     = latch_addr_data->data;
++
++	info->win_mask       = win_size - 1;
++
++	spin_lock_init(&info->lock);
++
++	for (probe_type = rom_probe_types; !info->mtd && *probe_type;
++	     probe_type++)
++		info->mtd = do_map_probe(*probe_type, &info->map);
++
++	if (info->mtd == NULL) {
++		dev_err(&dev->dev, "map_probe failed\n");
++		err = -ENODEV;
++		goto iounmap;
++	}
++	info->mtd->owner = THIS_MODULE;
++
++#ifdef CONFIG_MTD_PARTITIONS
++	err = parse_mtd_partitions(info->mtd, part_probe_types, &info->parts,
++				   0);
++	if (err > 0) {
++		add_mtd_partitions(info->mtd, info->parts, err);
++		return 0;
++	}
++
++	if (latch_addr_data->nr_parts) {
++		printk(KERN_NOTICE "Using latch-addr-flash partition "
++		       "information\n");
++		add_mtd_partitions(info->mtd, latch_addr_data->parts,
++				   latch_addr_data->nr_parts);
++		return 0;
++	}
++#endif
++
++	add_mtd_device(info->mtd);
++
++	return 0;
++
++iounmap:
++	iounmap(info->map.virt);
++free_res:
++	release_mem_region(info->res->start,
++			info->res->end - info->res->start + 1);
++free_info:
++	kfree(info);
++done:
++	if (latch_addr_data->done)
++		latch_addr_data->done(latch_addr_data->data);
++	return err;
++}
++
++static struct platform_driver latch_addr_flash_driver = {
++	.probe		= latch_addr_flash_probe,
++	.remove		= __devexit_p(latch_addr_flash_remove),
++	.driver		= {
++		.name	= DRIVER_NAME,
++	},
++};
++
++static int __init latch_addr_flash_init(void)
++{
++	return platform_driver_register(&latch_addr_flash_driver);
++}
++module_init(latch_addr_flash_init);
++
++static void __exit latch_addr_flash_exit(void)
++{
++	platform_driver_unregister(&latch_addr_flash_driver);
++}
++module_exit(latch_addr_flash_exit);
++
++MODULE_AUTHOR("David Griego <dgriego@mvista.com>");
++MODULE_DESCRIPTION("MTD map driver for flashes addressed physically with upper "
++		"address lines being set board specifically");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/include/linux/mtd/latch-addr-flash.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/linux/mtd/latch-addr-flash.h
+@@ -0,0 +1,29 @@
++/*
++ * Interface for NOR flash driver whose high address lines are latched
++ *
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This file is licensed underthe terms of the GNU General Public License
++ * version 2. This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++#ifndef __LATCH_ADDR_FLASH__
++#define __LATCH_ADDR_FLASH__
++
++struct map_info;
++struct mtd_partition;
++
++struct latch_addr_flash_data {
++	unsigned int		width;
++	unsigned int		size;
++
++	int			(*init)(void *data);
++	void			(*done)(void *data);
++	void			(*set_window)(unsigned long offset, void *data);
++	void			*data;
++
++	unsigned int		nr_parts;
++	struct mtd_partition	*parts;
++};
++
++#endif
+Index: linux-2.6.18/mvl_patches/pro50-2256.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2256.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2256);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

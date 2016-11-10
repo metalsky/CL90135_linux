@@ -1,0 +1,629 @@
+#! /usr/bin/env bash
+# Patch: -pro50_NET_Wrap_netdevice_hardware_header_creation
+# Date: Wed Nov  5 15:01:35 2008
+# MR: 29812
+# Source: kernel.org
+# Type: Defect Fix
+# Disposition: backport
+# Signed-off-by: Paolo Galtieri <pgaltieri@mvista.com>
+# Description:
+# 
+# From 0c4e85813d0a94eeb8bf813397a4907bdd7bb610 Mon Sep 17 00:00:00 2001
+# From: Stephen Hemminger <shemminger@linux-foundation.org>
+# Date: Tue, 9 Oct 2007 01:36:32 -0700
+# Subject: [PATCH] [NET]: Wrap netdevice hardware header creation.
+# 
+# Add inline for common usage of hardware header creation, and
+# fix bug in IPV6 mcast where the assumption about negative return is
+# an errno. Negative return from hard_header means not enough space
+# was available,(ie -N bytes).
+# 
+# Signed-off-by: Stephen Hemminger <shemminger@linux-foundation.org>
+# Signed-off-by: David S. Miller <davem@davemloft.net>
+# 
+
+PATCHNUM=1930
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29812
+Source: kernel.org
+Type: Defect Fix
+Disposition: backport
+Signed-off-by: Paolo Galtieri <pgaltieri@mvista.com>
+Description:
+
+From 0c4e85813d0a94eeb8bf813397a4907bdd7bb610 Mon Sep 17 00:00:00 2001
+From: Stephen Hemminger <shemminger@linux-foundation.org>
+Date: Tue, 9 Oct 2007 01:36:32 -0700
+Subject: [PATCH] [NET]: Wrap netdevice hardware header creation.
+
+Add inline for common usage of hardware header creation, and
+fix bug in IPV6 mcast where the assumption about negative return is
+an errno. Negative return from hard_header means not enough space
+was available,(ie -N bytes).
+
+Signed-off-by: Stephen Hemminger <shemminger@linux-foundation.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+
+Index: linux-2.6.18/drivers/net/hamradio/bpqether.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/hamradio/bpqether.c
++++ linux-2.6.18/drivers/net/hamradio/bpqether.c
+@@ -288,7 +288,7 @@ static int bpq_xmit(struct sk_buff *skb,
+ 
+ 	skb->protocol = ax25_type_trans(skb, dev);
+ 	skb->nh.raw = skb->data;
+-	dev->hard_header(skb, dev, ETH_P_BPQ, bpq->dest_addr, NULL, 0);
++	dev_hard_header(skb, dev, ETH_P_BPQ, bpq->dest_addr, NULL, 0);
+ 	bpq->stats.tx_packets++;
+ 	bpq->stats.tx_bytes+=skb->len;
+   
+Index: linux-2.6.18/drivers/net/pppoe.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/pppoe.c
++++ linux-2.6.18/drivers/net/pppoe.c
+@@ -803,8 +803,8 @@ static int pppoe_sendmsg(struct kiocb *i
+ 	}
+ 
+ 	error = total_len;
+-	dev->hard_header(skb, dev, ETH_P_PPP_SES,
+-			 po->pppoe_pa.remote, NULL, total_len);
++	dev_hard_header(skb, dev, ETH_P_PPP_SES,
++			po->pppoe_pa.remote, NULL, total_len);
+ 
+ 	memcpy(ph, &hdr, sizeof(struct pppoe_hdr));
+ 
+@@ -874,8 +874,8 @@ static int __pppoe_xmit(struct sock *sk,
+ 
+ 	skb2->dev = dev;
+ 
+-	dev->hard_header(skb2, dev, ETH_P_PPP_SES,
+-			 po->pppoe_pa.remote, NULL, data_len);
++	dev_hard_header(skb, dev, ETH_P_PPP_SES,
++			po->pppoe_pa.remote, NULL, data_len);
+ 
+ 	/* We're transmitting skb2, and assuming that dev_queue_xmit
+ 	 * will free it.  The generic ppp layer however, is expecting
+Index: linux-2.6.18/drivers/net/wan/lapbether.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wan/lapbether.c
++++ linux-2.6.18/drivers/net/wan/lapbether.c
+@@ -213,7 +213,7 @@ static void lapbeth_data_transmit(struct
+ 
+ 	skb->dev = dev = lapbeth->ethdev;
+ 
+-	dev->hard_header(skb, dev, ETH_P_DEC, bcast_addr, NULL, 0);
++	dev_hard_header(skb, dev, ETH_P_DEC, bcast_addr, NULL, 0);
+ 
+ 	dev_queue_xmit(skb);
+ }
+Index: linux-2.6.18/include/linux/netdevice.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/netdevice.h
++++ linux-2.6.18/include/linux/netdevice.h
+@@ -594,6 +594,15 @@ extern int		dev_restart(struct net_devic
+ extern int		netpoll_trap(void);
+ #endif
+ 
++static inline int dev_hard_header(struct sk_buff *skb, struct net_device *dev,
++				  unsigned short type,
++				  void *daddr, void *saddr, unsigned len)
++{
++	if (!dev->hard_header)
++		return 0;
++	return dev->hard_header(skb, dev, type, daddr, saddr, len);
++}
++
+ typedef int gifconf_func_t(struct net_device * dev, char __user * bufptr, int len);
+ extern int		register_gifconf(unsigned int family, gifconf_func_t * gifconf);
+ static inline int unregister_gifconf(unsigned int family)
+Index: linux-2.6.18/include/net/dn_route.h
+===================================================================
+--- linux-2.6.18.orig/include/net/dn_route.h
++++ linux-2.6.18/include/net/dn_route.h
+@@ -102,8 +102,7 @@ static inline void dn_rt_finish_output(s
+ 	if ((dev->type != ARPHRD_ETHER) && (dev->type != ARPHRD_LOOPBACK))
+ 		dst = NULL;
+ 
+-	if (!dev->hard_header || (dev->hard_header(skb, dev, ETH_P_DNA_RT,
+-			dst, src, skb->len) >= 0))
++	if (dev_hard_header(skb, dev, ETH_P_DNA_RT, dst, src, skb->len) >= 0)
+ 		dn_rt_send(skb);
+ 	else
+ 		kfree_skb(skb);
+Index: linux-2.6.18/net/802/p8023.c
+===================================================================
+--- linux-2.6.18.orig/net/802/p8023.c
++++ linux-2.6.18/net/802/p8023.c
+@@ -31,7 +31,7 @@ static int p8023_request(struct datalink
+ {
+ 	struct net_device *dev = skb->dev;
+ 
+-	dev->hard_header(skb, dev, ETH_P_802_3, dest_node, NULL, skb->len);
++	dev_hard_header(skb, dev, ETH_P_802_3, dest_node, NULL, skb->len);
+ 	return dev_queue_xmit(skb);
+ }
+ 
+Index: linux-2.6.18/net/8021q/vlan_dev.c
+===================================================================
+--- linux-2.6.18.orig/net/8021q/vlan_dev.c
++++ linux-2.6.18/net/8021q/vlan_dev.c
+@@ -415,21 +415,19 @@ int vlan_dev_hard_header(struct sk_buff 
+ 
+ 	if (build_vlan_header) {
+ 		/* Now make the underlying real hard header */
+-		rc = dev->hard_header(skb, dev, ETH_P_8021Q, daddr, saddr, len + VLAN_HLEN);
+-
+-		if (rc > 0) {
++		rc = dev_hard_header(skb, dev, ETH_P_8021Q, daddr, saddr,
++					 len + VLAN_HLEN);
++		if (rc > 0)
+ 			rc += VLAN_HLEN;
+-		} else if (rc < 0) {
++		else if (rc < 0)
+ 			rc -= VLAN_HLEN;
+-		}
+-	} else {
++	} else
+ 		/* If here, then we'll just make a normal looking ethernet frame,
+ 		 * but, the hard_start_xmit method will insert the tag (it has to
+ 		 * be able to do this for bridged and other skbs that don't come
+ 		 * down the protocol stack in an orderly manner.
+ 		 */
+-		rc = dev->hard_header(skb, dev, type, daddr, saddr, len);
+-	}
++		rc = dev_hard_header(skb, dev, type, daddr, saddr, len);
+ 
+ 	return rc;
+ }
+Index: linux-2.6.18/net/core/neighbour.c
+===================================================================
+--- linux-2.6.18.orig/net/core/neighbour.c
++++ linux-2.6.18/net/core/neighbour.c
+@@ -1260,9 +1260,8 @@ int neigh_compat_output(struct sk_buff *
+ 
+ 	__skb_pull(skb, skb->nh.raw - skb->data);
+ 
+-	if (dev->hard_header &&
+-	    dev->hard_header(skb, dev, ntohs(skb->protocol), NULL, NULL,
+-		    	     skb->len) < 0 &&
++	if (dev_hard_header(skb, dev, ntohs(skb->protocol), NULL, NULL,
++				skb->len) < 0 &&
+ 	    dev->rebuild_header(skb))
+ 		return 0;
+ 
+@@ -1294,13 +1293,13 @@ int neigh_resolve_output(struct sk_buff 
+ 			write_lock_bh(&neigh->lock);
+ 			if (!dst->hh)
+ 				neigh_hh_init(neigh, dst, dst->ops->protocol);
+-			err = dev->hard_header(skb, dev, ntohs(skb->protocol),
+-					       neigh->ha, NULL, skb->len);
++			err = dev_hard_header(skb, dev, ntohs(skb->protocol),
++						  neigh->ha, NULL, skb->len);
+ 			write_unlock_bh(&neigh->lock);
+ 		} else {
+ 			read_lock_bh(&neigh->lock);
+-			err = dev->hard_header(skb, dev, ntohs(skb->protocol),
+-					       neigh->ha, NULL, skb->len);
++			err = dev_hard_header(skb, dev, ntohs(skb->protocol),
++						  neigh->ha, NULL, skb->len);
+ 			read_unlock_bh(&neigh->lock);
+ 		}
+ 		if (err >= 0)
+@@ -1336,8 +1335,8 @@ int neigh_connected_output(struct sk_buf
+ 	__skb_pull(skb, skb->nh.raw - skb->data);
+ 
+ 	read_lock_bh(&neigh->lock);
+-	err = dev->hard_header(skb, dev, ntohs(skb->protocol),
+-			       neigh->ha, NULL, skb->len);
++	err = dev_hard_header(skb, dev, ntohs(skb->protocol),
++				  neigh->ha, NULL, skb->len);
+ 	read_unlock_bh(&neigh->lock);
+ 	if (err >= 0)
+ 		err = neigh->ops->queue_xmit(skb);
+Index: linux-2.6.18/net/core/netpoll.c
+===================================================================
+--- linux-2.6.18.orig/net/core/netpoll.c
++++ linux-2.6.18/net/core/netpoll.c
+@@ -427,11 +427,9 @@ static void arp_reply(struct sk_buff *sk
+ 	send_skb->protocol = htons(ETH_P_ARP);
+ 
+ 	/* Fill the device header for the ARP frame */
+-
+-	if (np->dev->hard_header &&
+-	    np->dev->hard_header(send_skb, skb->dev, ptype,
+-				       np->remote_mac, np->local_mac,
+-				       send_skb->len) < 0) {
++	if (dev_hard_header(send_skb, skb->dev, ptype,
++				np->remote_mac, np->local_mac,
++				send_skb->len) < 0) {
+ 		kfree_skb(send_skb);
+ 		return;
+ 	}
+Index: linux-2.6.18/net/decnet/dn_neigh.c
+===================================================================
+--- linux-2.6.18.orig/net/decnet/dn_neigh.c
++++ linux-2.6.18/net/decnet/dn_neigh.c
+@@ -210,7 +210,8 @@ static int dn_neigh_output_packet(struct
+ 	char mac_addr[ETH_ALEN];
+ 
+ 	dn_dn2eth(mac_addr, rt->rt_local_src);
+-	if (!dev->hard_header || dev->hard_header(skb, dev, ntohs(skb->protocol), neigh->ha, mac_addr, skb->len) >= 0)
++	if (dev_hard_header(skb, dev, ntohs(skb->protocol), neigh->ha,
++				mac_addr, skb->len) >= 0)
+ 		return neigh->ops->queue_xmit(skb);
+ 
+ 	if (net_ratelimit())
+Index: linux-2.6.18/net/econet/af_econet.c
+===================================================================
+--- linux-2.6.18.orig/net/econet/af_econet.c
++++ linux-2.6.18/net/econet/af_econet.c
+@@ -337,6 +337,7 @@ static int econet_sendmsg(struct kiocb *
+ 		/* Real hardware Econet.  We're not worthy etc. */
+ #ifdef CONFIG_ECONET_NATIVE
+ 		unsigned short proto = 0;
++		int res;
+ 
+ 		dev_hold(dev);
+ 		
+@@ -355,12 +356,12 @@ static int econet_sendmsg(struct kiocb *
+ 		eb->sec = *saddr;
+ 		eb->sent = ec_tx_done;
+ 
+-		if (dev->hard_header) {
+-			int res;
++		err = -EINVAL;
++		res = dev_hard_header(skb, dev, ntohs(proto), &addr, NULL, len);
++		if (res < 0)
++			goto out_free;
++		if (res > 0) {
+ 			struct ec_framehdr *fh;
+-			err = -EINVAL;
+-			res = dev->hard_header(skb, dev, ntohs(proto), 
+-					       &addr, NULL, len);
+ 			/* Poke in our control byte and
+ 			   port number.  Hack, hack.  */
+ 			fh = (struct ec_framehdr *)(skb->data);
+@@ -369,8 +370,7 @@ static int econet_sendmsg(struct kiocb *
+ 			if (sock->type != SOCK_DGRAM) {
+ 				skb->tail = skb->data;
+ 				skb->len = 0;
+-			} else if (res < 0)
+-				goto out_free;
++			}
+ 		}
+ 		
+ 		/* Copy the data. Returns -EFAULT on error */
+Index: linux-2.6.18/net/ethernet/pe2.c
+===================================================================
+--- linux-2.6.18.orig/net/ethernet/pe2.c
++++ linux-2.6.18/net/ethernet/pe2.c
+@@ -12,9 +12,7 @@ static int pEII_request(struct datalink_
+ 	struct net_device *dev = skb->dev;
+ 
+ 	skb->protocol = htons(ETH_P_IPX);
+-	if (dev->hard_header)
+-		dev->hard_header(skb, dev, ETH_P_IPX,
+-				 dest_node, NULL, skb->len);
++	dev_hard_header(skb, dev, ETH_P_IPX, dest_node, NULL, skb->len);
+ 	return dev_queue_xmit(skb);
+ }
+ 
+Index: linux-2.6.18/net/ipv4/arp.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv4/arp.c
++++ linux-2.6.18/net/ipv4/arp.c
+@@ -591,8 +591,7 @@ struct sk_buff *arp_create(int type, int
+ 	/*
+ 	 *	Fill the device header for the ARP frame
+ 	 */
+-	if (dev->hard_header &&
+-	    dev->hard_header(skb,dev,ptype,dest_hw,src_hw,skb->len) < 0)
++	if (dev_hard_header(skb, dev, ptype, dest_hw, src_hw, skb->len) < 0)
+ 		goto out;
+ 
+ 	/*
+Index: linux-2.6.18/net/ipv4/ipconfig.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv4/ipconfig.c
++++ linux-2.6.18/net/ipv4/ipconfig.c
+@@ -748,8 +748,8 @@ static void __init ic_bootp_send_if(stru
+ 	/* Chain packet down the line... */
+ 	skb->dev = dev;
+ 	skb->protocol = htons(ETH_P_IP);
+-	if ((dev->hard_header &&
+-	     dev->hard_header(skb, dev, ntohs(skb->protocol), dev->broadcast, dev->dev_addr, skb->len) < 0) ||
++	if (dev_hard_header(skb, dev, ntohs(skb->protocol),
++				dev->broadcast, dev->dev_addr, skb->len) < 0 ||
+ 	    dev_queue_xmit(skb) < 0)
+ 		printk("E");
+ }
+Index: linux-2.6.18/net/ipv6/mcast.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv6/mcast.c
++++ linux-2.6.18/net/ipv6/mcast.c
+@@ -1441,17 +1441,12 @@ static struct sk_buff *mld_newpack(struc
+ static inline int mld_dev_queue_xmit2(struct sk_buff *skb)
+ {
+ 	struct net_device *dev = skb->dev;
++	unsigned char ha[MAX_ADDR_LEN];
+ 
+-	if (dev->hard_header) {
+-		unsigned char ha[MAX_ADDR_LEN];
+-		int err;
+-
+-		ndisc_mc_map(&skb->nh.ipv6h->daddr, ha, dev, 1);
+-		err = dev->hard_header(skb, dev, ETH_P_IPV6, ha, NULL, skb->len);
+-		if (err < 0) {
+-			kfree_skb(skb);
+-			return err;
+-		}
++	ndisc_mc_map(&skb->nh.ipv6h->daddr, ha, dev, 1);
++	if (dev_hard_header(skb, dev, ETH_P_IPV6, ha, NULL, skb->len) < 0) {
++		kfree_skb(skb);
++		return -EINVAL;
+ 	}
+ 	return dev_queue_xmit(skb);
+ }
+Index: linux-2.6.18/net/packet/af_packet.c
+===================================================================
+--- linux-2.6.18.orig/net/packet/af_packet.c
++++ linux-2.6.18/net/packet/af_packet.c
+@@ -756,16 +756,10 @@ static int packet_sendmsg(struct kiocb *
+ 	skb_reserve(skb, LL_RESERVED_SPACE(dev));
+ 	skb->nh.raw = skb->data;
+ 
+-	if (dev->hard_header) {
+-		int res;
+-		err = -EINVAL;
+-		res = dev->hard_header(skb, dev, ntohs(proto), addr, NULL, len);
+-		if (sock->type != SOCK_DGRAM) {
+-			skb->tail = skb->data;
+-			skb->len = 0;
+-		} else if (res < 0)
+-			goto out_free;
+-	}
++	err = -EINVAL;
++	if (sock->type == SOCK_DGRAM &&
++		dev_hard_header(skb, dev, ntohs(proto), addr, NULL, len) < 0)
++		goto out_free;
+ 
+ 	/* Returns -EFAULT on error */
+ 	err = memcpy_fromiovec(skb_put(skb,len), msg->msg_iov, len);
+Index: linux-2.6.18/net/sched/sch_teql.c
+===================================================================
+--- linux-2.6.18.orig/net/sched/sch_teql.c
++++ linux-2.6.18/net/sched/sch_teql.c
+@@ -248,9 +248,12 @@ __teql_resolve(struct sk_buff *skb, stru
+ 	}
+ 	if (neigh_event_send(n, skb_res) == 0) {
+ 		int err;
++
+ 		read_lock(&n->lock);
+-		err = dev->hard_header(skb, dev, ntohs(skb->protocol), n->ha, NULL, skb->len);
++		err = dev_hard_header(skb, dev, ntohs(skb->protocol),
++					  n->ha, NULL, skb->len);
+ 		read_unlock(&n->lock);
++
+ 		if (err < 0) {
+ 			neigh_release(n);
+ 			return -EINVAL;
+Index: linux-2.6.18/net/tipc/eth_media.c
+===================================================================
+--- linux-2.6.18.orig/net/tipc/eth_media.c
++++ linux-2.6.18/net/tipc/eth_media.c
+@@ -76,7 +76,7 @@ static int send_msg(struct sk_buff *buf,
+ 		clone->nh.raw = clone->data;
+ 		dev = ((struct eth_bearer *)(tb_ptr->usr_handle))->dev;
+ 		clone->dev = dev;
+-		dev->hard_header(clone, dev, ETH_P_TIPC, 
++		dev_hard_header(clone, dev, ETH_P_TIPC,
+ 				 &dest->dev_addr.eth_addr,
+ 				 dev->dev_addr, clone->len);
+ 		dev_queue_xmit(clone);
+Index: linux-2.6.18/mvl_patches/pro50-1930.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1930.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1930);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

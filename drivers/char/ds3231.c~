@@ -1,0 +1,728 @@
+/*
+ * DS3231 Real Time Clock interface for Linux
+ *
+ * Copyright (C) 2011 Michele Sponchiado
+ *
+ * Based on code written by Paul Gortmaker and Ralf Baechle.
+ *
+ * This driver allows use of the real time clock (built into nearly all
+ * computers) from user space. It exports the /dev/rtc interface supporting
+ * various ioctl() and also the /proc/rtc pseudo-file for status
+ * information.
+ *
+ * The ioctls can be used to set the interrupt behaviour and generation rate
+ * from the RTC via IRQ 8. Then the /dev/rtc interface can be used to make
+ * use of these timer interrupts, be they interval or alarm based.
+ *
+ * The /dev/rtc interface will block on reads until an interrupt has been
+ * received. If a RTC interrupt has already happened, it will output an
+ * unsigned long and then block. The output value contains the interrupt
+ * status in the low byte and the number of interrupts since the last read
+ * in the remaining high bytes. The /dev/rtc interface can also be used with
+ * the select(2) call.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ */
+#include <linux/ds3231.h>
+#include <linux/types.h>
+#include <linux/errno.h>
+#include <linux/miscdevice.h>
+#include <linux/slab.h>
+#include <linux/ioport.h>
+#include <linux/fcntl.h>
+#include <linux/init.h>
+#include <linux/poll.h>
+#include <linux/rtc.h>
+#include <linux/spinlock.h>
+#include <linux/bcd.h>
+#include <linux/proc_fs.h>
+
+#include <asm/uaccess.h>
+#include <asm/system.h>
+
+#include <linux/platform_device.h>
+
+#include <asm/mach-types.h>
+#include <asm/arch/i2c-client.h>
+
+
+// Michele: driver per rtc ds3231
+#define RTC_MAJOR_NR 121 /* local major, change later */
+#define DS3231_VERSION		"1.0"
+// nome del device...
+#define DS3231_driver_path "driver/rtc_ds3231"
+#define DEV_NAME "rtc_ds3231"
+
+unsigned char rtc_read(unsigned char ucRegister){
+    char rtcData[4];
+    rtcData[0]=ucRegister;
+    davinci_i2c_write(1, rtcData, 0x68);
+	davinci_i2c_read(1, rtcData, 0x68);
+	return rtcData[0];
+}
+
+unsigned char rtc_write(unsigned char ucValue,unsigned char ucRegister){
+    char rtcData[4];
+    rtcData[0]=ucRegister;
+    rtcData[1]=ucValue;
+    return davinci_i2c_write(2, rtcData, 0x68);
+}
+
+
+/*
+ *	We sponge a minor off of the misc major. No need slurping
+ *	up another valuable major dev number for this. If you add
+ *	an ioctl, make sure you don't conflict with SPARC's RTC
+ *	ioctls.
+ */
+
+static DECLARE_WAIT_QUEUE_HEAD(ds3231_wait);
+
+static ssize_t ds3231_read(struct file *file, char *buf,
+			size_t count, loff_t *ppos);
+
+static int ds3231_ioctl(struct inode *inode, struct file *file,
+                        unsigned int cmd, unsigned long arg);
+
+static unsigned int ds3231_poll(struct file *file, poll_table *wait);
+
+static void ds3231_get_alm_time (struct rtc_time *alm_tm);
+static void ds3231_get_time(struct rtc_time *rtc_tm);
+static int ds3231_set_time(struct rtc_time *rtc_tm);
+
+static inline unsigned char ds3231_is_updating(void);
+
+static DEFINE_SPINLOCK(ds3231_lock);
+
+static int ds3231_read_proc(char *page, char **start, off_t off,
+                            int count, int *eof, void *data);
+
+/*
+ *	Bits in rtc_status. (7 bits of room for future expansion)
+ */
+
+#define RTC_IS_OPEN		0x01	/* means /dev/rtc is in use	*/
+#define RTC_TIMER_ON		0x02	/* missed irq timer active	*/
+
+static unsigned char ds3231_status;	/* bitmapped status byte.	*/
+static unsigned char ds3231_alarmMaskReg; //masck identifying alarm generation mode (only for alarm 1)
+
+static unsigned char days_in_mo[] = {
+	0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+};
+
+/*
+ *	Now all the various file operations that we export.
+ */
+
+static ssize_t ds3231_read(struct file *file, char *buf,
+                           size_t count, loff_t *ppos)
+{
+	struct rtc_time wtime;
+	if (count!=sizeof(wtime))
+	    return -EFAULT;
+	memset(&wtime, 0, sizeof(wtime));
+	ds3231_get_time(&wtime);
+	printk("rtc_time\t: %02d:%02d:%02d\n"
+	       "rtc_date\t: %04d-%02d-%02d\n",
+		     wtime.tm_hour, wtime.tm_min, wtime.tm_sec,
+		     wtime.tm_year + 1900, wtime.tm_mon + 1, wtime.tm_mday);
+	
+	if (copy_to_user((void *)buf, &wtime, sizeof wtime))
+	    return -EFAULT;
+	return sizeof wtime; 
+}
+
+static int ds3231_ioctl(struct inode *inode, struct file *file,
+                        unsigned int cmd, unsigned long arg)
+{
+	struct rtc_time wtime;
+
+	switch (cmd) {
+	case RTC_AIE_OFF:	// Mask alarm int. enab. bit	
+	{
+		unsigned int flags;
+		unsigned char val;
+
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+
+	// no spin lock while atomic!!!!
+//		spin_lock_irqsave(&ds3231_lock, flags);
+		val = rtc_read(RTC_CTL_REG_ADDR);
+		val &=  ~RTC_A1_IE_MASK;
+		rtc_write(val, RTC_CTL_REG_ADDR);
+	// no spin lock while atomic!!!!
+//		spin_unlock_irqrestore(&ds3231_lock, flags);
+
+		return 0;
+	}
+	case RTC_AIE_ON:	// alarm int. enab. 
+	{
+		unsigned int flags;
+		unsigned char val;
+
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+
+	// no spin lock while atomic!!!!
+//		spin_lock_irqsave(&ds3231_lock, flags);
+		val = rtc_read(RTC_CTL_REG_ADDR);
+		val |=  RTC_A1_IE_MASK;
+		rtc_write(val, RTC_CTL_REG_ADDR);
+	// no spin lock while atomic!!!!
+//		spin_unlock_irqrestore(&ds3231_lock, flags);
+
+		return 0;
+	}
+	
+	case RTC_ALM_READ:	/* Read the present alarm time */
+	{
+		/*
+		 * This returns a struct rtc_time. Reading >= 0xc0
+		 * means "don't care" or "match all". Only the tm_hour,
+		 * tm_min, and tm_sec values are filled in.
+		 */
+
+		memset(&wtime, 0, sizeof(wtime));
+		ds3231_get_alm_time(&wtime);
+		break;
+	}
+	case RTC_ALM_SET:	/* Store a time into the alarm */
+	{
+		/*
+		 * This expects a struct rtc_time. Writing 0xff means
+		 * "don't care" or "match all". Only the tm_hour,
+		 * tm_min and tm_sec are used.
+		 */
+		unsigned char hrs, min, sec;
+		struct rtc_time alm_tm;
+
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+
+		if (copy_from_user(&alm_tm, (struct rtc_time*)arg,
+				   sizeof(struct rtc_time)))
+			return -EFAULT;
+
+		hrs = alm_tm.tm_hour;
+		min = alm_tm.tm_min;
+		sec = alm_tm.tm_sec;
+
+		if (hrs >= 24)
+			hrs = 0xff;
+
+		if (min >= 60)
+			min = 0xff;
+			
+		if (sec >= 60)
+			sec = 0xff;
+
+		BIN_TO_BCD(sec);
+		BIN_TO_BCD(min);
+		BIN_TO_BCD(hrs);
+
+	// no spin lock while atomic!!!!
+//		spin_lock(&ds3231_lock);
+		
+		rtc_write(hrs, RTC_A1_HR_ADDR);
+		rtc_write(min, RTC_A1_MIN_ADDR);
+		rtc_write(sec, RTC_A1_SEC_ADDR);
+	// no spin lock while atomic!!!!
+//		spin_unlock(&ds3231_lock);
+
+		return 0;
+	}
+	case RTC_RD_TIME:	/* Read the time/date from RTC	*/
+	{
+		memset(&wtime, 0, sizeof(wtime));
+		ds3231_get_time(&wtime);
+		break;
+	}
+	case RTC_SET_TIME:	/* Set the RTC */
+	{
+		struct rtc_time rtc_tm;
+
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+
+		if (copy_from_user(&rtc_tm, (struct rtc_time*)arg,
+				   sizeof(struct rtc_time)))
+			return -EFAULT;
+
+		return ds3231_set_time(&rtc_tm);
+	}
+	default:
+        printk("DS3231 invalid code: %X\n", cmd);
+	
+		return -EINVAL;
+	}
+	return copy_to_user((void *)arg, &wtime, sizeof wtime) ? -EFAULT : 0;
+}
+
+/*
+ *	We enforce only one user at a time here with the open/close.
+ *	Also clear the previous interrupt data on an open, and clean
+ *	up things on a close.
+ */
+
+static int ds3231_open(struct inode *inode, struct file *file)
+{
+	spin_lock_irq(&ds3231_lock);
+
+	if (ds3231_status & RTC_IS_OPEN)
+		goto out_busy;
+
+	ds3231_status |= RTC_IS_OPEN;
+
+	spin_unlock_irq(&ds3231_lock);
+	return 0;
+
+out_busy:
+	spin_lock_irq(&ds3231_lock);
+	return -EBUSY;
+}
+
+static int ds3231_release(struct inode *inode, struct file *file)
+{
+	ds3231_status &= ~RTC_IS_OPEN;
+
+	return 0;
+}
+
+static unsigned int ds3231_poll(struct file *file, poll_table *wait)
+{
+	poll_wait(file, &ds3231_wait, wait);
+
+	return 0;
+}
+
+/*
+ *	The various file operations we support.
+ */
+
+static const struct file_operations ds3231_fops = {
+	.llseek		= no_llseek,
+	.read		= ds3231_read,
+	.poll		= ds3231_poll,
+	.ioctl		= ds3231_ioctl,
+	.open		= ds3231_open,
+	.release	= ds3231_release,
+};
+
+static struct miscdevice ds3231_dev=
+{
+	.minor	= RTC_MINOR+33,
+	.name	= DEV_NAME,
+	.fops	= &ds3231_fops,
+};
+
+static int __init ds3231_init(void)
+{
+	int err;
+
+	printk(KERN_INFO "DS3231 Real Time Clock Driver v%s\n", DS3231_VERSION);
+
+//	if (register_chrdev(RTC_MAJOR_NR, DEV_NAME, &ds3231_fops)) {
+	err = misc_register(&ds3231_dev);
+	if (err)
+		goto out;
+
+	if (!create_proc_read_entry(DS3231_driver_path, 0, 0, ds3231_read_proc, NULL)) {
+		err = -ENOMEM;
+
+		goto out_deregister;
+	}
+	printk(KERN_INFO "DS3231 Real Time Clock Driver v%s init ok\n", DS3231_VERSION);
+
+	return 0;
+
+out_deregister:
+	misc_deregister(&ds3231_dev);
+//	unregister_chrdev(RTC_MAJOR_NR, DEV_NAME);
+
+out:
+	return err;
+}
+
+static void __exit ds3231_exit(void)
+{
+	remove_proc_entry(DS3231_driver_path, NULL);
+	misc_deregister(&ds3231_dev);
+//	unregister_chrdev(RTC_MAJOR_NR, DEV_NAME);
+}
+
+static char *days[] = {
+	"***", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+};
+
+static char *square_wave_out_freq[] = {
+	"1Hz", "1.024kHz", "2.048kHz", "4.096kHz"
+};
+
+static char *alarm1_rates[] = {
+                                                      // DY/DT A1M4 A1M3 A1M2 A1M1
+"Alarm when date, hours, minutes, and seconds match", // 0      0   0    0      0 
+"Alarm when day, hours, minutes, and seconds match" , // 1      0   0    0      0 
+"Alarm when hours, minutes, and seconds match"      , // X      1   0    0      0 
+"Alarm when minutes and seconds match"              , // X      1   1    0      0 
+"Alarm when seconds match"                          , // X      1   1    1      0 
+"Alarm once per second"                             , // X      1   1    1      1 
+"Unknown"                                           , // any other
+};
+
+#if 0
+static char *alarm2_rates[] = {
+                                                      // DY/DT A2M4 A2M3 A2M2 
+"Alarm when date, hours, and minutes match"         , // 0      0   0    0 
+"Alarm when day, hours, and minutes match"          , // 1      0   0    0 
+"Alarm when hours and minutes match"                , // X      1   0    0 
+"Alarm when minutes match"                          , // X      1   1    0 
+"Alarm once per minute"                             , // X      1   1    1
+};
+#endif
+
+/*
+ *	Info exported via "/proc/rtc".
+ */
+static int ds3231_proc_output(char *buf)
+{
+	char *p;
+	struct rtc_time tm;
+	unsigned char hundredth, cmd, temp_msb,temp_lsb,rtc_status,idx;
+
+	p = buf;
+#if 0
+	p += sprintf(p,
+	             "hello from rtcd!\n"
+                );
+#else
+	ds3231_get_time(&tm);
+	hundredth = 0;
+	BCD_TO_BIN(hundredth);
+	
+	p += sprintf(p,"hello_000\n");
+
+	p += sprintf(p,
+	             "rtc_time\t: %02d:%02d:%02d.%02d\n"
+	             "rtc_date\t: %04d-%02d-%02d\n",
+		     tm.tm_hour, tm.tm_min, tm.tm_sec, hundredth,
+		     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+
+	/*
+	 * We implicitly assume 24hr mode here. Alarm values >= 0xc0 will
+	 * match any value for that particular field. Values that are
+	 * greater than a valid time, but less than 0xc0 shouldn't appear.
+	 */
+	ds3231_get_alm_time(&tm);
+	p += sprintf(p, "alarm\t\t: %s ", days[tm.tm_wday]);
+	if (tm.tm_hour <= 24)
+		p += sprintf(p, "%02d:", tm.tm_hour);
+	else
+		p += sprintf(p, "**:");
+
+	if (tm.tm_min <= 59)
+		p += sprintf(p, "%02d\n", tm.tm_min);
+	else
+		p += sprintf(p, "**\n");
+    if ((ds3231_alarmMaskReg&0x0F)==0){
+        if (ds3231_alarmMaskReg&0x10)
+            idx=0;
+        else
+            idx=1;
+    }
+    else{
+        switch (ds3231_alarmMaskReg&0x0F){
+            case 8:
+                idx=2;
+                break;
+            case 12:
+                idx=3;
+                break;
+            case 14:
+                idx=4;
+                break;
+            case 15:
+                idx=5;
+                break;
+            default:
+                idx=6;
+                break;
+        }
+    }
+	p += sprintf(p,
+	             "alarm mode\t: %s (%i)\n"
+	             ,(idx<sizeof(alarm1_rates)/sizeof(alarm1_rates[0]))?alarm1_rates[idx]:"???"
+	             ,(int)idx
+	             );
+
+	temp_msb = rtc_read(RTC_TEMP_MSB_ADDR);
+	temp_lsb = rtc_read(RTC_TEMP_LSB_ADDR);
+    cmd=rtc_read(RTC_AGING_OFFSET_ADDR);
+	p += sprintf(p,
+	             "temperature\t: %i.%02i °C\n"
+	             "aging offset\t: %02X\n",
+	             temp_msb,(temp_lsb>>6)*25,
+	             (int)cmd
+	             );
+
+	cmd = rtc_read(RTC_CTL_REG_ADDR);
+	idx=(cmd&(RTC_CTRL_RS1_BIT|RTC_CTRL_RS2_BIT))>>RTC_CTRL_RS1_IDX;
+	p += sprintf(p,
+	             "alarm_1_enabled\t: %s\n"
+	             "alarm_2_enabled\t: %s\n"
+	             "int/sqw        \t: %s\n"
+	             "rate select    \t: %s\n"
+	             "converting temp\t: %s\n"
+	             "battery back square\t: %s\n"
+	             "osc enabled    \t: %s\n"
+	             ,(cmd&RTC_CTRL_A1E_BIT)?"ON":"off"
+	             ,(cmd&RTC_CTRL_A2E_BIT)?"ON":"off"
+	             ,(cmd&RTC_CTRL_INTCN_BIT)?"square wave pin":"int pin"
+	             ,square_wave_out_freq[idx]
+	             ,(cmd&RTC_CTRL_CONV_BIT)?"ON":"off"
+	             ,(cmd&RTC_CTRL_BBSQ_BIT)?"ON":"off"
+	             ,(cmd&RTC_CTRL_EOSCN_BIT)?"off":"ON"
+	             );
+
+	rtc_status = rtc_read(RTC_STAT_REG_ADDR);
+	p += sprintf(p,
+	             "alarm_1_flag\t: %s\n"
+	             "alarm_2_flag\t: %s\n"
+	             "busy_flag   \t: %s\n"
+	             "enable_32kHz\t: %s\n"
+	             "oscill_stop \t: %s\n"
+	             ,(rtc_status&RTC_STATUS_A1F_BIT)?"ON":"off"
+	             ,(rtc_status&RTC_STATUS_A2F_BIT)?"ON":"off"
+	             ,(rtc_status&RTC_STATUS_BUSY_BIT)?"ON":"off"
+	             ,(rtc_status&RTC_STATUS_EN32KHZ_BIT)?"ON":"off"
+	             ,(rtc_status&RTC_STATUS_OSF_BIT)?"ON":"off"
+	             );
+#endif
+
+	return  p - buf;
+}
+
+static int ds3231_read_proc(char *page, char **start, off_t off,
+                         int count, int *eof, void *data)
+{
+	int len = ds3231_proc_output (page);
+	if (len <= off+count) *eof = 1;
+	*start = page + off;
+	len -= off;
+	if (len>count)
+		len = count;
+	if (len<0)
+		len = 0;
+
+	return len;
+}
+
+/*
+ * Returns true if a clock update is in progress
+ */
+static inline unsigned char ds3231_is_updating(void)
+{
+// ds3231 has buffered registers... no update bit test is necessary
+	return 0;
+}
+
+
+static void ds3231_get_time(struct rtc_time *rtc_tm)
+{
+	unsigned char save_control,byteFromRtc,century;
+	unsigned int flags;
+	unsigned long uip_watchdog = jiffies;
+
+	/*
+	    no updating test really necessary, but...
+	 */
+
+	if (ds3231_is_updating() != 0)
+		while (jiffies - uip_watchdog < 2*HZ/100)
+			barrier();
+
+	/*
+	 * Only the values that we read from the RTC are set. We leave
+	 * tm_wday, tm_yday and tm_isdst untouched. Even though the
+	 * RTC has RTC_DAY_OF_WEEK, we ignore it, as it is only updated
+	 * by the RTC when initially set to a non-zero value.
+	 */
+	// no spin lock while atomic!!!!
+	//spin_lock_irqsave(&ds3231_lock, flags);
+	save_control = rtc_read(RTC_CTL_REG_ADDR);
+	rtc_write((save_control&~RTC_OSCILLATOR_STOP_FLAG_BIT), RTC_CTL_REG_ADDR);
+
+	rtc_tm->tm_sec = rtc_read(RTC_SEC_REG_ADDR);
+	rtc_tm->tm_min = rtc_read(RTC_MIN_REG_ADDR);
+	byteFromRtc=rtc_read(RTC_HR_REG_ADDR);
+	if (byteFromRtc&RTC_12_HR_MODE_BIT){
+	    rtc_tm->tm_hour = (byteFromRtc  & 0x1f)+12*((byteFromRtc&RTC_PM_MODE_BIT)?1:0);
+	}
+	else{
+	    rtc_tm->tm_hour = (byteFromRtc  & 0x3f);
+	}
+	
+	
+	rtc_tm->tm_mday = rtc_read(RTC_DATE_REG_ADDR);
+	
+	byteFromRtc=rtc_read(RTC_MON_REG_ADDR);
+	
+	century=(byteFromRtc&RTC_CENTURY_BIT)?1:0;
+	rtc_tm->tm_mon = byteFromRtc & 0x1f;
+	
+	rtc_tm->tm_year = rtc_read(RTC_YR_REG_ADDR);
+
+	rtc_write(save_control, RTC_CTL_REG_ADDR);
+	// no spin lock while atomic!!!!
+	//spin_unlock_irqrestore(&ds3231_lock, flags);
+
+	BCD_TO_BIN(rtc_tm->tm_sec);
+	BCD_TO_BIN(rtc_tm->tm_min);
+	BCD_TO_BIN(rtc_tm->tm_hour);
+	BCD_TO_BIN(rtc_tm->tm_mday);
+	BCD_TO_BIN(rtc_tm->tm_mon);
+	BCD_TO_BIN(rtc_tm->tm_year);
+
+	/*
+	 * Account for differences between how the RTC uses the values
+	 * and how they are defined in a struct rtc_time;
+	 */
+	 
+	 // nella struttura rtc_tm si parte dal 1900, in rtc si parte dal 2000
+	 rtc_tm->tm_year+=100;
+     if (century)
+    	rtc_tm->tm_year += 100;
+
+	rtc_tm->tm_mon--;
+}
+
+static int ds3231_set_time(struct rtc_time *rtc_tm)
+{
+	unsigned char mon, day, hrs, min, sec, leap_yr;
+	unsigned char save_control,century;
+	unsigned int yrs, flags;
+
+
+	yrs = rtc_tm->tm_year + 2000;
+	mon = rtc_tm->tm_mon + 1;   /* tm_mon starts at zero */
+	day = rtc_tm->tm_mday;
+	hrs = rtc_tm->tm_hour;
+	min = rtc_tm->tm_min;
+	sec = rtc_tm->tm_sec;
+
+	if (yrs < 1970)
+		return -EINVAL;
+
+	leap_yr = ((!(yrs % 4) && (yrs % 100)) || !(yrs % 400));
+
+	if ((mon > 12) || (day == 0))
+		return -EINVAL;
+
+	if (day > (days_in_mo[mon] + ((mon == 2) && leap_yr)))
+		return -EINVAL;
+
+	if ((hrs >= 24) || (min >= 60) || (sec >= 60))
+		return -EINVAL;
+
+	if ((yrs -= 1940) > 255)    /* They are unsigned */
+		return -EINVAL;
+
+	if (yrs >= 100){
+		yrs -= 100;
+		century=RTC_CENTURY_BIT;
+	}
+	else{
+		century=0;
+	}
+
+	BIN_TO_BCD(sec);
+	BIN_TO_BCD(min);
+	BIN_TO_BCD(hrs);
+	BIN_TO_BCD(day);
+	BIN_TO_BCD(mon);
+	BIN_TO_BCD(yrs);
+
+	// no spin lock while atomic!!!!
+//	spin_lock_irqsave(&ds3231_lock, flags);
+	save_control = rtc_read(RTC_CTL_REG_ADDR);
+
+	rtc_write(yrs|century,  RTC_YR_REG_ADDR);
+	rtc_write(mon,          RTC_MON_REG_ADDR);
+	rtc_write(day,          RTC_DATE_REG_ADDR);
+	rtc_write(hrs,          RTC_HR_REG_ADDR);
+	rtc_write(min,          RTC_MIN_REG_ADDR);
+	rtc_write(sec,          RTC_SEC_REG_ADDR);
+
+	rtc_write(save_control, RTC_CTL_REG_ADDR);
+	
+	// no spin lock while atomic!!!!
+//	spin_unlock_irqrestore(&ds3231_lock, flags);
+
+	return 0;
+}
+
+static void ds3231_get_alm_time(struct rtc_time *alm_tm)
+{
+	unsigned char cmd,byteFromRtc;
+	unsigned int flags;
+
+	/*
+	 * Only the values that we read from the RTC are set. That
+	 * means only tm_wday, tm_hour, tm_min.
+	 */
+	// no spin lock while atomic!!!!
+//	spin_lock_irqsave(&ds3231_lock, flags);
+	
+	ds3231_alarmMaskReg=0;
+	
+	byteFromRtc=rtc_read(RTC_A1_SEC_ADDR);
+	alm_tm->tm_sec = byteFromRtc & 0x7f;
+	ds3231_alarmMaskReg|=(byteFromRtc&0x80)?1:0;
+	
+	byteFromRtc=rtc_read(RTC_A1_MIN_ADDR);
+	alm_tm->tm_min = rtc_read(RTC_A1_MIN_ADDR) & 0x7f;
+	ds3231_alarmMaskReg|=(byteFromRtc&0x80)?2:0;
+	
+	byteFromRtc=rtc_read(RTC_A1_HR_ADDR);
+	ds3231_alarmMaskReg|=(byteFromRtc&0x80)?4:0;
+	if (byteFromRtc&RTC_12_HR_MODE_BIT){
+	    alm_tm->tm_hour = (byteFromRtc  & 0x1f)+12*((byteFromRtc&RTC_PM_MODE_BIT)?1:0);
+	}
+	else{
+	    alm_tm->tm_hour = (byteFromRtc  & 0x3f);
+	}
+	
+	byteFromRtc=rtc_read(RTC_A1_DAYDATE_ADDR);
+	ds3231_alarmMaskReg|=(byteFromRtc&0x80)?8:0;
+	ds3231_alarmMaskReg|=(byteFromRtc&0x40)?16:0;
+	
+	if (byteFromRtc&RTC_DAY_ALARM_MODE_BIT){
+	    alm_tm->tm_wday = rtc_read(RTC_A1_DAYDATE_ADDR)    & 0x07;
+	    alm_tm->tm_mday=0;
+	}
+	else{
+	    alm_tm->tm_wday=0;
+	    alm_tm->tm_mday = rtc_read(RTC_A1_DAYDATE_ADDR)    & 0x3f;
+	}
+// a che serve???	    
+	cmd = rtc_read(RTC_CTL_REG_ADDR);
+	// no spin lock while atomic!!!!
+//	spin_unlock_irqrestore(&ds3231_lock, flags);
+
+	BCD_TO_BIN(alm_tm->tm_sec);
+	BCD_TO_BIN(alm_tm->tm_min);
+	BCD_TO_BIN(alm_tm->tm_hour);
+	BCD_TO_BIN(alm_tm->tm_wday);
+	BCD_TO_BIN(alm_tm->tm_mday);
+}
+
+module_init(ds3231_init);
+module_exit(ds3231_exit);
+
+MODULE_AUTHOR("Michele Sponchiado");
+MODULE_LICENSE("GPL");
+MODULE_ALIAS_MISCDEV(RTC_MINOR);

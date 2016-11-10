@@ -1,0 +1,1669 @@
+#! /usr/bin/env bash
+# Patch: -pro_alsa_soc_da8xx_support
+# Date: Thu Feb 19 15:11:38 2009
+# Source: MontaVista Software, Inc.
+# MR: 30877
+# Type: Enhancement
+# Disposition: needs submitting to alsa-devel@alsa-project.org
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# DA8xx EVM ALSA SOC support.
+# 
+#  sound/soc/codecs/codec_stubs.c        |    6 
+#  sound/soc/davinci/Kconfig             |   45 +++
+#  sound/soc/davinci/Makefile            |    1 
+#  sound/soc/davinci/da8xx-evm.c         |  481 ++++++++++++++++++++++++++++++++++
+#  sound/soc/davinci/davinci-i2s-mcasp.c |  458 +++++++++++++++++++++++++++-----
+#  sound/soc/davinci/davinci-i2s-mcasp.h |    5 
+#  sound/soc/davinci/davinci-i2s.c       |    5 
+#  sound/soc/davinci/davinci-i2s.h       |    9 
+#  sound/soc/davinci/davinci-pcm.c       |   22 +
+#  sound/soc/davinci/davinci-pcm.h       |    5 
+#  10 files changed, 963 insertions(+), 74 deletions(-)
+# 
+
+PATCHNUM=2254
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 30877
+Type: Enhancement
+Disposition: needs submitting to alsa-devel@alsa-project.org
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+DA8xx EVM ALSA SOC support.
+
+ mvl_patches/pro50-2254.c              |   16 +
+ sound/soc/codecs/codec_stubs.c        |    6 
+ sound/soc/davinci/Kconfig             |   45 +++
+ sound/soc/davinci/Makefile            |    1 
+ sound/soc/davinci/da8xx-evm.c         |  481 ++++++++++++++++++++++++++++++++++
+ sound/soc/davinci/davinci-i2s-mcasp.c |  458 +++++++++++++++++++++++++++-----
+ sound/soc/davinci/davinci-i2s-mcasp.h |    5 
+ sound/soc/davinci/davinci-i2s.c       |    5 
+ sound/soc/davinci/davinci-i2s.h       |    9 
+ sound/soc/davinci/davinci-pcm.c       |   22 +
+ sound/soc/davinci/davinci-pcm.h       |    5 
+ 11 files changed, 979 insertions(+), 74 deletions(-)
+
+Index: linux-2.6.18/sound/soc/codecs/codec_stubs.c
+===================================================================
+--- linux-2.6.18.orig/sound/soc/codecs/codec_stubs.c
++++ linux-2.6.18/sound/soc/codecs/codec_stubs.c
+@@ -17,9 +17,9 @@
+ #include <sound/soc.h>
+ #include <sound/pcm.h>
+ 
+-#define STUB_RATES	SNDRV_PCM_RATE_8000_96000
+-#define STUB_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S20_3LE | \
+-			SNDRV_PCM_FMTBIT_S24_3LE | SNDRV_PCM_FMTBIT_S32_LE)
++#define STUB_RATES	SNDRV_PCM_RATE_48000
++#define STUB_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE | \
++			 SNDRV_PCM_FMTBIT_S32_LE)
+ 
+ struct snd_soc_codec_dai dit_stub_dai[] = {
+ 	{
+Index: linux-2.6.18/sound/soc/davinci/Kconfig
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/Kconfig
++++ linux-2.6.18/sound/soc/davinci/Kconfig
+@@ -39,9 +39,52 @@ config SND_DM6467_SOC_EVM
+ 	depends on SND_DAVINCI_SOC && MACH_DAVINCI_DM6467_EVM
+ 	select SND_DAVINCI_SOC_I2S
+ 	select SND_DAVINCI_SOC_I2S_MCASP
+-	select SND_DAVINCI_SOC_I2S_MCBSP
+ 	select SND_SOC_TLV320AIC3X
+ 	select SND_SOC_CODEC_STUBS
+ 	help
+ 	  Say Y if you want to add support for SoC audio on TI
+ 	  DaVinci DM646x EVM platform.
++
++config SND_DA8XX_SOC_EVM
++	tristate "SoC Audio support for DA8XX EVM"
++	depends on SND_DAVINCI_SOC && MACH_DA8XX_EVM
++	select SND_DAVINCI_SOC_I2S
++	select SND_DAVINCI_SOC_I2S_MCASP
++	select SND_SOC_CODEC_STUBS
++	help
++	  Say Y if you want to add support for SoC audio on TI DA8xx EVM
++	  platform.
++
++config SND_DAVINCI_SOC_MCASP0_ARM_CNTL
++	bool "DA8xx McASP0 controlled by ARM"
++	depends on SND_DAVINCI_SOC && ARCH_DA8XX
++	help
++	  Say Y if McASP0 controlled by ARM, and N if McASP0 controlled by DSP.
++
++config SND_DAVINCI_SOC_MCASP1_ARM_CNTL
++	bool "DA8xx McASP1 controlled by ARM"
++	depends on SND_DAVINCI_SOC && ARCH_DA8XX
++	help
++	  Say Y if McASP1 controlled by ARM, and N if McASP1 controlled by DSP.
++
++config SND_DAVINCI_SOC_MCASP2_ARM_CNTL
++	bool "DA8xx McASP2 controlled by ARM"
++	depends on SND_DAVINCI_SOC && ARCH_DA8XX
++	help
++	  Say Y if McASP2 controlled by ARM, and N if McASP2 controlled by DSP.
++
++choice
++	prompt "DA8xx EVM: Codec To Use"
++	depends on SND_DA8XX_SOC_EVM
++	default SND_DA8XX_AIC3106_CODEC
++
++config SND_DA8XX_AIC3106_CODEC
++	bool "AIC3106 (on EVM Board)"
++	select SND_SOC_TLV320AIC3X
++
++config SND_DA8XX_AK4588_CODEC
++	bool "AK4588 (on Audio Board)"
++	select SND_SOC_AK4588
++	select SND_SOC_AK4588_SPI
++
++endchoice
+Index: linux-2.6.18/sound/soc/davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/Makefile
++++ linux-2.6.18/sound/soc/davinci/Makefile
+@@ -13,3 +13,4 @@ snd-soc-evm-objs := davinci-evm.o
+ obj-$(CONFIG_SND_DM644X_SOC_EVM) += snd-soc-evm.o
+ obj-$(CONFIG_SND_DM355_SOC_EVM) += snd-soc-evm.o
+ obj-$(CONFIG_SND_DM6467_SOC_EVM) += snd-soc-evm.o
++obj-$(CONFIG_SND_DA8XX_SOC_EVM) += da8xx-evm.o
+Index: linux-2.6.18/sound/soc/davinci/da8xx-evm.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/sound/soc/davinci/da8xx-evm.c
+@@ -0,0 +1,481 @@
++/*
++ * ASoC driver for TI DA8xx EVM platform
++ *
++ * Author: Steve Chen <schen@mvista.com>
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <sound/driver.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/soc.h>
++#include <sound/soc-dapm.h>
++#include <sound/ak4xxx-adda.h>
++#include <sound/ak4114-soc-ditr.h>
++#include <sound/ak4588-soc.h>
++#include <asm/arch/hardware.h>
++
++#include "../codecs/tlv320aic3x.h"
++#include "../codecs/codec_stubs.h"
++#include "../codecs/ak4xxx-soc-adda.h"
++#include "davinci-pcm.h"
++#include "davinci-i2s.h"
++#include "davinci-i2s-mcasp.h"
++
++#define DA8XX_EVM_CODEC_CLOCK 24576000
++
++static int evm_hw_params(struct snd_pcm_substream *substream,
++			 struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct snd_soc_codec_dai *codec_dai = rtd->dai->codec_dai;
++	struct snd_soc_cpu_dai *cpu_dai = rtd->dai->cpu_dai;
++	struct davinci_audio_dev *dev = rtd->dai->cpu_dai->private_data;
++	int ret = 0;
++
++	/* set codec DAI configuration */
++	if (codec_dai->dai_ops.set_fmt != NULL)
++		ret = codec_dai->dai_ops.set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
++						 SND_SOC_DAIFMT_CBM_CFM);
++	if (ret < 0)
++		return ret;
++
++	/* set cpu DAI configuration */
++	ret = cpu_dai->dai_ops.set_fmt(cpu_dai, dev->codec_fmt);
++	if (ret < 0)
++		return ret;
++
++	/* Set CPU DAI system clock */
++	if (cpu_dai->dai_ops.set_sysclk != NULL)
++		ret = cpu_dai->dai_ops.set_sysclk(cpu_dai, 0,
++						  DA8XX_EVM_CODEC_CLOCK,
++						  dev->sysclk_dir);
++	if (ret < 0)
++		return ret;
++
++	/* Set the codec system clock */
++	if (codec_dai->dai_ops.set_sysclk != NULL)
++		ret = codec_dai->dai_ops.set_sysclk(codec_dai, 0,
++						    DA8XX_EVM_CODEC_CLOCK,
++						    SND_SOC_CLOCK_OUT);
++
++	return ret < 0 ? ret : 0;
++}
++
++static struct snd_soc_ops evm_ops = {
++	.hw_params	= evm_hw_params,
++};
++
++#if defined(CONFIG_SND_DA8XX_AIC3106_CODEC)
++
++/* DA8xx EVM machine dapm widgets */
++static const struct snd_soc_dapm_widget aic3x_dapm_widgets[] = {
++	SND_SOC_DAPM_HP("Headphone Jack", NULL),
++	SND_SOC_DAPM_LINE("Line Out", NULL),
++	SND_SOC_DAPM_MIC("Mic Jack", NULL),
++	SND_SOC_DAPM_LINE("Line In", NULL),
++};
++
++/* DA8xx EVM machine audio_mapnections to the codec pins */
++static const char *audio_map[][3] = {
++	/* Headphone connected to HPLOUT, HPROUT */
++	{ "Headphone Jack", NULL, "HPLOUT" },
++	{ "Headphone Jack", NULL, "HPROUT" },
++
++	/* Line Out connected to LLOUT, RLOUT */
++	{ "Line Out", NULL, "LLOUT"},
++	{ "Line Out", NULL, "RLOUT"},
++
++	/* Mic connected to (MIC3L | MIC3R) */
++	{ "MIC3L", NULL, "Mic Bias 2V" },
++	{ "MIC3R", NULL, "Mic Bias 2V" },
++	{ "Mic Bias 2V", NULL, "Mic Jack" },
++
++	/* Line In connected to (LINE1L | LINE2L), (LINE1R | LINE2R) */
++	{ "LINE1L", NULL, "Line In" },
++	{ "LINE2L", NULL, "Line In" },
++	{ "LINE1R", NULL, "Line In" },
++	{ "LINE2R", NULL, "Line In" },
++
++	{NULL, NULL, NULL},
++};
++
++/* Logic for a aic3x as connected on a davinci-evm */
++static int evm_aic3x_init(struct snd_soc_codec *codec)
++{
++	int i;
++
++	/* Add davinci-evm specific widgets */
++	for (i = 0; i < ARRAY_SIZE(aic3x_dapm_widgets); i++)
++		snd_soc_dapm_new_control(codec, &aic3x_dapm_widgets[i]);
++
++	/* Set up davinci-evm specific audio path audio_map */
++	for (i = 0; audio_map[i][0] != NULL; i++)
++		snd_soc_dapm_connect_input(codec, audio_map[i][0],
++					   audio_map[i][1], audio_map[i][2]);
++
++	/* not connected */
++	snd_soc_dapm_set_endpoint(codec, "MONO_LOUT", 0);
++	snd_soc_dapm_set_endpoint(codec, "HPLCOM", 0);
++	snd_soc_dapm_set_endpoint(codec, "HPRCOM", 0);
++
++	/* always connected */
++	snd_soc_dapm_set_endpoint(codec, "Headphone Jack", 1);
++	snd_soc_dapm_set_endpoint(codec, "Line Out", 1);
++	snd_soc_dapm_set_endpoint(codec, "Mic Jack", 1);
++	snd_soc_dapm_set_endpoint(codec, "Line In", 1);
++
++	snd_soc_dapm_sync_endpoints(codec);
++
++	return 0;
++}
++
++#elif defined(CONFIG_SND_DA8XX_AK4588_CODEC)
++
++static u8 *serializer_direction;
++static u8 tx_serializer[] = { 5, 6, 7, 8 };
++static u8 rx_serializer[] = { 0, 1, 2, 10 };
++static u16 sw_reg_value = 0x801;
++
++static int mcasp_serializer_control_set(unsigned int reg, unsigned int value)
++{
++	int i;
++	u16 mask;
++
++	sw_reg_value = value;
++	mask = 0x1;
++	for (i = 0; i < ARRAY_SIZE(tx_serializer); i++) {
++		if (sw_reg_value & mask)
++			serializer_direction[tx_serializer[i]] = TX_MODE;
++		else
++			serializer_direction[tx_serializer[i]] = INACTIVE_MODE;
++
++		mask <<= 1;
++	}
++
++	mask = 0x100;
++	for (i = 0; i < ARRAY_SIZE(rx_serializer); i++) {
++		if (sw_reg_value & mask)
++			serializer_direction[rx_serializer[i]] = RX_MODE;
++		else
++			serializer_direction[rx_serializer[i]] = INACTIVE_MODE;
++
++		mask <<= 1;
++	}
++	return 0;
++}
++
++static unsigned int mcasp_serializer_control_get(unsigned int reg)
++{
++	return sw_reg_value;
++}
++
++/* DA8xx EVM machine dapm widgets */
++static const struct snd_kcontrol_new ak4588_serializer_controls[] = {
++	SOC_SINGLE("LB-RB Playback Switch", AK4588_SW_REG, 0, 1, 0),
++	SOC_SINGLE("C-SW Playback Switch",  AK4588_SW_REG, 1, 1, 0),
++	SOC_SINGLE("LS-RS Playback Switch", AK4588_SW_REG, 2, 1, 0),
++	SOC_SINGLE("LF-RF Playback Switch", AK4588_SW_REG, 3, 1, 0),
++	SOC_SINGLE("LF-RF Capture Switch",  AK4588_SW_REG, 8, 1, 0),
++	SOC_SINGLE("LS-RS Capture Switch",  AK4588_SW_REG, 9, 1, 0),
++	SOC_SINGLE("C-SW Capture Switch",   AK4588_SW_REG, 10, 1, 0),
++	SOC_SINGLE("LB-RB Capture Switch",  AK4588_SW_REG, 11, 1, 0),
++};
++
++static int evm_ak4588_control_init(struct snd_soc_codec *codec)
++{
++	struct snd_soc_ak4588_codec *ak4588 = codec->private_data;
++	int i, err;
++
++	ak4588->sw_reg_get = mcasp_serializer_control_get;
++	ak4588->sw_reg_set = mcasp_serializer_control_set;
++
++	for (i = 0; i < ARRAY_SIZE(ak4588_serializer_controls); i++) {
++		err = snd_ctl_add(codec->card,
++				  snd_soc_cnew(&ak4588_serializer_controls[i],
++					       codec, NULL));
++		if (err < 0)
++			return err;
++	}
++	return 0;
++}
++#endif
++
++#if defined(CONFIG_SND_DA8XX_AIC3106_CODEC)
++
++static struct snd_soc_dai_link da8xx_evm_dai[] = {
++	{
++		.name		= "TLV320AIC3X",
++		.stream_name	= "AIC3X",
++#ifdef CONFIG_SND_DAVINCI_SOC_MCASP1_ARM_CNTL
++		.cpu_dai	= davinci_iis_mcasp_dai,
++#else
++		.cpu_dai	= davinci_iis_mcasp_dsp_dai,
++#endif
++		.codec_dai	= &aic3x_dai,
++		.init		= evm_aic3x_init,
++		.ops		= &evm_ops,
++	},
++};
++
++#elif defined(CONFIG_SND_DA8XX_AK4588_CODEC)
++
++static struct snd_soc_dai_link da8xx_evm_avr_dai[] = {
++	{
++		.name		= "AK4588 SPDIF RX",
++		.stream_name	= "DIR",
++#ifdef CONFIG_SND_DAVINCI_SOC_MCASP0_ARM_CNTL
++		.cpu_dai	= davinci_dir_mcasp_dai,
++#else
++		.cpu_dai	= davinci_iis_mcasp_dsp_dai,
++#endif
++		.codec_dai	= &ak4114_dir_dai,
++		.ops		= &evm_ops,
++	},
++	{
++		.name		= "AK4588 ADDA",
++		.stream_name	= "AK4xxx",
++#ifdef CONFIG_SND_DAVINCI_SOC_MCASP1_ARM_CNTL
++		.cpu_dai	= davinci_iis_mcasp_dai,
++#else
++		.cpu_dai	= davinci_iis_mcasp_dsp_dai,
++#endif
++		.codec_dai	= &ak4xxx_adda_dai,
++		.init		= evm_ak4588_control_init,
++		.ops		= &evm_ops,
++	},
++	{
++		.name		= "AK4588 SPDIF TX",
++		.stream_name	= "DIT",
++#ifdef CONFIG_SND_DAVINCI_SOC_MCASP2_ARM_CNTL
++		.cpu_dai	= davinci_dit_mcasp_dai,
++#else
++		.cpu_dai	= davinci_iis_mcasp_dsp_dai,
++#endif
++		.codec_dai	= dit_stub_dai,
++		.ops		= &evm_ops,
++	},
++};
++#endif
++
++/* DA8xx EVM audio machine driver */
++
++#if defined(CONFIG_SND_DA8XX_AIC3106_CODEC)
++
++static u8 da8xx_iis_serializer_direction[] = {
++	RX_MODE,       INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE,
++	INACTIVE_MODE, TX_MODE,       INACTIVE_MODE, INACTIVE_MODE,
++	INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE,
++};
++
++static struct snd_soc_machine da8xx_snd_soc_machine = {
++	.name		= "DA8XX EVM",
++	.dai_link	= da8xx_evm_dai,
++	.num_links	= 1,
++};
++
++static struct aic3x_setup_data da8xx_evm_aic3x_setup = {
++	.i2c_address	= 0x18,
++	.variant	= AIC3106_CODEC
++};
++
++/* evm audio subsystem */
++static struct snd_soc_device da8xx_evm_snd_devdata[] = {
++	{
++		.machine	= &da8xx_snd_soc_machine,
++		.platform	= &davinci_soc_platform,
++		.codec_dev	= &soc_codec_dev_aic3x,
++		.codec_data	= &da8xx_evm_aic3x_setup,
++	},
++};
++
++static struct resource da8xx_evm_aic_snd_resources[] = {
++	{
++		.start	= DA8XX_MCASP1_CNTRL_BASE,
++		.end	= DA8XX_MCASP1_CNTRL_BASE + (SZ_1K * 2) - 1,
++		.flags	= IORESOURCE_MEM
++	},
++};
++
++static struct evm_snd_platform_data da8xx_evm_snd_data[] = {
++	{
++		.clk_name	= "McASPCLK1",
++		.tx_dma_ch	= DA8XX_DMACH_MCASP1_TX,
++		.rx_dma_ch	= DA8XX_DMACH_MCASP1_RX,
++		.tx_dma_offset	= 0x2000,
++		.rx_dma_offset	= 0x2000,
++		.op_mode	= DAVINCI_MCASP_IIS_MODE,
++		.num_serializer	= 12,
++		.tdm_slots	= 2,
++		.serial_dir	= da8xx_iis_serializer_direction,
++		.eventq_no	= EVENTQ_1,
++		.codec_fmt	= SND_SOC_DAIFMT_CBM_CFM | SND_SOC_DAIFMT_IB_NF,
++		.sysclk_dir	= SND_SOC_CLOCK_OUT,
++	},
++};
++
++#elif defined(CONFIG_SND_DA8XX_AK4588_CODEC)
++
++static u8 da8xx_iis_serializer_direction[] = {
++	INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE,
++	INACTIVE_MODE, TX_MODE,       INACTIVE_MODE, INACTIVE_MODE,
++	INACTIVE_MODE, INACTIVE_MODE, RX_MODE,       INACTIVE_MODE,
++};
++
++static struct snd_soc_machine da8xx_snd_soc_avr_machine = {
++	.name = "DA8xx EVM",
++	.dai_link = da8xx_evm_avr_dai,
++	.num_links = 3,
++};
++
++static struct snd_soc_device da8xx_evm_avr_snd_devdata[] = {
++	{
++		.machine	= &da8xx_snd_soc_avr_machine,
++		.platform	= &davinci_soc_platform,
++		.codec_dev	= &soc_codec_dev_ak4588,
++	},
++};
++
++static struct resource da8xx_evm_snd_resources[] = {
++	{
++		.start	= DA8XX_MCASP0_CNTRL_BASE,
++		.end	= DA8XX_MCASP0_CNTRL_BASE + (SZ_1K * 2) - 1,
++		.flags	= IORESOURCE_MEM
++	},
++	{
++		.start	= DA8XX_MCASP1_CNTRL_BASE,
++		.end	= DA8XX_MCASP1_CNTRL_BASE + (SZ_1K * 2) - 1,
++		.flags	= IORESOURCE_MEM
++	},
++	{
++		.start	= DA8XX_MCASP2_CNTRL_BASE,
++		.end	= DA8XX_MCASP2_CNTRL_BASE + (SZ_1K * 2) - 1,
++		.flags	= IORESOURCE_MEM
++	},
++};
++
++static u8 da8xx_dir_serializer_direction[] = {
++	INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE,
++	INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE,
++	INACTIVE_MODE, RX_MODE,       INACTIVE_MODE, INACTIVE_MODE,
++	INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE,
++};
++
++static u8 da8xx_dit_serializer_direction[] = {
++	TX_MODE, INACTIVE_MODE, INACTIVE_MODE, INACTIVE_MODE,
++};
++
++static struct evm_snd_platform_data da8xx_evm_avr_snd_data[] = {
++	{			/* DIR */
++		.clk_name	= "McASPCLK0",
++		.tx_dma_ch	= -1,
++		.rx_dma_ch	= DA8XX_DMACH_MCASP0_RX,
++		.tx_dma_offset	= 0,
++		.rx_dma_offset	= 0x2000,
++		.op_mode	= DAVINCI_MCASP_IIS_MODE,
++		.num_serializer	= 16,
++		.tdm_slots	= 2,
++		.serial_dir	= da8xx_dir_serializer_direction,
++		.eventq_no	= EVENTQ_1,
++		.codec_fmt	= SND_SOC_DAIFMT_CBM_CFM | SND_SOC_DAIFMT_IB_IF,
++		.word_shift	= 1,
++		.fixed_slot	= 1,
++		.async_rxtx_clk	= 1,
++	},
++	{			/* Analog I/O */
++		.clk_name	= "McASPCLK1",
++		.tx_dma_ch	= DA8XX_DMACH_MCASP1_TX,
++		.rx_dma_ch	= DA8XX_DMACH_MCASP1_RX,
++		.tx_dma_offset	= 0x2000,
++		.rx_dma_offset	= 0x2000,
++		.op_mode	= DAVINCI_MCASP_IIS_MODE,
++		.num_serializer	= 12,
++		.tdm_slots	= 2,
++		.serial_dir	= da8xx_iis_serializer_direction,
++		.eventq_no	= EVENTQ_1,
++		.codec_fmt	= SND_SOC_DAIFMT_CBM_CFS |
++				  SND_SOC_DAIFMT_NB_IF |
++				  SND_SOC_DAIFMT_MSB,
++		.sysclk_dir	= SND_SOC_CLOCK_IN,
++		.word_shift	= 1,
++		.fixed_slot	= 1,
++		.async_rxtx_clk	= 1,
++	},
++	{			/* DIT */
++		.clk_name	= "McASPCLK2",
++		.tx_dma_ch	= DA8XX_DMACH_MCASP2_TX,
++		.rx_dma_ch	= -1,
++		.tx_dma_offset	= 0x2000,
++		.rx_dma_offset	= 0,
++		.op_mode	= DAVINCI_MCASP_DIT_MODE,
++		.num_serializer	= 4,
++		.tdm_slots	= 32,
++		.serial_dir	= da8xx_dit_serializer_direction,
++		.eventq_no	= EVENTQ_1,
++		.codec_fmt	= SND_SOC_DAIFMT_CBS_CFS | SND_SOC_DAIFMT_IB_NF,
++		.sysclk_dir	= SND_SOC_CLOCK_OUT,
++	},
++};
++#endif
++
++static struct platform_device *evm_snd_device;
++
++static int __init da8xx_evm_init(void)
++{
++	struct snd_soc_device *evm_snd_devdata;
++	struct resource *evm_snd_resources;
++	struct evm_snd_platform_data *evm_snd_data;
++	int res_size, ret = 0;
++
++#if defined(CONFIG_SND_DA8XX_AK4588_CODEC)
++	serializer_direction = da8xx_iis_serializer_direction;
++	evm_snd_devdata = da8xx_evm_avr_snd_devdata;
++	evm_snd_resources = da8xx_evm_snd_resources;
++	res_size = ARRAY_SIZE(da8xx_evm_snd_resources);
++	evm_snd_data = da8xx_evm_avr_snd_data;
++#elif defined(CONFIG_SND_DA8XX_AIC3106_CODEC)
++	evm_snd_devdata = da8xx_evm_snd_devdata;
++	evm_snd_resources = da8xx_evm_aic_snd_resources;
++	res_size = ARRAY_SIZE(da8xx_evm_aic_snd_resources);
++	evm_snd_data = da8xx_evm_snd_data;
++#endif
++
++	evm_snd_device = platform_device_alloc("soc-audio", -1);
++	if (evm_snd_device == NULL)
++		return -ENOMEM;
++
++	platform_set_drvdata(evm_snd_device, evm_snd_devdata);
++	evm_snd_devdata->dev = &evm_snd_device->dev;
++	evm_snd_device->dev.platform_data = evm_snd_data;
++
++	ret = platform_device_add_resources(evm_snd_device,
++					    evm_snd_resources, res_size);
++	if (ret)
++		goto dev_put;
++
++	ret = platform_device_add(evm_snd_device);
++	if (!ret)
++		return 0;
++
++dev_put:
++	platform_device_put(evm_snd_device);
++	return ret;
++}
++
++static void __exit da8xx_evm_exit(void)
++{
++	platform_device_unregister(evm_snd_device);
++}
++
++module_init(da8xx_evm_init);
++module_exit(da8xx_evm_exit);
++
++MODULE_AUTHOR("Steve Chen <schen@mvista.com>");
++MODULE_DESCRIPTION("TI DA8xx EVM ASoC driver");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/sound/soc/davinci/davinci-i2s-mcasp.c
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/davinci-i2s-mcasp.c
++++ linux-2.6.18/sound/soc/davinci/davinci-i2s-mcasp.c
+@@ -31,29 +31,32 @@
+ #include "davinci-i2s.h"
+ #include "davinci-i2s-mcasp.h"
+ 
++#include <linux/interrupt.h>
++#include <asm/arch/irqs.h>
++
+ static inline void mcasp_set_bits(void __iomem *reg, u32 val)
+ {
+-	outl(inl(reg) | val, reg);
++	__raw_writel(__raw_readl(reg) | val, reg);
+ }
+ 
+ static inline void mcasp_clr_bits(void __iomem *reg, u32 val)
+ {
+-	outl((inl(reg) & ~(val)), reg);
++	__raw_writel((__raw_readl(reg) & ~(val)), reg);
+ }
+ 
+ static inline void mcasp_mod_bits(void __iomem *reg, u32 val, u32 mask)
+ {
+-	outl((inl(reg) & ~mask) | val, reg);
++	__raw_writel((__raw_readl(reg) & ~mask) | (val & mask), reg);
+ }
+ 
+ static inline void mcasp_set_reg(void __iomem *reg, u32 val)
+ {
+-	outl(val, reg);
++	__raw_writel(val, reg);
+ }
+ 
+ static inline u32 mcasp_get_reg(void __iomem *reg)
+ {
+-	return inl(reg);
++	return __raw_readl(reg);
+ }
+ 
+ static inline void mcasp_set_ctl_reg(void __iomem *regs, u32 val)
+@@ -62,6 +65,92 @@ static inline void mcasp_set_ctl_reg(voi
+ 	while ((mcasp_get_reg(regs) & val) != val);
+ }
+ 
++static irqreturn_t mcasp_irq_handler(int irq, void *dev_id,
++				struct pt_regs *regs)
++{
++	struct platform_device *pdev = dev_id;
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_machine *machine = socdev->machine;
++	struct snd_soc_cpu_dai *cpu_dai;
++	struct davinci_audio_dev *dev;
++	int link_cnt;
++	void __iomem *base;
++
++	for (link_cnt = 0; link_cnt < machine->num_links; link_cnt++) {
++		cpu_dai = machine->dai_link[link_cnt].cpu_dai;
++		dev = cpu_dai->private_data;
++		base = dev->base;
++
++		if (mcasp_get_reg(base + DAVINCI_MCASP_TXSTAT_REG) & 0x1) {
++			mcasp_clr_bits(base + DAVINCI_MCASP_EVTCTLX_REG, 1);
++			schedule_delayed_work(&dev->workq, HZ >> 4);
++		}
++	}
++
++	return IRQ_HANDLED;
++}
++
++static void davinci_mcasp_workq_handler(void *arg)
++{
++	struct davinci_audio_dev *dev = arg;
++	void __iomem *base = dev->base;
++
++	mcasp_clr_bits(base + DAVINCI_MCASP_GBLCTL_REG, TXSERCLR | TXSMRST);
++
++	mcasp_set_ctl_reg(base + DAVINCI_MCASP_GBLCTLX_REG, TXSERCLR);
++	mcasp_set_reg(base + DAVINCI_MCASP_TXBUF_REG, 0);
++	mcasp_set_reg(base + DAVINCI_MCASP_TXSTAT_REG, 1);
++	mcasp_set_ctl_reg(base + DAVINCI_MCASP_GBLCTLX_REG, TXSMRST);
++
++	mcasp_set_ctl_reg(base + DAVINCI_MCASP_EVTCTLX_REG, 1);
++
++}
++static int davinci_mcasp_i2s_probe(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_machine *machine = socdev->machine;
++	struct snd_soc_cpu_dai *cpu_dai;
++	struct davinci_audio_dev *dev;
++	int ret;
++	int link_cnt;
++
++	ret = davinci_i2s_probe(pdev);
++
++	if (ret < 0)
++		return ret;
++
++	for (link_cnt = 0; link_cnt < machine->num_links; link_cnt++) {
++		cpu_dai = machine->dai_link[link_cnt].cpu_dai;
++		dev = cpu_dai->private_data;
++
++		mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_EVTCTLX_REG, 1);
++
++		INIT_WORK(&dev->workq, davinci_mcasp_workq_handler, dev);
++	}
++	request_irq(IRQ_DA8XX_MCASPINT, mcasp_irq_handler, 0,
++			  "MCASP status", pdev);
++	return ret;
++}
++
++void davinci_mcasp_i2s_remove(struct platform_device *pdev)
++{
++	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
++	struct snd_soc_machine *machine = socdev->machine;
++	struct snd_soc_cpu_dai *cpu_dai;
++	struct davinci_audio_dev *dev;
++	int link_cnt;
++
++	for (link_cnt = 0; link_cnt < machine->num_links; link_cnt++) {
++		cpu_dai = machine->dai_link[link_cnt].cpu_dai;
++		dev = cpu_dai->private_data;
++
++		mcasp_clr_bits(dev->base + DAVINCI_MCASP_EVTCTLX_REG, 1);
++		cancel_delayed_work(&dev->workq);
++	}
++	flush_scheduled_work();
++	davinci_i2s_remove(pdev);
++}
++
+ void mcasp_start_rx(struct davinci_audio_dev *dev)
+ {
+ 	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLR_REG, RXHCLKRST);
+@@ -79,6 +168,9 @@ void mcasp_start_rx(struct davinci_audio
+ 
+ void mcasp_start_tx(struct davinci_audio_dev *dev)
+ {
++	u8 offset = 0, i;
++	u32 cnt;
++
+ 	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLX_REG, TXHCLKRST);
+ 	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLX_REG, TXCLKRST);
+ 	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLX_REG, TXSERCLR);
+@@ -88,9 +180,17 @@ void mcasp_start_tx(struct davinci_audio
+ 	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLX_REG, TXFSRST);
+ 	mcasp_set_reg(dev->base + DAVINCI_MCASP_TXBUF_REG, 0);
+ 
++	for (i = 0; i < dev->num_serializer; i++) {
++		if (dev->serial_dir[i] == TX_MODE) {
++			offset = i;
++			break;
++		}
++	}
+ 	/* wait for TX ready */
+-	while (!(mcasp_get_reg(dev->base + DAVINCI_MCASP_XRSRCTL_REG(0)) &
+-		 TXSTATE));
++	cnt = 0;
++	while (!(mcasp_get_reg(dev->base + DAVINCI_MCASP_XRSRCTL_REG(offset)) &
++		 TXSTATE) && (cnt < 100000))
++		cnt++;
+ 
+ 	mcasp_set_reg(dev->base + DAVINCI_MCASP_TXBUF_REG, 0);
+ }
+@@ -144,7 +244,17 @@ static int davinci_i2s_mcasp_set_dai_fmt
+ 		mcasp_set_bits(base + DAVINCI_MCASP_ACLKRCTL_REG, ACLKRE);
+ 		mcasp_set_bits(base + DAVINCI_MCASP_RXFMCTL_REG, AFSRE);
+ 
+-		mcasp_set_bits(base + DAVINCI_MCASP_PDIR_REG, (0x7 << 26));
++		mcasp_set_bits(base + DAVINCI_MCASP_PDIR_REG, (0x07 << 26));
++		break;
++	case SND_SOC_DAIFMT_CBM_CFS:
++		/* codec is clock master and frame slave */
++		mcasp_set_bits(base + DAVINCI_MCASP_ACLKXCTL_REG, ACLKXE);
++		mcasp_set_bits(base + DAVINCI_MCASP_TXFMCTL_REG, AFSXE);
++
++		mcasp_set_bits(base + DAVINCI_MCASP_ACLKRCTL_REG, ACLKRE);
++		mcasp_set_bits(base + DAVINCI_MCASP_RXFMCTL_REG, AFSRE);
++
++		mcasp_set_bits(base + DAVINCI_MCASP_PDIR_REG, (0x2d << 26));
+ 		break;
+ 	case SND_SOC_DAIFMT_CBM_CFM:
+ 		/* codec is clock and frame master */
+@@ -172,7 +282,7 @@ static int davinci_i2s_mcasp_set_dai_fmt
+ 		mcasp_set_bits(base + DAVINCI_MCASP_ACLKXCTL_REG, ACLKXPOL);
+ 		mcasp_set_bits(base + DAVINCI_MCASP_TXFMCTL_REG, FSXPOL);
+ 
+-		mcasp_clr_bits(base + DAVINCI_MCASP_ACLKRCTL_REG, ACLKRPOL);
++		mcasp_set_bits(base + DAVINCI_MCASP_ACLKRCTL_REG, ACLKRPOL);
+ 		mcasp_set_bits(base + DAVINCI_MCASP_RXFMCTL_REG, FSRPOL);
+ 		break;
+ 	case SND_SOC_DAIFMT_IB_IF:
+@@ -195,49 +305,163 @@ static int davinci_i2s_mcasp_set_dai_fmt
+ 
+ 	return 0;
+ }
++static int davinci_i2s_mcasp_set_dai_sysclk(struct snd_soc_cpu_dai *cpu_dai,
++					    int clk_id, unsigned int freq,
++					    int dir)
++{
++	struct davinci_audio_dev *dev = cpu_dai->private_data;
++	void __iomem *base = dev->base;
++
++	if (freq != 24576000)
++		return -1;
++
++	dev->sysclk_freq = freq;
++	dev->sysclk_dir = dir;
++
++	if (dir == SND_SOC_CLOCK_IN) {
++		/* AHCLK is the clock input from codec */
++		mcasp_clr_bits(base + DAVINCI_MCASP_AHCLKXCTL_REG, AHCLKXE);
++		mcasp_clr_bits(base + DAVINCI_MCASP_PDIR_REG, (0x1 << 27));
++
++		mcasp_clr_bits(base + DAVINCI_MCASP_AHCLKRCTL_REG, AHCLKRE);
++		mcasp_clr_bits(base + DAVINCI_MCASP_PDIR_REG, (0x1 << 30));
++
++	} else {
++		/* AHCLK is the clock output to codec */
++		mcasp_set_bits(base + DAVINCI_MCASP_AHCLKXCTL_REG, AHCLKXE);
++		mcasp_set_bits(base + DAVINCI_MCASP_PDIR_REG, (0x1 << 27));
++
++		mcasp_set_bits(base + DAVINCI_MCASP_AHCLKRCTL_REG, AHCLKRE);
++		mcasp_set_bits(base + DAVINCI_MCASP_PDIR_REG, (0x1 << 30));
++
++	}
++	return 0;
++}
+ 
+ static int davinci_config_channel_size(struct snd_pcm_substream *substream,
+-				       int channel_size)
++				       int channel_size, int slot_ext)
+ {
+ 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+ 	struct davinci_audio_dev *dev = rtd->dai->cpu_dai->private_data;
++	void __iomem *base = dev->base;
+ 	u32 fmt = 0;
++	u32 mask;
++	int slot_size = 0;
+ 
+ 	switch (channel_size) {
+ 	case DAVINCI_AUDIO_WORD_8:
+-		fmt = 0x03 << 4;
++		fmt = 0x03;
++		mask = 0x000000FF;
++		slot_size = 8;
+ 		break;
+ 
+ 	case DAVINCI_AUDIO_WORD_12:
+-		fmt = 0x05 << 4;
++		fmt = 0x05;
++		mask = 0x00000FFF;
++		slot_size = 12;
+ 		break;
+ 
+ 	case DAVINCI_AUDIO_WORD_16:
+-		fmt = 0x07 << 4;
++		fmt = 0x07;
++		mask = 0x0000FFFF;
++		slot_size = 16;
+ 		break;
+ 
+ 	case DAVINCI_AUDIO_WORD_20:
+-		fmt = 0x09 << 4;
++		fmt = 0x09;
++		mask = 0x000FFFFF;
++		slot_size = 20;
+ 		break;
+ 
+ 	case DAVINCI_AUDIO_WORD_24:
+-		fmt = 0x0B << 4;
++		fmt = 0x0B;
++		mask = 0x00FFFFFF;
++		slot_size = 24;
+ 		break;
+ 
+ 	case DAVINCI_AUDIO_WORD_28:
+-		fmt = 0x0D << 4;
++		fmt = 0x0D;
++		mask = 0x0FFFFFFF;
++		slot_size = 28;
+ 		break;
+ 
+ 	case DAVINCI_AUDIO_WORD_32:
+-		fmt = 0x0F << 4;
++		fmt = 0x0F;
++		mask = 0xFFFFFFFF;
++		slot_size = 32;
+ 		break;
+ 
+ 	default:
++		/* should never get here since the value already checked */
+ 		return -1;
+ 	}
+ 
+-	mcasp_mod_bits(dev->base + DAVINCI_MCASP_RXFMT_REG, fmt, (0x0F << 4));
+-	mcasp_mod_bits(dev->base + DAVINCI_MCASP_TXFMT_REG, fmt, (0x0F << 4));
++	if (dev->word_shift) {
++		mcasp_set_bits(base + DAVINCI_MCASP_TXFMT_REG, TXROT(4));
++		mcasp_set_bits(base + DAVINCI_MCASP_RXFMT_REG, RXROT(4));
++		mcasp_set_reg(base + DAVINCI_MCASP_TXMASK_REG, mask);
++		mcasp_set_reg(base + DAVINCI_MCASP_RXMASK_REG, mask);
++		mcasp_set_bits(base + DAVINCI_MCASP_TXFMT_REG, FSXDLY(1));
++	} else {
++		mask = 0xFFFFFFFF;
++		if (channel_size > DAVINCI_AUDIO_WORD_16) {
++			mcasp_set_bits(base + DAVINCI_MCASP_TXFMT_REG,
++				       TXROT(4));
++			mcasp_set_bits(base + DAVINCI_MCASP_RXFMT_REG,
++				       RXROT(4));
++		}
++		mcasp_set_reg(base + DAVINCI_MCASP_TXMASK_REG, mask);
++		mcasp_set_reg(base + DAVINCI_MCASP_RXMASK_REG, mask);
++	}
++
++	/*
++	 * Overwrite if slot size if codec only supports specific slot sizes
++	 * Also, check for the need to extend the slot size.  This is to
++	 * handle SNDRV_PCM_FORMAT_S24_LE which needs 32 bit slot whereas
++	 * SNDRV_PCM_FORMAT_S24_3LE fits into 24 bit slot
++	 */
++
++	if (dev->fixed_slot || slot_ext) {
++		slot_size = 32;
++		fmt = 0x0F;
++	}
++
++	mcasp_mod_bits(base + DAVINCI_MCASP_RXFMT_REG, RXSSZ(fmt), RXSSZ(0xF));
++	mcasp_mod_bits(base + DAVINCI_MCASP_TXFMT_REG, TXSSZ(fmt), TXSSZ(0xF));
++
++	return slot_size;
++}
++
++static int davinci_config_clock(struct snd_pcm_substream *substream,
++				int rate, int slot_size)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct davinci_audio_dev *dev = rtd->dai->cpu_dai->private_data;
++	void __iomem *base = dev->base;
++	u32 bclk, div;
++
++	/* Update clock only if the timer is set to internal */
++	if ((mcasp_get_reg(base + DAVINCI_MCASP_ACLKXCTL_REG) & ACLKXE) == 0)
++		return 0;
++
++	/*
++	 * bclk = rate * #tdm_slots * (slot_size)
++	 * div = (sysclk / bclk) - 1
++	 *
++	 * for example
++	 *    rate = 48000  - rate sometime known as fs or sample rate
++	 *    tdm_slot = 2  - standard i2s format
++	 *    slot_size = 32 - standard i2s format for bits per slot
++	 *    sysclk = 24576000  - from hardware spec.
++	 *
++	 *    bclk =  48000 * 2 * 32 = 3072000
++	 *    div = (24576000 / 3072000) - 1 = 7
++	 */
++	bclk = rate * dev->tdm_slots * slot_size;
++	div = (dev->sysclk_freq / bclk) - 1;
++
++	mcasp_mod_bits(base + DAVINCI_MCASP_ACLKXCTL_REG, ACLKXDIV(div), 0x1F);
++	mcasp_mod_bits(base + DAVINCI_MCASP_ACLKRCTL_REG, ACLKRDIV(div), 0x1F);
+ 	return 0;
+ }
+ 
+@@ -245,34 +469,41 @@ static void davinci_hw_common_param(stru
+ {
+ 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+ 	struct davinci_audio_dev *dev = rtd->dai->cpu_dai->private_data;
++	struct davinci_pcm_dma_params *dma_params =
++					dev->dma_params[substream->stream];
++	void __iomem *base = dev->base;
+ 	int i;
++	int num_data_stream = 0;
+ 
+ 	/* Default configuration */
+-	mcasp_set_bits(dev->base + DAVINCI_MCASP_PWREMUMGT_REG, SOFT);
++	mcasp_set_bits(base + DAVINCI_MCASP_PWREMUMGT_REG, SOFT);
+ 
+ 	/* All PINS as McASP */
+-	mcasp_set_reg(dev->base + DAVINCI_MCASP_PFUNC_REG, 0x00000000);
++	mcasp_set_reg(base + DAVINCI_MCASP_PFUNC_REG, 0x00000000);
+ 
+ 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+-		mcasp_set_reg(dev->base + DAVINCI_MCASP_TXSTAT_REG, 0xFFFFFFFF);
+-		mcasp_clr_bits(dev->base + DAVINCI_MCASP_XEVTCTL_REG,
+-				TXDATADMADIS);
++		mcasp_set_reg(base + DAVINCI_MCASP_TXSTAT_REG, 0xFFFFFFFF);
++		mcasp_clr_bits(base + DAVINCI_MCASP_XEVTCTL_REG, TXDATADMADIS);
+ 	} else {
+-		mcasp_set_reg(dev->base + DAVINCI_MCASP_RXSTAT_REG, 0xFFFFFFFF);
+-		mcasp_clr_bits(dev->base + DAVINCI_MCASP_REVTCTL_REG,
+-				RXDATADMADIS);
++		mcasp_set_reg(base + DAVINCI_MCASP_RXSTAT_REG, 0xFFFFFFFF);
++		mcasp_clr_bits(base + DAVINCI_MCASP_REVTCTL_REG, RXDATADMADIS);
+ 	}
+ 
+ 	for (i = 0; i < dev->num_serializer; i++) {
+-		mcasp_set_bits(dev->base + DAVINCI_MCASP_XRSRCTL_REG(i),
+-			       dev->serial_dir[i]);
+-		if (dev->serial_dir[i] == TX_MODE)
+-			mcasp_set_bits(dev->base + DAVINCI_MCASP_PDIR_REG,
+-				       AXR(i));
+-		else if (dev->serial_dir[i] == RX_MODE)
+-			mcasp_clr_bits(dev->base + DAVINCI_MCASP_PDIR_REG,
+-				       AXR(i));
++		mcasp_mod_bits(base + DAVINCI_MCASP_XRSRCTL_REG(i),
++			       dev->serial_dir[i], 0x3);
++		if (dev->serial_dir[i] == TX_MODE) {
++			mcasp_set_bits(base + DAVINCI_MCASP_PDIR_REG, AXR(i));
++			if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++				num_data_stream++;
++		} else {
++			mcasp_clr_bits(base + DAVINCI_MCASP_PDIR_REG, AXR(i));
++			if ((dev->serial_dir[i] == RX_MODE) &&
++			   (substream->stream == SNDRV_PCM_STREAM_CAPTURE))
++				num_data_stream++;
++		}
+ 	}
++	dma_params->num_data_stream = num_data_stream;
+ }
+ static void davinci_hw_iis_param(struct snd_pcm_substream *substream)
+ {
+@@ -280,45 +511,57 @@ static void davinci_hw_iis_param(struct 
+ 	u32 mask = 0;
+ 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+ 	struct davinci_audio_dev *dev = rtd->dai->cpu_dai->private_data;
++	void __iomem *base = dev->base;
+ 
+ 	active_slots = (dev->tdm_slots > 31) ? 32 : dev->tdm_slots;
+ 	for (i = 0; i < active_slots; i++)
+ 		mask |= (1 << i);
+ 
++	if (dev->async_rxtx_clk)
++		mcasp_set_bits(base + DAVINCI_MCASP_ACLKXCTL_REG, TX_ASYNC);
++	else
++		mcasp_clr_bits(base + DAVINCI_MCASP_ACLKXCTL_REG, TX_ASYNC);
++
+ 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+ 		/* bit stream is MSB first */
+-		mcasp_set_bits(dev->base + DAVINCI_MCASP_AHCLKXCTL_REG,
+-				AHCLKXE);
+-		mcasp_set_reg(dev->base + DAVINCI_MCASP_TXTDM_REG, mask);
+-		mcasp_set_bits(dev->base + DAVINCI_MCASP_TXFMT_REG, TXORD);
++		mcasp_set_reg(base + DAVINCI_MCASP_TXTDM_REG, mask);
++		mcasp_set_bits(base + DAVINCI_MCASP_TXFMT_REG, TXORD);
+ 
+ 		if ((dev->tdm_slots >= 2) || (dev->tdm_slots <= 32))
+-			mcasp_mod_bits(dev->base + DAVINCI_MCASP_TXFMCTL_REG,
++			mcasp_mod_bits(base + DAVINCI_MCASP_TXFMCTL_REG,
+ 				       FSXMOD(dev->tdm_slots), FSXMOD(0x1FF));
+ 		else
+ 			printk(KERN_ERR "playback tdm slot %d not supported\n",
+ 				dev->tdm_slots);
+ 
+-		mcasp_set_reg(dev->base + DAVINCI_MCASP_TXMASK_REG, 0xFFFFFFFF);
+-		mcasp_clr_bits(dev->base + DAVINCI_MCASP_TXFMCTL_REG, FSXDUR);
++		/* set pulse width to word if i2s mode */
++		if (dev->tdm_slots == 2)
++			mcasp_set_bits(base + DAVINCI_MCASP_TXFMCTL_REG,
++					FSXDUR);
++		else
++			mcasp_clr_bits(base + DAVINCI_MCASP_TXFMCTL_REG,
++					FSXDUR);
+ 
+ 	} else {
+-		/* bit stream is MSB first with no delay */
+-		mcasp_set_bits(dev->base + DAVINCI_MCASP_RXFMT_REG,
++		/* bit stream is MSB first with 1 bit delay */
++		mcasp_set_bits(base + DAVINCI_MCASP_RXFMT_REG,
+ 				FSRDLY(1) | RXORD);
+-		mcasp_set_bits(dev->base + DAVINCI_MCASP_AHCLKRCTL_REG,
+-				AHCLKRE);
+-		mcasp_set_reg(dev->base + DAVINCI_MCASP_RXTDM_REG, mask);
++		mcasp_set_reg(base + DAVINCI_MCASP_RXTDM_REG, mask);
+ 
+ 		if ((dev->tdm_slots >= 2) || (dev->tdm_slots <= 32))
+-			mcasp_mod_bits(dev->base + DAVINCI_MCASP_RXFMCTL_REG,
++			mcasp_mod_bits(base + DAVINCI_MCASP_RXFMCTL_REG,
+ 				       FSRMOD(dev->tdm_slots), FSRMOD(0x1FF));
+ 		else
+ 			printk(KERN_ERR "capture tdm slot %d not supported\n",
+ 				dev->tdm_slots);
+ 
+-		mcasp_set_reg(dev->base + DAVINCI_MCASP_RXMASK_REG, 0xFFFFFFFF);
+-		mcasp_clr_bits(dev->base + DAVINCI_MCASP_RXFMCTL_REG, FSRDUR);
++		/* set pulse width to word if i2s mode */
++		if (dev->tdm_slots == 2)
++			mcasp_set_bits(base + DAVINCI_MCASP_RXFMCTL_REG,
++					FSRDUR);
++		else
++			mcasp_clr_bits(base + DAVINCI_MCASP_RXFMCTL_REG,
++					FSRDUR);
+ 	}
+ }
+ 
+@@ -349,12 +592,14 @@ static void davinci_hw_dit_param(struct 
+ 	/* Set the TX clock controls : div = 1 and internal */
+ 	mcasp_set_bits(dev->base + DAVINCI_MCASP_ACLKXCTL_REG,
+ 		       ACLKXE | TX_ASYNC);
++	mcasp_mod_bits(dev->base + DAVINCI_MCASP_ACLKXCTL_REG,
++		       ACLKXDIV(0), 0x1F);
+ 
+ 	mcasp_clr_bits(dev->base + DAVINCI_MCASP_XEVTCTL_REG, TXDATADMADIS);
+ 
+ 	/* Only 44100 and 48000 are valid, both have the same setting */
+ 	mcasp_set_bits(dev->base + DAVINCI_MCASP_AHCLKXCTL_REG,
+-		       AHCLKXDIV(3));
++		       AHCLKXDIV(3) | AHCLKXE);
+ 
+ 	/* Enable the DIT */
+ 	mcasp_set_bits(dev->base + DAVINCI_MCASP_TXDITCTL_REG, DITEN);
+@@ -368,13 +613,8 @@ static int davinci_i2s_mcasp_hw_params(s
+ 	struct davinci_pcm_dma_params *dma_params =
+ 					dev->dma_params[substream->stream];
+ 	int word_length;
+-
+-	davinci_hw_common_param(substream);
+-
+-	if (dev->op_mode == DAVINCI_MCASP_DIT_MODE)
+-		davinci_hw_dit_param(substream);
+-	else
+-		davinci_hw_iis_param(substream);
++	int slot_size;
++	int slot_ext = 0;
+ 
+ 	switch (params_format(params)) {
+ 	case SNDRV_PCM_FORMAT_S8:
+@@ -385,6 +625,11 @@ static int davinci_i2s_mcasp_hw_params(s
+ 		dma_params->data_type = 2;
+ 		word_length = DAVINCI_AUDIO_WORD_16;
+ 		break;
++	case SNDRV_PCM_FORMAT_S24_LE:
++		dma_params->data_type = 4;
++		word_length = DAVINCI_AUDIO_WORD_24;
++		slot_ext = 1;
++		break;
+ 	case SNDRV_PCM_FORMAT_S32_LE:
+ 		dma_params->data_type = 4;
+ 		word_length = DAVINCI_AUDIO_WORD_32;
+@@ -393,7 +638,15 @@ static int davinci_i2s_mcasp_hw_params(s
+ 		printk(KERN_WARNING "davinci-i2s: unsupported PCM format");
+ 		return -EINVAL;
+ 	}
+-	davinci_config_channel_size(substream, word_length);
++	slot_size = davinci_config_channel_size(substream, word_length,
++						slot_ext);
++	davinci_config_clock(substream, params_rate(params), slot_size);
++	davinci_hw_common_param(substream);
++
++	if (dev->op_mode == DAVINCI_MCASP_DIT_MODE)
++		davinci_hw_dit_param(substream);
++	else
++		davinci_hw_iis_param(substream);
+ 
+ 	return 0;
+ }
+@@ -421,24 +674,28 @@ static int davinci_i2s_mcasp_trigger(str
+ 	return ret;
+ }
+ 
++#define MCASP_IIS_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE | \
++				 SNDRV_PCM_FMTBIT_S24_LE | \
++				 SNDRV_PCM_FMTBIT_S32_LE)
++
+ struct snd_soc_cpu_dai davinci_iis_mcasp_dai[] = {
+ 	{
+ 		.name = "davinci-i2s",
+ 		.id = 0,
+ 		.type = SND_SOC_DAI_I2S,
+-		.probe = davinci_i2s_probe,
+-		.remove = davinci_i2s_remove,
++		.probe = davinci_mcasp_i2s_probe,
++		.remove = davinci_mcasp_i2s_remove,
+ 		.playback = {
+ 			.channels_min = 1,
+ 			.channels_max = 384,
+ 			.rates = DAVINCI_I2S_RATES,
+-			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++			.formats = MCASP_IIS_FORMATS,
+ 		},
+ 		.capture = {
+ 			.channels_min = 1,
+ 			.channels_max = 384,
+ 			.rates = DAVINCI_I2S_RATES,
+-			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++			.formats = MCASP_IIS_FORMATS,
+ 		},
+ 		.ops = {
+ 			.startup = davinci_i2s_startup,
+@@ -447,6 +704,7 @@ struct snd_soc_cpu_dai davinci_iis_mcasp
+ 		},
+ 		.dai_ops = {
+ 			.set_fmt = davinci_i2s_mcasp_set_dai_fmt,
++			.set_sysclk = davinci_i2s_mcasp_set_dai_sysclk,
+ 		},
+ 	},
+ };
+@@ -461,7 +719,7 @@ struct snd_soc_cpu_dai davinci_dit_mcasp
+ 			.channels_min = 1,
+ 			.channels_max = 384,
+ 			.rates = DAVINCI_I2S_RATES,
+-			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++			.formats = MCASP_IIS_FORMATS,
+ 		},
+ 		.ops = {
+ 			.startup = davinci_i2s_startup,
+@@ -475,6 +733,78 @@ struct snd_soc_cpu_dai davinci_dit_mcasp
+ };
+ EXPORT_SYMBOL_GPL(davinci_dit_mcasp_dai);
+ 
++struct snd_soc_cpu_dai davinci_dir_mcasp_dai[] = {
++	{
++		.name = "davinci-dir",
++		.id = 2,
++		.type = SND_SOC_DAI_I2S,
++		.capture = {
++			.channels_min = 1,
++			.channels_max = 384,
++			.rates = DAVINCI_I2S_RATES,
++			.formats = MCASP_IIS_FORMATS,
++		},
++		.ops = {
++			.startup = davinci_i2s_startup,
++			.trigger = davinci_i2s_mcasp_trigger,
++			.hw_params = davinci_i2s_mcasp_hw_params,
++		},
++		.dai_ops = {
++			.set_fmt = davinci_i2s_mcasp_set_dai_fmt,
++			.set_sysclk = davinci_i2s_mcasp_set_dai_sysclk,
++		},
++	},
++};
++EXPORT_SYMBOL_GPL(davinci_dir_mcasp_dai);
++
++/*
++ * Stub functions when the DSP is configured to control the McASP
++ */
++static int davinci_i2s_mcasp_dsp_hw_params(struct snd_pcm_substream *substream,
++					   struct snd_pcm_hw_params *params)
++{
++	return 0;
++}
++static int davinci_i2s_mcasp_dsp_trigger(struct snd_pcm_substream *substream,
++					 int cmd)
++{
++	return 0;
++}
++static int davinci_i2s_mcasp_dsp_set_dai_fmt(struct snd_soc_cpu_dai *cpu_dai,
++					     unsigned int fmt)
++{
++	return 0;
++}
++
++struct snd_soc_cpu_dai davinci_iis_mcasp_dsp_dai[] = {
++	{
++		.name = "davinci-i2s-dsp",
++		.id = 0,
++		.type = SND_SOC_DAI_I2S,
++		.playback = {
++			.channels_min = 1,
++			.channels_max = 2,
++			.rates = DAVINCI_I2S_RATES,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++		},
++		.capture = {
++			.channels_min = 1,
++			.channels_max = 2,
++			.rates = DAVINCI_I2S_RATES,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++		},
++		.ops = {
++			.startup = davinci_i2s_startup,
++			.trigger = davinci_i2s_mcasp_dsp_trigger,
++			.hw_params = davinci_i2s_mcasp_dsp_hw_params,
++		},
++		.dai_ops = {
++			.set_fmt = davinci_i2s_mcasp_dsp_set_dai_fmt,
++		},
++	},
++};
++EXPORT_SYMBOL_GPL(davinci_iis_mcasp_dsp_dai);
++
+ MODULE_AUTHOR("Steve Chen");
+ MODULE_DESCRIPTION("TI DAVINCI I2S (McASP) SoC Interface");
+ MODULE_LICENSE("GPL");
+Index: linux-2.6.18/sound/soc/davinci/davinci-i2s-mcasp.h
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/davinci-i2s-mcasp.h
++++ linux-2.6.18/sound/soc/davinci/davinci-i2s-mcasp.h
+@@ -277,9 +277,14 @@
+     defined(CONFIG_SND_DAVINCI_SOC_I2S_MCASP_MODULE)
+ extern struct snd_soc_cpu_dai davinci_iis_mcasp_dai[];
+ extern struct snd_soc_cpu_dai davinci_dit_mcasp_dai[];
++extern struct snd_soc_cpu_dai davinci_dir_mcasp_dai[];
++extern struct snd_soc_cpu_dai davinci_iis_mcasp_dsp_dai[];
+ #else
+ #define davinci_iis_mcasp_dai	NULL
+ #define davinci_dit_mcasp_dai	NULL
++#define davinci_dir_mcasp_dai	NULL
++#define davinci_iis_mcasp_dsp_dai NULL
++
+ #endif
+ 
+ #endif	/* DAVINCI_I2S_MCASP_H */
+Index: linux-2.6.18/sound/soc/davinci/davinci-i2s.c
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/davinci-i2s.c
++++ linux-2.6.18/sound/soc/davinci/davinci-i2s.c
+@@ -103,7 +103,10 @@ int davinci_i2s_probe(struct platform_de
+ 		dev[link_cnt].num_serializer = pdata->num_serializer;
+ 		dev[link_cnt].serial_dir = pdata->serial_dir;
+ 		dev[link_cnt].codec_fmt = pdata->codec_fmt;
+-
++		dev[link_cnt].sysclk_dir = pdata->sysclk_dir;
++		dev[link_cnt].word_shift = pdata->word_shift;
++		dev[link_cnt].fixed_slot = pdata->fixed_slot;
++		dev[link_cnt].async_rxtx_clk = pdata->async_rxtx_clk;
+ 
+ 		dma_data[count].name = "I2S PCM Stereo out";
+ 		dma_data[count].channel = pdata->tx_dma_ch;
+Index: linux-2.6.18/sound/soc/davinci/davinci-i2s.h
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/davinci-i2s.h
++++ linux-2.6.18/sound/soc/davinci/davinci-i2s.h
+@@ -12,6 +12,7 @@
+ #ifndef _DAVINCI_I2S_H
+ #define _DAVINCI_I2S_H
+ 
++#include <linux/workqueue.h>
+ #include <linux/io.h>
+ #include "davinci-pcm.h"
+ 
+@@ -23,8 +24,8 @@ enum {
+ 	DAVINCI_AUDIO_WORD_16,
+ 	DAVINCI_AUDIO_WORD_20,
+ 	DAVINCI_AUDIO_WORD_24,
+-	DAVINCI_AUDIO_WORD_32,
+ 	DAVINCI_AUDIO_WORD_28,  /* This is only valid for McASP */
++	DAVINCI_AUDIO_WORD_32,
+ };
+ 
+ struct davinci_audio_dev {
+@@ -39,6 +40,12 @@ struct davinci_audio_dev {
+ 	u8				op_mode;
+ 	u8				num_serializer;
+ 	u8				*serial_dir;
++	u8				word_shift;
++	u8				fixed_slot;
++	u8				async_rxtx_clk;
++	unsigned int 			sysclk_freq;
++	int				sysclk_dir;
++	struct work_struct		workq;
+ };
+ 
+ int davinci_i2s_startup(struct snd_pcm_substream *substream);
+Index: linux-2.6.18/sound/soc/davinci/davinci-pcm.c
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/davinci-pcm.c
++++ linux-2.6.18/sound/soc/davinci/davinci-pcm.c
+@@ -38,7 +38,8 @@ static struct snd_pcm_hardware davinci_p
+ 	.info = (SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER |
+ 		 SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
+ 		 SNDRV_PCM_INFO_PAUSE),
+-	.formats = (SNDRV_PCM_FMTBIT_S16_LE),
++	.formats = (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE |
++		    SNDRV_PCM_FMTBIT_S32_LE),
+ 	.rates = (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |
+ 		  SNDRV_PCM_RATE_22050 | SNDRV_PCM_RATE_32000 |
+ 		  SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 |
+@@ -76,6 +77,7 @@ static void davinci_pcm_enqueue_dma(stru
+ 	unsigned short src_bidx, dst_bidx;
+ 	unsigned int data_type;
+ 	unsigned int count;
++	unsigned int num_stream;
+ 
+ 	period_size = snd_pcm_lib_period_bytes(substream);
+ 	dma_offset = prtd->period * period_size;
+@@ -84,7 +86,12 @@ static void davinci_pcm_enqueue_dma(stru
+ 	DPRINTK("audio_set_dma_params_play channel = %d dma_ptr = %x "
+ 		"period_size=%x\n", lch, dma_pos, period_size);
+ 
+-	data_type = prtd->params->data_type;
++	num_stream = prtd->params->num_data_stream;
++	if (num_stream > 1)
++		data_type = prtd->params->data_type * num_stream;
++	else
++		data_type = prtd->params->data_type;
++
+ 	count = period_size / data_type;
+ 
+ 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+@@ -103,7 +110,15 @@ static void davinci_pcm_enqueue_dma(stru
+ 	davinci_set_dma_dest_params(lch, dst, INCR, W8BIT);
+ 	davinci_set_dma_src_index(lch, src_bidx, 0);
+ 	davinci_set_dma_dest_index(lch, dst_bidx, 0);
+-	davinci_set_dma_transfer_params(lch, data_type, count, 1, 0, ASYNC);
++	/*
++	 * fix transfer block to 32 bits, use src_bidx and dst_bidx to vary
++	 * the size
++	*/
++	if (num_stream > 1)
++		davinci_set_dma_transfer_params(lch, 4 * num_stream, count,
++						1, 0, ASYNC);
++	else
++		davinci_set_dma_transfer_params(lch, 4, count, 1, 0, ASYNC);
+ 
+ 	prtd->period++;
+ 	if (unlikely(prtd->period >= runtime->periods))
+@@ -377,7 +392,6 @@ static int davinci_pcm_new(struct snd_ca
+ 		if (ret)
+ 			return ret;
+ 	}
+-
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/sound/soc/davinci/davinci-pcm.h
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/davinci-pcm.h
++++ linux-2.6.18/sound/soc/davinci/davinci-pcm.h
+@@ -19,6 +19,7 @@ struct davinci_pcm_dma_params {
+ 	int channel;			/* sync dma channel ID */
+ 	dma_addr_t dma_addr;		/* device physical address for DMA */
+ 	unsigned int data_type;		/* xfer data type */
++	unsigned int num_data_stream;	/* number of serializers */
+ 	enum dma_event_q eventq_no;	/* event queue number */
+ };
+ 
+@@ -35,7 +36,11 @@ struct evm_snd_platform_data {
+ 	int tdm_slots;
+ 	u8 op_mode;
+ 	u8 num_serializer;
++	u8 word_shift;
++	u8 fixed_slot;
++	u8 async_rxtx_clk;
+ 	u8 *serial_dir;
++	int sysclk_dir;
+ };
+ 
+ extern struct snd_soc_platform davinci_soc_platform;
+Index: linux-2.6.18/mvl_patches/pro50-2254.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2254.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2254);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

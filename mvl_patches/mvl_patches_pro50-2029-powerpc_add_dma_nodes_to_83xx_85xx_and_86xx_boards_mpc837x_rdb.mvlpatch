@@ -1,0 +1,408 @@
+#! /usr/bin/env bash
+# Patch: -powerpc_add_dma_nodes_to_83xx_85xx_and_86xx_boards_mpc837x_rdb
+# Date: Wed Dec 10 13:48:29 2008
+# Source: kernel.org
+# MR: 30590
+# Type: Enhancement
+# Disposition: backport from 2.6.27-rc1 (dee805532a30183c4462305b4614e58bd83a7bc1)
+# Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+# Description:
+# 
+# NOTE: only 837x_rdb changes taken.
+# 
+# commit dee805532a30183c4462305b4614e58bd83a7bc1
+# Author: Kumar Gala <galak@kernel.crashing.org>
+# Date:   Fri Jun 27 13:45:19 2008 -0500
+# 
+#     powerpc: Add dma nodes to 83xx, 85xx and 86xx boards
+#     
+#     Added DMA nodes for the elo/elo-plus DMA engines.
+#     
+#     Renamed the interrupt controller alias in mpc832x_rdb.dts to ipic so that
+#     its the same as all the other boards.
+#     
+#     Signed-off-by: Kumar Gala <galak@kernel.crashing.org>
+# 
+#  arch/powerpc/boot/dts/mpc8377_rdb.dts |   35 +++++++++++++++++++++++++++++++++
+#  arch/powerpc/boot/dts/mpc8378_rdb.dts |   35 +++++++++++++++++++++++++++++++++
+#  arch/powerpc/boot/dts/mpc8379_rdb.dts |   35 +++++++++++++++++++++++++++++++++
+#  3 files changed, 105 insertions(+), 0 deletions(-)
+# 
+# 
+
+PATCHNUM=2029
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 30590
+Type: Enhancement
+Disposition: backport from 2.6.27-rc1 (dee805532a30183c4462305b4614e58bd83a7bc1)
+Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+Description:
+
+NOTE: only 837x_rdb changes taken.
+
+commit dee805532a30183c4462305b4614e58bd83a7bc1
+Author: Kumar Gala <galak@kernel.crashing.org>
+Date:   Fri Jun 27 13:45:19 2008 -0500
+
+    powerpc: Add dma nodes to 83xx, 85xx and 86xx boards
+    
+    Added DMA nodes for the elo/elo-plus DMA engines.
+    
+    Renamed the interrupt controller alias in mpc832x_rdb.dts to ipic so that
+    its the same as all the other boards.
+    
+    Signed-off-by: Kumar Gala <galak@kernel.crashing.org>
+
+ arch/powerpc/boot/dts/mpc8377_rdb.dts |   35 ++++++++++++++++++++++++++++++++++
+ arch/powerpc/boot/dts/mpc8378_rdb.dts |   35 ++++++++++++++++++++++++++++++++++
+ arch/powerpc/boot/dts/mpc8379_rdb.dts |   35 ++++++++++++++++++++++++++++++++++
+ mvl_patches/pro50-2029.c              |   16 +++++++++++++++
+ 4 files changed, 121 insertions(+)
+
+
+Index: linux-2.6.18/arch/powerpc/boot/dts/mpc8377_rdb.dts
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/boot/dts/mpc8377_rdb.dts
++++ linux-2.6.18/arch/powerpc/boot/dts/mpc8377_rdb.dts
+@@ -170,6 +170,41 @@
+ 			mode = "cpu";
+ 		};
+ 
++		dma@82a8 {
++			#address-cells = <1>;
++			#size-cells = <1>;
++			compatible = "fsl,mpc8377-dma", "fsl,elo-dma";
++			reg = <0x82a8 4>;
++			ranges = <0 0x8100 0x1a8>;
++			interrupt-parent = <&ipic>;
++			interrupts = <71 8>;
++			cell-index = <0>;
++			dma-channel@0 {
++				compatible = "fsl,mpc8377-dma-channel", "fsl,elo-dma-channel";
++				reg = <0 0x80>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++			dma-channel@80 {
++				compatible = "fsl,mpc8377-dma-channel", "fsl,elo-dma-channel";
++				reg = <0x80 0x80>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++			dma-channel@100 {
++				compatible = "fsl,mpc8377-dma-channel", "fsl,elo-dma-channel";
++				reg = <0x100 0x80>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++			dma-channel@180 {
++				compatible = "fsl,mpc8377-dma-channel", "fsl,elo-dma-channel";
++				reg = <0x180 0x28>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++		};
++
+ 		usb@23000 {
+ 			compatible = "fsl-usb2-dr";
+ 			reg = <0x23000 0x1000>;
+Index: linux-2.6.18/arch/powerpc/boot/dts/mpc8378_rdb.dts
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/boot/dts/mpc8378_rdb.dts
++++ linux-2.6.18/arch/powerpc/boot/dts/mpc8378_rdb.dts
+@@ -170,6 +170,41 @@
+ 			mode = "cpu";
+ 		};
+ 
++		dma@82a8 {
++			#address-cells = <1>;
++			#size-cells = <1>;
++			compatible = "fsl,mpc8378-dma", "fsl,elo-dma";
++			reg = <0x82a8 4>;
++			ranges = <0 0x8100 0x1a8>;
++			interrupt-parent = <&ipic>;
++			interrupts = <71 8>;
++			cell-index = <0>;
++			dma-channel@0 {
++				compatible = "fsl,mpc8378-dma-channel", "fsl,elo-dma-channel";
++				reg = <0 0x80>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++			dma-channel@80 {
++				compatible = "fsl,mpc8378-dma-channel", "fsl,elo-dma-channel";
++				reg = <0x80 0x80>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++			dma-channel@100 {
++				compatible = "fsl,mpc8378-dma-channel", "fsl,elo-dma-channel";
++				reg = <0x100 0x80>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++			dma-channel@180 {
++				compatible = "fsl,mpc8378-dma-channel", "fsl,elo-dma-channel";
++				reg = <0x180 0x28>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++		};
++
+ 		usb@23000 {
+ 			compatible = "fsl-usb2-dr";
+ 			reg = <0x23000 0x1000>;
+Index: linux-2.6.18/arch/powerpc/boot/dts/mpc8379_rdb.dts
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/boot/dts/mpc8379_rdb.dts
++++ linux-2.6.18/arch/powerpc/boot/dts/mpc8379_rdb.dts
+@@ -170,6 +170,41 @@
+ 			mode = "cpu";
+ 		};
+ 
++		dma@82a8 {
++			#address-cells = <1>;
++			#size-cells = <1>;
++			compatible = "fsl,mpc8379-dma", "fsl,elo-dma";
++			reg = <0x82a8 4>;
++			ranges = <0 0x8100 0x1a8>;
++			interrupt-parent = <&ipic>;
++			interrupts = <71 8>;
++			cell-index = <0>;
++			dma-channel@0 {
++				compatible = "fsl,mpc8379-dma-channel", "fsl,elo-dma-channel";
++				reg = <0 0x80>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++			dma-channel@80 {
++				compatible = "fsl,mpc8379-dma-channel", "fsl,elo-dma-channel";
++				reg = <0x80 0x80>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++			dma-channel@100 {
++				compatible = "fsl,mpc8379-dma-channel", "fsl,elo-dma-channel";
++				reg = <0x100 0x80>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++			dma-channel@180 {
++				compatible = "fsl,mpc8379-dma-channel", "fsl,elo-dma-channel";
++				reg = <0x180 0x28>;
++				interrupt-parent = <&ipic>;
++				interrupts = <71 8>;
++			};
++		};
++
+ 		usb@23000 {
+ 			compatible = "fsl-usb2-dr";
+ 			reg = <0x23000 0x1000>;
+Index: linux-2.6.18/mvl_patches/pro50-2029.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2029.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2029);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

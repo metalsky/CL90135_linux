@@ -1,0 +1,450 @@
+#! /usr/bin/env bash
+# Patch: -IPV4_IPV6_Always_wait_for_IPSEC_SA_resolution_in_socket_contexts
+# Date: Thu Feb 19 15:13:20 2009
+# Source: kernel.org
+# MR: 31816
+# Type: Defect Fix
+# Disposition: backport
+# Signed-off-by: Tadashi Abe <tabe@mvista.com>
+# Description:
+# 
+# Commit: 8eb9086f21c73b38b5ca27558db4c91d62d0e70b
+# Author: David S. Miller <davem@sunset.davemloft.net>
+# Date:   Thu Feb 8 02:09:21 2007 -0800
+# 
+#     [IPV4/IPV6]: Always wait for IPSEC SA resolution in socket contexts.
+# 
+#     Do this even for non-blocking sockets.  This avoids the silly -EAGAIN
+#     that applications can see now, even for non-blocking sockets in some
+#     cases (f.e. connect()).
+# 
+#     With help from Venkat Tekkirala.
+# 
+#     Signed-off-by: David S. Miller <davem@davemloft.net>
+# 
+#  include/net/route.h |    5 +++--
+#  net/dccp/ipv4.c     |    2 +-
+#  net/dccp/ipv6.c     |    2 +-
+#  net/ipv4/af_inet.c  |    2 +-
+#  net/ipv4/datagram.c |    2 +-
+#  net/ipv4/raw.c      |    2 +-
+#  net/ipv4/tcp_ipv4.c |    2 +-
+#  net/ipv4/udp.c      |    2 +-
+#  net/ipv6/datagram.c |    2 +-
+#  net/ipv6/raw.c      |    2 +-
+#  net/ipv6/tcp_ipv6.c |    2 +-
+#  net/ipv6/udp.c      |    2 +-
+#  12 files changed, 14 insertions(+), 13 deletions(-)
+# 
+
+PATCHNUM=2279
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 31816
+Type: Defect Fix
+Disposition: backport
+Signed-off-by: Tadashi Abe <tabe@mvista.com>
+Description:
+
+Commit: 8eb9086f21c73b38b5ca27558db4c91d62d0e70b
+Author: David S. Miller <davem@sunset.davemloft.net>
+Date:   Thu Feb 8 02:09:21 2007 -0800
+
+    [IPV4/IPV6]: Always wait for IPSEC SA resolution in socket contexts.
+
+    Do this even for non-blocking sockets.  This avoids the silly -EAGAIN
+    that applications can see now, even for non-blocking sockets in some
+    cases (f.e. connect()).
+
+    With help from Venkat Tekkirala.
+
+    Signed-off-by: David S. Miller <davem@davemloft.net>
+
+ include/net/route.h      |    5 +++--
+ mvl_patches/pro50-2279.c |   16 ++++++++++++++++
+ net/dccp/ipv4.c          |    2 +-
+ net/dccp/ipv6.c          |    2 +-
+ net/ipv4/af_inet.c       |    2 +-
+ net/ipv4/datagram.c      |    2 +-
+ net/ipv4/raw.c           |    2 +-
+ net/ipv4/tcp_ipv4.c      |    2 +-
+ net/ipv4/udp.c           |    2 +-
+ net/ipv6/datagram.c      |    2 +-
+ net/ipv6/raw.c           |    2 +-
+ net/ipv6/tcp_ipv6.c      |    2 +-
+ net/ipv6/udp.c           |    2 +-
+ 13 files changed, 30 insertions(+), 13 deletions(-)
+
+Index: linux-2.6.18/include/net/route.h
+===================================================================
+--- linux-2.6.18.orig/include/net/route.h
++++ linux-2.6.18/include/net/route.h
+@@ -145,7 +145,8 @@ static inline char rt_tos2priority(u8 to
+ 
+ static inline int ip_route_connect(struct rtable **rp, u32 dst,
+ 				   u32 src, u32 tos, int oif, u8 protocol,
+-				   u16 sport, u16 dport, struct sock *sk)
++				   u16 sport, u16 dport, struct sock *sk,
++				   int flags)
+ {
+ 	struct flowi fl = { .oif = oif,
+ 			    .nl_u = { .ip4_u = { .daddr = dst,
+@@ -166,7 +167,7 @@ static inline int ip_route_connect(struc
+ 		ip_rt_put(*rp);
+ 		*rp = NULL;
+ 	}
+-	return ip_route_output_flow(rp, &fl, sk, 0);
++	return ip_route_output_flow(rp, &fl, sk, flags);
+ }
+ 
+ static inline int ip_route_newports(struct rtable **rp, u8 protocol,
+Index: linux-2.6.18/net/dccp/ipv4.c
+===================================================================
+--- linux-2.6.18.orig/net/dccp/ipv4.c
++++ linux-2.6.18/net/dccp/ipv4.c
+@@ -75,7 +75,7 @@ int dccp_v4_connect(struct sock *sk, str
+ 	tmp = ip_route_connect(&rt, nexthop, inet->saddr,
+ 			       RT_CONN_FLAGS(sk), sk->sk_bound_dev_if,
+ 			       IPPROTO_DCCP,
+-			       inet->sport, usin->sin_port, sk);
++			       inet->sport, usin->sin_port, sk, 1);
+ 	if (tmp < 0)
+ 		return tmp;
+ 
+Index: linux-2.6.18/net/dccp/ipv6.c
+===================================================================
+--- linux-2.6.18.orig/net/dccp/ipv6.c
++++ linux-2.6.18/net/dccp/ipv6.c
+@@ -217,7 +217,7 @@ static int dccp_v6_connect(struct sock *
+ 	if (final_p)
+ 		ipv6_addr_copy(&fl.fl6_dst, final_p);
+ 
+-	err = xfrm_lookup(&dst, &fl, sk, 0);
++	err = xfrm_lookup(&dst, &fl, sk, 1);
+ 	if (err < 0)
+ 		goto failure;
+ 
+Index: linux-2.6.18/net/ipv4/af_inet.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv4/af_inet.c
++++ linux-2.6.18/net/ipv4/af_inet.c
+@@ -1007,7 +1007,7 @@ static int inet_sk_reselect_saddr(struct
+ 			       RT_CONN_FLAGS(sk),
+ 			       sk->sk_bound_dev_if,
+ 			       sk->sk_protocol,
+-			       inet->sport, inet->dport, sk);
++			       inet->sport, inet->dport, sk, 0);
+ 	if (err)
+ 		return err;
+ 
+Index: linux-2.6.18/net/ipv4/datagram.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv4/datagram.c
++++ linux-2.6.18/net/ipv4/datagram.c
+@@ -49,7 +49,7 @@ int ip4_datagram_connect(struct sock *sk
+ 	err = ip_route_connect(&rt, usin->sin_addr.s_addr, saddr,
+ 			       RT_CONN_FLAGS(sk), oif,
+ 			       sk->sk_protocol,
+-			       inet->sport, usin->sin_port, sk);
++			       inet->sport, usin->sin_port, sk, 1);
+ 	if (err)
+ 		return err;
+ 	if ((rt->rt_flags & RTCF_BROADCAST) && !sock_flag(sk, SOCK_BROADCAST)) {
+Index: linux-2.6.18/net/ipv4/raw.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv4/raw.c
++++ linux-2.6.18/net/ipv4/raw.c
+@@ -484,7 +484,7 @@ static int raw_sendmsg(struct kiocb *ioc
+ 		if (!inet->hdrincl)
+ 			raw_probe_proto_opt(&fl, msg);
+ 
+-		err = ip_route_output_flow(&rt, &fl, sk, !(msg->msg_flags&MSG_DONTWAIT));
++		err = ip_route_output_flow(&rt, &fl, sk, 1);
+ 	}
+ 	if (err)
+ 		goto done;
+Index: linux-2.6.18/net/ipv4/tcp_ipv4.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv4/tcp_ipv4.c
++++ linux-2.6.18/net/ipv4/tcp_ipv4.c
+@@ -179,7 +179,7 @@ int tcp_v4_connect(struct sock *sk, stru
+ 	tmp = ip_route_connect(&rt, nexthop, inet->saddr,
+ 			       RT_CONN_FLAGS(sk), sk->sk_bound_dev_if,
+ 			       IPPROTO_TCP,
+-			       inet->sport, usin->sin_port, sk);
++			       inet->sport, usin->sin_port, sk, 1);
+ 	if (tmp < 0)
+ 		return tmp;
+ 
+Index: linux-2.6.18/net/ipv4/udp.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv4/udp.c
++++ linux-2.6.18/net/ipv4/udp.c
+@@ -603,7 +603,7 @@ int udp_sendmsg(struct kiocb *iocb, stru
+ 				    .uli_u = { .ports =
+ 					       { .sport = inet->sport,
+ 						 .dport = dport } } };
+-		err = ip_route_output_flow(&rt, &fl, sk, !(msg->msg_flags&MSG_DONTWAIT));
++		err = ip_route_output_flow(&rt, &fl, sk, 1);
+ 		if (err)
+ 			goto out;
+ 
+Index: linux-2.6.18/net/ipv6/datagram.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv6/datagram.c
++++ linux-2.6.18/net/ipv6/datagram.c
+@@ -178,7 +178,7 @@ ipv4_connected:
+ 		fl.flags |= FLOWI_FLAG_NOTROUTE;
+ 	}
+ 
+-	if ((err = xfrm_lookup(&dst, &fl, sk, 0)) < 0)
++	if ((err = xfrm_lookup(&dst, &fl, sk, 1)) < 0)
+ 		goto out;
+ 
+ 	/* source address lookup done in ip6_dst_lookup */
+Index: linux-2.6.18/net/ipv6/raw.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv6/raw.c
++++ linux-2.6.18/net/ipv6/raw.c
+@@ -839,7 +839,7 @@ static int rawv6_sendmsg(struct kiocb *i
+ 		fl.flags |= FLOWI_FLAG_NOTROUTE;
+ 	}
+ 
+-	if ((err = xfrm_lookup(&dst, &fl, sk, 0)) < 0)
++	if ((err = xfrm_lookup(&dst, &fl, sk, 1)) < 0)
+ 		goto out;
+ 
+ 	if (hlimit < 0) {
+Index: linux-2.6.18/net/ipv6/tcp_ipv6.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv6/tcp_ipv6.c
++++ linux-2.6.18/net/ipv6/tcp_ipv6.c
+@@ -259,7 +259,7 @@ static int tcp_v6_connect(struct sock *s
+ 		fl.flags |= FLOWI_FLAG_NOTROUTE;
+ 	}
+ 
+-	if ((err = xfrm_lookup(&dst, &fl, sk, 0)) < 0)
++	if ((err = xfrm_lookup(&dst, &fl, sk, 1)) < 0)
+ 		goto failure;
+ 
+ 	if (saddr == NULL) {
+Index: linux-2.6.18/net/ipv6/udp.c
+===================================================================
+--- linux-2.6.18.orig/net/ipv6/udp.c
++++ linux-2.6.18/net/ipv6/udp.c
+@@ -834,7 +834,7 @@ do_udp_sendmsg:
+  		fl.flags |= FLOWI_FLAG_NOTROUTE;
+  	}
+ 
+- 	if ((err = xfrm_lookup(&dst, &fl, sk, 0)) < 0)
++ 	if ((err = xfrm_lookup(&dst, &fl, sk, 1)) < 0)
+ 		goto out;
+ 
+ 	if (hlimit < 0) {
+Index: linux-2.6.18/mvl_patches/pro50-2279.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2279.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2279);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

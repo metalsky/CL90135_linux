@@ -1,0 +1,498 @@
+#! /usr/bin/env bash
+# Patch: -pro_ARM_OMAP_Add_MUSB_support_for_OMAP34xx
+# Date: Fri Sep 19 14:22:30 2008
+# From 50842312f02965d93c971ea2ae4b7f07a75cb7d8 Mon Sep 17 00:00:00 2001
+# From: Anand Gadiyar <gadiyar@ti.com>
+# Date: Mon, 17 Dec 2007 13:59:29 +0530
+# Subject: [PATCH] ARM: OMAP: Add MUSB support for OMAP34xx
+# 
+# MUSB support for OMAP34XX
+# This depends on the previous two patches:
+# [PATCH 1/3] Add support for USB on OMAP34XX
+# [PATCH 2/3] Add support for TWL4030 USB Transceiver on OMAP34xx
+# 
+# Signed-off-by: Anand Gadiyar <gadiyar@ti.com>
+# Signed-off-by: Vikram Pandita <vikram.pandita@ti.com>
+# Signed-off-by: Nishant Kamat <nskamat@ti.com>
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 86a84f02383e000d2958eacc883aadb8427651fc)
+
+PATCHNUM=1825
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 50842312f02965d93c971ea2ae4b7f07a75cb7d8 Mon Sep 17 00:00:00 2001
+From: Anand Gadiyar <gadiyar@ti.com>
+Date: Mon, 17 Dec 2007 13:59:29 +0530
+Subject: [PATCH] ARM: OMAP: Add MUSB support for OMAP34xx
+
+MUSB support for OMAP34XX
+This depends on the previous two patches:
+[PATCH 1/3] Add support for USB on OMAP34XX
+[PATCH 2/3] Add support for TWL4030 USB Transceiver on OMAP34xx
+
+Signed-off-by: Anand Gadiyar <gadiyar@ti.com>
+Signed-off-by: Vikram Pandita <vikram.pandita@ti.com>
+Signed-off-by: Nishant Kamat <nskamat@ti.com>
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 86a84f02383e000d2958eacc883aadb8427651fc)
+Index: linux-2.6.18/drivers/usb/musb/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/Makefile
++++ linux-2.6.18/drivers/usb/musb/Makefile
+@@ -18,6 +18,10 @@ ifeq ($(CONFIG_ARCH_OMAP2430),y)
+ 	musb_hdrc-objs	+= omap2430.o
+ endif
+ 
++ifeq ($(CONFIG_ARCH_OMAP3430),y)
++	musb_hdrc-objs	+= omap2430.o
++endif
++
+ ifeq ($(CONFIG_USB_GADGET_MUSB_HDRC),y)
+ 	musb_hdrc-objs		+= musb_gadget_ep0.o musb_gadget.o
+ endif
+Index: linux-2.6.18/drivers/usb/musb/musb_core.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.c
++++ linux-2.6.18/drivers/usb/musb/musb_core.c
+@@ -991,7 +991,8 @@ static void musb_shutdown(struct platfor
+ #define	can_dynfifo()	0
+ #endif
+ 
+-#ifdef CONFIG_USB_TUSB6010
++#if defined(CONFIG_USB_TUSB6010) || \
++	defined(CONFIG_ARCH_OMAP2430) || defined(CONFIG_ARCH_OMAP34XX)
+ static ushort __initdata fifo_mode = 4;
+ #else
+ static ushort __initdata fifo_mode = 2;
+Index: linux-2.6.18/drivers/usb/musb/musb_core.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_core.h
++++ linux-2.6.18/drivers/usb/musb/musb_core.h
+@@ -476,12 +476,17 @@ extern void musb_platform_disable(struct
+ 
+ extern void musb_hnp_stop(struct musb *musb);
+ 
+-#ifdef CONFIG_USB_TUSB6010
++#if defined(CONFIG_USB_TUSB6010) || \
++	defined(CONFIG_ARCH_OMAP2430) || defined(CONFIG_ARCH_OMAP34XX)
+ extern void musb_platform_try_idle(struct musb *musb, unsigned long timeout);
++#else
++#define musb_platform_try_idle(x, y)		do {} while (0)
++#endif
++
++#ifdef CONFIG_USB_TUSB6010
+ extern int musb_platform_get_vbus_status(struct musb *musb);
+ extern void musb_platform_set_mode(struct musb *musb, u8 musb_mode);
+ #else
+-#define musb_platform_try_idle(x, y)		do {} while (0)
+ #define musb_platform_get_vbus_status(x)	0
+ #define musb_platform_set_mode(x, y)		do {} while (0)
+ #endif
+Index: linux-2.6.18/drivers/usb/musb/omap2430.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/omap2430.c
++++ linux-2.6.18/drivers/usb/musb/omap2430.c
+@@ -1,5 +1,10 @@
+ /*
+- * Copyright (C) 2005-2006 by Texas Instruments
++ * Copyright (C) 2005-2007 by Texas Instruments
++ * Some code has been taken from tusb6010.c
++ * Copyrights for that are attributable to:
++ * Copyright (C) 2006 Nokia Corporation
++ * Jarkko Nikula <jarkko.nikula@nokia.com>
++ * Tony Lindgren <tony@atomide.com>
+  *
+  * This file is part of the Inventra Controller Driver for Linux.
+  *
+@@ -40,6 +45,100 @@
+ #define	get_cpu_rev()	2
+ #endif
+ 
++#define MUSB_TIMEOUT_A_WAIT_BCON	1100
++
++static struct timer_list musb_idle_timer;
++
++static void musb_do_idle(unsigned long _musb)
++{
++	struct musb	*musb = (void *)_musb;
++	unsigned long	flags;
++	u8	power;
++	u8	devctl;
++
++	devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
++
++	spin_lock_irqsave(&musb->lock, flags);
++
++	switch (musb->xceiv.state) {
++	case OTG_STATE_A_WAIT_BCON:
++		devctl &= ~MUSB_DEVCTL_SESSION;
++		musb_writeb(musb->mregs, MUSB_DEVCTL, devctl);
++
++		devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
++		if (devctl & MUSB_DEVCTL_BDEVICE) {
++			musb->xceiv.state = OTG_STATE_B_IDLE;
++			MUSB_DEV_MODE(musb);
++		} else {
++			musb->xceiv.state = OTG_STATE_A_IDLE;
++			MUSB_HST_MODE(musb);
++		}
++		break;
++#ifdef CONFIG_USB_MUSB_HDRC_HCD
++	case OTG_STATE_A_SUSPEND:
++		/* finish RESUME signaling? */
++		if (musb->port1_status & MUSB_PORT_STAT_RESUME) {
++			power = musb_readb(musb->mregs, MUSB_POWER);
++			power &= ~MUSB_POWER_RESUME;
++			DBG(1, "root port resume stopped, power %02x\n", power);
++			musb_writeb(musb->mregs, MUSB_POWER, power);
++			musb->is_active = 1;
++			musb->port1_status &= ~(USB_PORT_STAT_SUSPEND
++						| MUSB_PORT_STAT_RESUME);
++			musb->port1_status |= USB_PORT_STAT_C_SUSPEND << 16;
++			usb_hcd_poll_rh_status(musb_to_hcd(musb));
++			/* NOTE: it might really be A_WAIT_BCON ... */
++			musb->xceiv.state = OTG_STATE_A_HOST;
++		}
++		break;
++#endif
++#ifdef CONFIG_USB_MUSB_HDRC_HCD
++	case OTG_STATE_A_HOST:
++		devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
++		if (devctl &  MUSB_DEVCTL_BDEVICE)
++			musb->xceiv.state = OTG_STATE_B_IDLE;
++		else
++			musb->xceiv.state = OTG_STATE_A_WAIT_BCON;
++#endif
++	default:
++		break;
++	}
++	spin_unlock_irqrestore(&musb->lock, flags);
++}
++
++
++void musb_platform_try_idle(struct musb *musb, unsigned long timeout)
++{
++	unsigned long		default_timeout = jiffies + msecs_to_jiffies(3);
++	static unsigned long	last_timer;
++
++	if (timeout == 0)
++		timeout = default_timeout;
++
++	/* Never idle if active, or when VBUS timeout is not set as host */
++	if (musb->is_active || ((musb->a_wait_bcon == 0)
++			&& (musb->xceiv.state == OTG_STATE_A_WAIT_BCON))) {
++		DBG(4, "%s active, deleting timer\n", otg_state_string(musb));
++		del_timer(&musb_idle_timer);
++		last_timer = jiffies;
++		return;
++	}
++
++	if (time_after(last_timer, timeout)) {
++		if (!timer_pending(&musb_idle_timer))
++			last_timer = timeout;
++		else {
++			DBG(4, "Longer idle timer already pending, ignoring\n");
++			return;
++		}
++	}
++	last_timer = timeout;
++
++	DBG(4, "%s inactive, for idle timer for %lu ms\n",
++		otg_state_string(musb),
++		(unsigned long)jiffies_to_msecs(timeout - jiffies));
++	mod_timer(&musb_idle_timer, timeout);
++}
+ 
+ void musb_platform_enable(struct musb *musb)
+ {
+@@ -93,6 +192,15 @@ static int omap_set_power(struct otg_tra
+ 	return 0;
+ }
+ 
++static int omap_set_suspend(struct otg_transceiver *x, int suspend)
++{
++	if (suspend)
++		twl4030_phy_suspend(1);
++	else
++		twl4030_phy_resume();
++	return 0;
++}
++
+ int musb_platform_resume(struct musb *musb);
+ 
+ int __init musb_platform_init(struct musb *musb)
+@@ -102,11 +210,12 @@ int __init musb_platform_init(struct mus
+ 	/* get the clock */
+ 	musb->clock = clk_get((struct device *)musb->controller, "usbhs_ick");
+ #else
+-	musb->clock = clk_get((struct device *)musb->controller, "hsusb_ick");
++	musb->clock = clk_get((struct device *)musb->controller, "hsotgusb_ick");
+ #endif
+ 	if(IS_ERR(musb->clock))
+ 		return PTR_ERR(musb->clock);
+ 
++	musb->xceiv.set_suspend = omap_set_suspend;
+ 	musb_platform_resume(musb);
+ 
+ 	OTG_INTERFSEL_REG |= ULPI_12PIN;
+@@ -123,6 +232,9 @@ int __init musb_platform_init(struct mus
+ 		musb->board_set_vbus = omap_set_vbus;
+ 	if (is_peripheral_enabled(musb))
+ 		musb->xceiv.set_power = omap_set_power;
++	musb->a_wait_bcon = MUSB_TIMEOUT_A_WAIT_BCON;
++
++	setup_timer(&musb_idle_timer, musb_do_idle, (unsigned long) musb);
+ 
+ 	return 0;
+ }
+@@ -137,6 +249,7 @@ int musb_platform_suspend(struct musb *m
+ 	OTG_FORCESTDBY_REG |= ENABLEFORCE; /* enable MSTANDBY */
+ 	OTG_SYSCONFIG_REG |= AUTOIDLE;		/* enable auto idle */
+ 
++	musb->xceiv.set_suspend(&musb->xceiv, 1);
+ 	clk_disable(musb->clock);
+ 	return 0;
+ }
+@@ -144,6 +257,7 @@ int musb_platform_suspend(struct musb *m
+ int musb_platform_resume(struct musb *musb)
+ {
+ 	clk_enable(musb->clock);
++	musb->xceiv.set_suspend(&musb->xceiv, 0);
+ 
+ 	OTG_FORCESTDBY_REG &= ~ENABLEFORCE; /* disable MSTANDBY */
+ 	OTG_SYSCONFIG_REG |= SMARTSTDBY;	/* enable smart standby */
+Index: linux-2.6.18/drivers/usb/musb/omap2430.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/omap2430.h
++++ linux-2.6.18/drivers/usb/musb/omap2430.h
+@@ -13,6 +13,15 @@
+ #if defined(CONFIG_ARCH_OMAP2430) || defined(CONFIG_ARCH_OMAP3430)
+ #include <asm/arch/hardware.h>
+ #include <asm/arch/usb.h>
++
++#if defined(CONFIG_TWL4030_USB_HS_ULPI)
++extern void twl4030_phy_suspend(int controller_off);
++extern void twl4030_phy_resume(void);
++#else
++#define twl4030_phy_suspend(x)		do {} while (0)
++#define twl4030_phy_resume()		do {} while (0)
++#endif
++
+ /*
+  * OMAP2430-specific definitions
+  */
+@@ -21,7 +30,7 @@
+ #if	defined(CONFIG_ARCH_OMAP2430)
+ #define	OMAP_HSOTG_BASE		(OMAP243X_HS_BASE)
+ #elif	defined(CONFIG_ARCH_OMAP3430)
+-#define	OMAP_HSOTG_BASE		(HS_BASE)
++#define	OMAP_HSOTG_BASE		(OMAP34XX_HSUSB_OTG_BASE)
+ #endif
+ #define OMAP_HSOTG(offset)	__REG32(OMAP_HSOTG_BASE + 0x400 + (offset))
+ #define OTG_REVISION_REG	OMAP_HSOTG(0x0)
+Index: linux-2.6.18/mvl_patches/pro50-1825.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1825.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1825);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

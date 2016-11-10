@@ -1,0 +1,1445 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_ths8200_encoder
+# Date: Fri Sep 19 14:01:17 2008
+# Source: MontaVista Software, Inc.
+# MR: 28149
+# Type: Integration
+# Disposition: merged from pro_40
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description: DaVinci ths8200 encoder support.
+# 
+#  arch/arm/mach-davinci/board-dm355-evm.c        |    1 
+#  drivers/media/video/Kconfig                    |    8 
+#  drivers/media/video/davinci/Makefile           |    2 
+#  drivers/media/video/davinci/davinci_enc_mngr.c |    2 
+#  drivers/media/video/davinci/ths8200_encoder.c  |  807 +++++++++++++++++++++++++
+#  include/media/davinci/ths8200_encoder.h        |  326 ++++++++++
+#  6 files changed, 1145 insertions(+), 1 deletion(-)
+# 
+
+PATCHNUM=1583
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28149
+Type: Integration
+Disposition: merged from pro_40
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description: DaVinci ths8200 encoder support.
+
+ arch/arm/mach-davinci/board-dm355-evm.c        |    1 
+ drivers/media/video/Kconfig                    |    8 
+ drivers/media/video/davinci/Makefile           |    2 
+ drivers/media/video/davinci/davinci_enc_mngr.c |    2 
+ drivers/media/video/davinci/ths8200_encoder.c  |  807 +++++++++++++++++++++++++
+ include/media/davinci/ths8200_encoder.h        |  326 ++++++++++
+ mvl_patches/pro50-1583.c                       |   16 
+ 7 files changed, 1161 insertions(+), 1 deletion(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm355-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+@@ -531,6 +531,7 @@ static void __init davinci_map_io(void)
+ 	davinci_init_common_hw();
+ 
+ #ifdef CONFIG_KGDB_8250
++#define kgdb8250_ttyS 0
+ 	early_serial_setup((struct uart_port *)
+ 			&serial_platform_data[kgdb8250_ttyS]);
+ 	kgdb8250_add_platform_port(kgdb8250_ttyS,
+Index: linux-2.6.18/drivers/media/video/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/Kconfig
++++ linux-2.6.18/drivers/media/video/Kconfig
+@@ -573,6 +573,14 @@ config DISPLAY_DAVINCIHD
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called vpfe.
+ 
++config DAVINCI_THS8200_ENCODER
++	tristate "THS8200 Encoder support"
++	depends on DAVINCI_ENC_MNGR && (FB_DAVINCI || VIDEO_DAVINCI_DISPLAY)
++	default y
++	help
++	  Enable support for THS8200 encoder. This daughter card is used to
++	  output HD resolution outputs:- 720P and 1080i.
++
+ config VIDEO_ADV7343
+ 	tristate "ADV7343 video encoder"
+ 	depends on I2C && MACH_DAVINCI_DM6467_EVM && DISPLAY_DAVINCIHD && DAVINCI_ENC_MNGR
+Index: linux-2.6.18/drivers/media/video/davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/Makefile
++++ linux-2.6.18/drivers/media/video/davinci/Makefile
+@@ -16,6 +16,8 @@ obj-$(CONFIG_DAVINCI_OSD) += davinci_osd
+ 
+ # Encoder Manager and Encoders
+ obj-$(CONFIG_DAVINCI_ENC_MNGR)  += davinci_enc_mngr.o
++obj-$(CONFIG_DAVINCI_THS8200_ENCODER) += ths8200_encoder.o
++
+ obj-$(CONFIG_VIDEO_DAVINCI_DISPLAY) += davinci_display.o
+ 
+ # DaVinci HD
+Index: linux-2.6.18/drivers/media/video/davinci/davinci_enc_mngr.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/davinci_enc_mngr.c
++++ linux-2.6.18/drivers/media/video/davinci/davinci_enc_mngr.c
+@@ -869,8 +869,8 @@ int vid_enc_register_encoder(struct vid_
+ 	/* we'd assume only std mode being reqeusted from bootargs */
+ 	mode_info.name = enc_def->mode;
+ 	mode_info.std = 1;
+-
+ 	if (mgr->num_encoders == 0) {
++
+ 		/* set default for the first encoder */
+ 		err = encoder->initialize(encoder, VID_ENC_FULL_INIT_FLAG);
+ 
+Index: linux-2.6.18/drivers/media/video/davinci/ths8200_encoder.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/ths8200_encoder.c
+@@ -0,0 +1,807 @@
++/*
++ * Copyright (C) 2007 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* ths8200_encoder.c */
++
++/* Kernel Specific header files */
++#include <linux/kernel.h>
++#include <linux/config.h>
++#include <linux/init.h>
++#include <linux/ctype.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/delay.h>
++#include <media/davinci/ths8200_encoder.h>
++
++/* Function prototypes */
++static int ths8200_initialize(struct vid_encoder_device *enc, int flag);
++static int ths8200_deinitialize(struct vid_encoder_device *enc);
++
++static int ths8200_setmode(struct vid_enc_mode_info *mode_info,
++			   struct vid_encoder_device *enc);
++static int ths8200_getmode(struct vid_enc_mode_info *mode_info,
++			   struct vid_encoder_device *enc);
++
++static int ths8200_setoutput(char *output, struct vid_encoder_device *enc);
++static int ths8200_getoutput(char *output, struct vid_encoder_device *enc);
++static int ths8200_enumoutput(int index,
++			      char *output, struct vid_encoder_device *enc);
++
++static int ths8200_i2c_read_reg(struct i2c_client *client, u8 reg, u8 * val);
++static int ths8200_i2c_write_reg(struct i2c_client *client, u8 reg, u8 val);
++
++/* i2c function prototypes */
++static int ths8200_i2c_attach_client(struct i2c_client *,
++				     struct i2c_driver *,
++				     struct i2c_adapter *, int);
++static int ths8200_i2c_detach_client(struct i2c_client *);
++static int ths8200_i2c_probe_adapter(struct i2c_adapter *);
++static int ths8200_init(void);
++static void ths8200_cleanup(void);
++static int ths8200_soft_reset(struct vid_encoder_device *enc);
++static int ths8200_encoder_enable(int flag, struct vid_encoder_device *enc);
++
++static struct vid_enc_mode_info
++    ths8200_component_standards[THS8200_COMPONENT_NUM_STD] = {
++	{
++	 .name = VID_ENC_STD_720P_60,
++	 .std = 1,
++	 .if_type = VID_ENC_IF_YCC16,	/* TBD */
++	 .interlaced = 0,
++	 .xres = 1280,
++	 .yres = 720,
++	 .fps = {60, 1},
++	 .left_margin = 300,
++	 .right_margin = 70,
++	 .upper_margin = 26,
++	 .lower_margin = 3,
++	 .hsync_len = 80,
++	 .vsync_len = 5,
++	 .flags = 0},
++	{
++	 .name = VID_ENC_STD_1080I_30,
++	 .std = 1,
++	 .if_type = VID_ENC_IF_YCC16,	/* TBD */
++	 .interlaced = 1,
++	 .xres = 1920,
++	 .yres = 1080,
++	 .fps = {30, 1},
++	 .left_margin = 200,
++	 .right_margin = 80,
++	 .upper_margin = 13,
++	 .lower_margin = 31,
++	 .hsync_len = 88,
++	 .vsync_len = 5,
++	 .flags = 0},
++};
++
++#define THS8200_MAX_REGISTERS 40
++static struct ths8200_std_info
++    ths8200_component_std_info[THS8200_COMPONENT_NUM_STD][THS8200_MAX_REGISTERS]
++    = {
++	{
++	 {THS8200_DTG2_CNTL, THS8200_DTG2_CNTL_720P_DEFAULT},
++	 {THS8200_DTG1_SPEC_A, THS8200_DTG1_SPEC_A_720P_DEFAULT},
++	 {THS8200_DTG1_SPEC_B, THS8200_DTG1_SPEC_B_720P_DEFAULT},
++	 {THS8200_DTG1_SPEC_C, THS8200_DTG1_SPEC_C_720P_DEFAULT},
++	 {THS8200_DTG1_SPEC_D_LSB, THS8200_DTG1_SPEC_D_LSB_720P_DEFAULT},
++	 {THS8200_DTG1_SPEC_E_LSB, THS8200_DTG1_SPEC_E_LSB_720P_DEFAULT},
++	 {THS8200_DTG1_SPEC_DEH_MSB, THS8200_DTG1_SPEC_DEH_MSB_720P_DEFAULT},
++	 {THS8200_DTG1_SPEC_K_LSB, THS8200_DTG1_SPEC_K_LSB_720P_DEFAULT},
++	 {THS8200_DTG1_TOT_PIXELS_MSB,
++	  THS8200_DTG1_TOT_PIXELS_MSB_720P_DEFAULT},
++	 {THS8200_DTG1_TOT_PIXELS_LSB,
++	  THS8200_DTG1_TOT_PIXELS_LSB_720P_DEFAULT},
++	 {THS8200_DTG1_MODE, THS8200_DTG1_MODE_720P_DEFAULT},
++	 {THS8200_DTG1_FRAME_FIELD_SZ_MSB,
++	  THS8200_DTG1_FRAME_FIELD_SZ_MSB_720P_DEFAULT},
++	 {THS8200_DTG1_FRAME_SZ_LSB, THS8200_DTG1_FRAME_SZ_LSB_720P_DEFAULT},
++	 {THS8200_DTG1_FIELD_SZ_LSB, THS8200_DTG1_FIELD_SZ_LSB_720P_DEFAULT},
++	 {THS8200_DTG2_HS_IN_DLY_LSB, THS8200_DTG2_HS_IN_DLY_LSB_720P_DEFAULT},
++	 {THS8200_DTG2_VS_IN_DLY_MSB, THS8200_DTG2_VS_IN_DLY_MSB_720P_DEFAULT},
++	 {THS8200_DTG2_VS_IN_DLY_LSB, THS8200_DTG2_VS_IN_DLY_LSB_720P_DEFAULT},
++	 {0, 0},
++	 },
++	{
++	 {THS8200_TST_CNTL1, THS8200_TST_CNTL1_1080I_DEFAULT},
++	 {THS8200_TST_CNTL2, THS8200_TST_CNTL2_1080I_DEFAULT},
++	 {THS8200_CSM_GY_CNTL_MULT_MSB,
++	  THS8200_CSM_GY_CNTL_MULT_MSB_1080I_DEFAULT},
++	 {THS8200_DTG2_CNTL, THS8200_DTG2_CNTL_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_A, THS8200_DTG1_SPEC_A_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_B, THS8200_DTG1_SPEC_B_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_C, THS8200_DTG1_SPEC_C_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_D1, THS8200_DTG1_SPEC_D1_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_D_LSB, THS8200_DTG1_SPEC_D_LSB_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_E_LSB, THS8200_DTG1_SPEC_E_LSB_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_DEH_MSB, THS8200_DTG1_SPEC_DEH_MSB_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_K_LSB, THS8200_DTG1_SPEC_K_LSB_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_G_LSB, THS8200_DTG1_SPEC_G_LSB_1080I_DEFAULT},
++	 {THS8200_DTG1_SPEC_G_MSB, THS8200_DTG1_SPEC_G_MSB_1080I_DEFAULT},
++	 {THS8200_DTG1_TOT_PIXELS_MSB,
++	  THS8200_DTG1_TOT_PIXELS_MSB_1080I_DEFAULT},
++	 {THS8200_DTG1_TOT_PIXELS_LSB,
++	  THS8200_DTG1_TOT_PIXELS_LSB_1080I_DEFAULT},
++	 {THS8200_DTG1_MODE, THS8200_DTG1_MODE_1080I_DEFAULT},
++	 {THS8200_DTG1_FRAME_FIELD_SZ_MSB,
++	  THS8200_DTG1_FRAME_FIELD_SZ_MSB_1080I_DEFAULT},
++	 {THS8200_DTG1_FRAME_SZ_LSB, THS8200_DTG1_FRAME_SZ_LSB_1080I_DEFAULT},
++	 {THS8200_DTG1_FIELD_SZ_LSB, THS8200_DTG1_FIELD_SZ_LSB_1080I_DEFAULT},
++	 {THS8200_DTG2_HLENGTH_LSB, THS8200_DTG2_HLENGTH_LSB_1080I_DEFAULT},
++	 {THS8200_DTG2_HLENGTH_LSB_HDLY_MSB,
++	  THS8200_DTG2_HLENGTH_LSB_HDLY_MSB_1080I_DEFAULT},
++	 {THS8200_DTG2_HLENGTH_HDLY_LSB,
++	  THS8200_DTG2_HLENGTH_HDLY_LSB_1080I_DEFAULT},
++	 {THS8200_DTG2_VLENGTH1_LSB, THS8200_DTG2_VLENGTH1_LSB_1080I_DEFAULT},
++	 {THS8200_DTG2_VLENGTH1_MSB_VDLY1_MSB,
++	  THS8200_DTG2_VLENGTH1_MSB_VDLY1_MSB_1080I_DEFAULT},
++	 {THS8200_DTG2_VDLY1_LSB, THS8200_DTG2_VDLY1_LSB_1080I_DEFAULT},
++	 {THS8200_DTG2_VLENGTH2_LSB, THS8200_DTG2_VLENGTH2_LSB_1080I_DEFAULT},
++	 {THS8200_DTG2_VDLY2_LSB, THS8200_DTG2_VDLY2_LSB_1080I_DEFAULT},
++	 {THS8200_DTG2_VLENGTH2_MSB_VDLY2_MSB,
++	  THS8200_DTG2_VLENGTH2_MSB_VDLY2_MSB_1080I_DEFAULT},
++	 {THS8200_DTG2_VDLY1_LSB, THS8200_DTG2_VDLY1_LSB_1080I_DEFAULT},
++	 {THS8200_DTG2_HS_IN_DLY_LSB, THS8200_DTG2_HS_IN_DLY_LSB_1080I_DEFAULT},
++	 {THS8200_DTG2_VS_IN_DLY_MSB, THS8200_DTG2_VS_IN_DLY_MSB_1080I_DEFAULT},
++	 {THS8200_DTG2_VS_IN_DLY_LSB, THS8200_DTG2_VS_IN_DLY_LSB_1080I_DEFAULT},
++	 {0, 0}
++	 }
++};
++
++static struct ths8200_config ths8200_configuration = {
++	.no_of_outputs = THS8200_MAX_NO_OUTPUTS,
++	.output[0] = {
++		      .output_name = VID_ENC_OUTPUT_COMPONENT1,
++		      .no_of_standard = THS8200_COMPONENT_NUM_STD,
++		      .standards = {VID_ENC_STD_720P_60, VID_ENC_STD_1080I_30},
++		      .std_info = (struct ths8200_std_info *)
++		      &ths8200_component_std_info,
++		      },
++};
++
++static struct ths8200_channel ths8200_channel_info = {
++	.params.outindex = 0,
++	.params.mode = VID_ENC_STD_720P_60,
++	.i2c_dev.clients[0] = {
++			       .i2c_addr = THS8200_I2C_ADDR},
++	.i2c_dev.clients[1] = {
++			       .i2c_addr = CDCE_I2C_ADDR},
++	.i2c_dev.clients[2] = {
++			       .i2c_addr = THS7303_I2C_ADDR0},
++	.i2c_dev.i2c_registration = 0,
++	.enc_device = NULL
++};
++
++/* Global variables */
++static struct device *ths8200_i2c_dev;
++
++static struct vid_enc_output_ops ths8200_outputs_ops = {
++	.count = THS8200_MAX_NO_OUTPUTS,
++	.enumoutput = ths8200_enumoutput,
++	.setoutput = ths8200_setoutput,
++	.getoutput = ths8200_getoutput
++};
++static struct vid_enc_mode_ops ths8200_modes_ops = {
++	.setmode = ths8200_setmode,
++	.getmode = ths8200_getmode,
++};
++
++static struct vid_enc_misc_ops ths8200_miscs_ops = {
++	.reset = ths8200_soft_reset,
++	.enable = ths8200_encoder_enable,
++};
++
++static struct vid_encoder_device ths8200_dev = {
++	.name = "THS8200_ENCODER",
++	.channel_id = 0,
++	.capabilities = 0,
++	.initialize = ths8200_initialize,
++	.mode_ops = &ths8200_modes_ops,
++	.ctrl_ops = NULL,
++	.output_ops = &ths8200_outputs_ops,
++	.params_ops = NULL,
++	.misc_ops = &ths8200_miscs_ops,
++	.deinitialize = ths8200_deinitialize
++};
++
++static int ths8200_encoder_enable(int flag, struct vid_encoder_device *enc)
++{
++
++	struct i2c_client *client;
++	int err = 0;
++	u8 val;
++
++	client = &ths8200_channel_info.i2c_dev.clients[THS8200].client;
++	err |= ths8200_i2c_read_reg(client, THS8200_CHIP_CTL, &val);
++	if (err < 0) {
++		dev_err(ths8200_i2c_dev,
++			"Error reading i2c register 0x%x\n", THS8200_CHIP_CTL);
++		return -1;
++	}
++	if (flag) {
++		/* power down the dac */
++		val = (val & 0xf7);
++		err |= ths8200_i2c_write_reg(client, THS8200_CHIP_CTL, val);
++	} else {
++		val |= 0x8;
++		err |= ths8200_i2c_write_reg(client, THS8200_CHIP_CTL, val);
++	}
++	if (err < 0) {
++		dev_err(ths8200_i2c_dev, "Error in writing to register 0x%x\n",
++			THS8200_CHIP_CTL);
++		return -1;
++	}
++	return 0;
++}
++
++static int ths8200_soft_reset(struct vid_encoder_device *enc)
++{
++
++	struct i2c_client *client;
++	int err = 0;
++	u8 val;
++
++	client = &ths8200_channel_info.i2c_dev.clients[THS8200].client;
++	err |= ths8200_i2c_read_reg(client, THS8200_CHIP_CTL, &val);
++	dev_info(ths8200_i2c_dev, "Resetting THS8200 card\n");
++	/* reset consists of toggling the reset bit from low to high */
++
++	val &= 0xfe;
++	err |= ths8200_i2c_write_reg(&ths8200_channel_info.i2c_dev.
++				     clients[THS8200].client, THS8200_CHIP_CTL,
++				     val);
++	val |= 0x1;
++	err |= ths8200_i2c_write_reg(&ths8200_channel_info.i2c_dev.
++				     clients[THS8200].client, THS8200_CHIP_CTL,
++				     val);
++
++	return err;
++}
++
++/* This function is called by the vpif driver to initialize ADV7343 driver.
++ * It initializes all registers of ths8200 with the default values
++ */
++static int ths8200_initialize(struct vid_encoder_device *enc, int flag)
++{
++	int err = 0;
++	char *std, *output;
++	int outindex;
++	struct i2c_client *ch_client;
++
++	dev_dbg(ths8200_i2c_dev, "ths8200_initialize\n");
++	if (NULL == enc) {
++		dev_err(ths8200_i2c_dev, "NULL Pointer\n");
++		return -EINVAL;
++	}
++
++	/* Register THS8200 I2C client */
++	err = i2c_add_driver(&ths8200_channel_info.i2c_dev.driver);
++	if (err) {
++		dev_err(ths8200_i2c_dev,
++			"Failed to register THS8200 I2C client.\n");
++		return -EINVAL;
++	}
++	ths8200_channel_info.i2c_dev.i2c_registration |= 1;
++	ths8200_channel_info.enc_device = enc;
++
++	dev_dbg(ths8200_i2c_dev, "THS8200 driver registered\n");
++	/* Following sets default values to the THS8200 registers */
++	err = ths8200_soft_reset(enc);
++
++	/* Program the clock to output 74.25MHz to VPBE ext clock in */
++	ch_client =
++	    &ths8200_channel_info.i2c_dev.clients[CDCE_CLK_SYNTH].client;
++	err |= ths8200_i2c_write_reg(ch_client, 0x16, 0x4);
++	err |= ths8200_i2c_write_reg(ch_client, 0x03, 2);
++	err |= ths8200_i2c_write_reg(ch_client, 0x18, 2);
++	err |= ths8200_i2c_write_reg(ch_client, 0x19, 0xc0);
++	err |= ths8200_i2c_write_reg(ch_client, 0x1a, 2);
++	err |= ths8200_i2c_write_reg(ch_client, 0x1b, 0xc8);
++	err |= ths8200_i2c_write_reg(ch_client, 0x14, 0x6f);
++	if (err < 0) {
++		err = -EINVAL;
++		dev_err(ths8200_i2c_dev,
++			"Failed to Program CDCE Clock Synthesiser\n");
++		ths8200_deinitialize(enc);
++		return -EINVAL;
++	}
++
++	msleep(2000);
++
++	ch_client =
++	    &ths8200_channel_info.i2c_dev.clients[THS7303_VIDEO_BUFFER].client;
++
++	/* Configure the 7303 video buffer to enable output with HD LPF */
++	err |=
++	    ths8200_i2c_write_reg(ch_client, THS7303_CHANNEL_1,
++				  THS7303_DEFAULT_CHANNEL_VAL);
++	err |=
++	    ths8200_i2c_write_reg(ch_client, THS7303_CHANNEL_2,
++				  THS7303_DEFAULT_CHANNEL_VAL);
++	err |=
++	    ths8200_i2c_write_reg(ch_client, THS7303_CHANNEL_3,
++				  THS7303_DEFAULT_CHANNEL_VAL);
++
++	if (err < 0) {
++		err = -EINVAL;
++		dev_err(ths8200_i2c_dev, "Error in init code, quitting...\n");
++		ths8200_deinitialize(enc);
++		return err;
++	} else {
++		/* Configure for default video standard */
++		/* call set standard */
++		std = ths8200_channel_info.params.mode;
++		outindex = ths8200_channel_info.params.outindex;
++		output = ths8200_configuration.output[outindex].output_name;
++		err |= ths8200_setoutput(output, enc);
++		if (err < 0) {
++			dev_err(ths8200_i2c_dev,
++				"Error in init code, quitting...\n");
++			err = -EINVAL;
++			ths8200_deinitialize(enc);
++			return err;
++		}
++	}
++	dev_dbg(ths8200_i2c_dev, "ths8200 initialized ...\n");
++	ths8200_channel_info.i2c_dev.i2c_registration |= 2;
++	dev_dbg(ths8200_i2c_dev, "</ths8200_initialize>\n");
++	return err;
++}
++
++static int ths8200_deinitialize(struct vid_encoder_device *enc)
++{
++	int i;
++	if (NULL == enc) {
++		dev_err(ths8200_i2c_dev, "NULL Pointer\n");
++		return -EINVAL;
++	}
++	dev_dbg(ths8200_i2c_dev, "ths8200 ch deinitialization \
++		 called\n");
++
++	if (ths8200_channel_info.i2c_dev.i2c_registration & 0x01) {
++		i2c_del_driver(&ths8200_channel_info.i2c_dev.driver);
++		for (i = 0; i < THS8200_MAX_I2C_DEVICES; i++) {
++			ths8200_channel_info.i2c_dev.clients[i].client.adapter =
++			    NULL;
++		}
++		ths8200_channel_info.i2c_dev.i2c_registration &= ~(0x01);
++		ths8200_channel_info.enc_device = NULL;
++	}
++	return 0;
++}
++
++/* Following function is used to set the standard */
++static int ths8200_setmode(struct vid_enc_mode_info *mode_info,
++			   struct vid_encoder_device *enc)
++{
++	int err = 0, outindex, i, std_index;
++	struct i2c_client *ch_client;
++	char *mode;
++	u8 reg, val;
++
++	if ((NULL == enc) || (NULL == mode_info)) {
++		dev_err(ths8200_i2c_dev, "NULL Pointer\n");
++		return -EINVAL;
++	}
++
++	mode = mode_info->name;
++	if (NULL == mode) {
++		dev_err(ths8200_i2c_dev, "NULL Pointer\n");
++		return -EINVAL;
++	}
++	dev_dbg(ths8200_i2c_dev, "<ths8200_setmode>\n");
++	ch_client = &ths8200_channel_info.i2c_dev.clients[THS8200].client;
++	dev_dbg(ths8200_i2c_dev, "Start of ths8200_setmode..\n");
++	outindex = ths8200_channel_info.params.outindex;
++
++	if (mode_info->std) {
++
++		char *mymode = NULL;
++		for (std_index = 0;
++		     std_index <
++		     ths8200_configuration.output[outindex].no_of_standard;
++		     std_index++) {
++			if (!strcmp
++			    (ths8200_configuration.output[outindex].
++			     standards[std_index], mode)) {
++				mymode =
++				    ths8200_configuration.output[outindex].
++				    standards[std_index];
++				break;
++			}
++		}
++		if ((std_index ==
++		     ths8200_configuration.output[outindex].no_of_standard)
++		    || (NULL == mymode)) {
++			dev_err(ths8200_i2c_dev, "Invalid id...\n");
++			return -EINVAL;
++		}
++		/* Store the standard in global object of ths8200 encoder */
++		ths8200_channel_info.params.mode = mymode;
++		dev_dbg(ths8200_i2c_dev, "Setting mode to  = %s\n",
++			mode_info->name);
++		ths8200_soft_reset(enc);
++
++		for (i = THS8200_CSC_R11; i <= THS8200_CSC_OFFS3; i++) {
++			/* reset color space conversion registers */
++			err |= ths8200_i2c_write_reg(ch_client, i, 0x0);
++		}
++
++		/* CSC bypassed and Under overflow protection ON */
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_CSC_OFFS3,
++					     ((THS8200_CSC_BYPASS <<
++					       THS8200_CSC_BYPASS_SHIFT) |
++					      THS8200_CSC_UOF_CNTL));
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DATA_CNTL,
++					     THS8200_DATA_CNTL_MODE_20BIT_YCBCR);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_Y_SYNC1_LSB,
++					     THS8200_DTG1_CBCR_SYNC1_LSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_Y_SYNC2_LSB,
++					     THS8200_DTG1_Y_SYNC2_LSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_Y_SYNC3_LSB,
++					     THS8200_DTG1_Y_SYNC3_LSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_CBCR_SYNC1_LSB,
++					     THS8200_DTG1_CBCR_SYNC1_LSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_CBCR_SYNC2_LSB,
++					     THS8200_DTG1_CBCR_SYNC2_LSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_CBCR_SYNC3_LSB,
++					     THS8200_DTG1_CBCR_SYNC3_LSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_Y_SYNC_MSB,
++					     THS8200_DTG1_Y_SYNC_MSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_CBCR_SYNC_MSB,
++					     THS8200_DTG1_CBCR_SYNC_MSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_SPEC_H_LSB,
++					     THS8200_DTG1_SPEC_H_LSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_SPEC_K_MSB,
++					     THS8200_DTG1_SPEC_K_MSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_FLD_FLIP_LINECNT_MSB,
++					     THS8200_DTG1_FLD_FLIP_LINECNT_MSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG1_LINECNT_LSB,
++					     THS8200_DTG1_LINECNT_LSB_DEFAULT);
++
++		err |= ths8200_i2c_write_reg(ch_client,
++					     THS8200_DTG2_HS_IN_DLY_MSB,
++					     THS8200_DTG2_HS_IN_DLY_MSB_DEFAULT);
++
++		i = 0;
++
++		do {
++			reg = ths8200_component_std_info[std_index][i].reg;
++			val = ths8200_component_std_info[std_index][i].val;
++			if (!reg)
++				break;
++
++			err |= ths8200_i2c_write_reg(ch_client, reg, val);
++
++			if (err < 0) {
++				dev_err(ths8200_i2c_dev,
++					"Set mode i2c write error\n");
++				break;
++			}
++			i++;
++		}
++		while (i < THS8200_MAX_REGISTERS);
++
++		if (err < 0) {
++			dev_err(ths8200_i2c_dev, "Set standard failed\n");
++			return err;
++		}
++		ths8200_soft_reset(enc);
++	} else {
++		/* Non-standard mode not supported */
++		return -1;
++	}
++	dev_dbg(ths8200_i2c_dev, "</ths8200_setmode>\n");
++	return 0;
++}
++
++static struct vid_enc_mode_info *ths8200_get_modeinfo(char *mode_name)
++{
++	int i;
++	for (i = 0; i < THS8200_MAX_NUM_STD; i++) {
++		if (!strcmp(ths8200_configuration.output[0].standards[i],
++			    mode_name)) {
++			return &ths8200_component_standards[i];
++		}
++	}
++	return NULL;
++}
++
++/* Following function is used to get currently selected mode .*/
++static int ths8200_getmode(struct vid_enc_mode_info *mode_info,
++			   struct vid_encoder_device *enc)
++{
++	int err = 0;
++	struct vid_enc_mode_info *my_mode_info;
++	if ((NULL == enc) || (NULL == mode_info)) {
++		dev_err(ths8200_i2c_dev, "NULL Pointer\n");
++		return -EINVAL;
++	}
++	dev_dbg(ths8200_i2c_dev, "<ths8200_getmode>\n");
++	my_mode_info = ths8200_get_modeinfo(ths8200_channel_info.params.mode);
++	if (NULL == my_mode_info) {
++		dev_err(ths8200_i2c_dev,
++			"NULL Pointer for current mode info\n");
++		return -EINVAL;
++	}
++	memcpy(mode_info, my_mode_info, sizeof(struct vid_enc_mode_info));
++	dev_dbg(ths8200_i2c_dev, "</ths8200_getmode>\n");
++	return err;
++}
++
++/* Following function is used to set output format in ths8200 device. The index
++   of the output format is  passed as the argument to this function. */
++static int ths8200_setoutput(char *output, struct vid_encoder_device *enc)
++{
++	int err = 0;
++	struct vid_enc_mode_info *my_mode_info;
++
++	if ((NULL == enc) || (NULL == output)) {
++		dev_err(ths8200_i2c_dev, "NULL Pointer\n");
++		return -EINVAL;
++	}
++	dev_dbg(ths8200_i2c_dev, "<ths8200_setoutput>\n");
++	if (strcmp(output, ths8200_configuration.output[0].output_name)) {
++		dev_err(ths8200_i2c_dev, "No matching output: %s\n", output);
++		return -EINVAL;
++	}
++	ths8200_channel_info.params.mode
++	    = ths8200_configuration.output[0].standards[0];
++
++	my_mode_info = ths8200_get_modeinfo(ths8200_channel_info.params.mode);
++	if (NULL == my_mode_info) {
++		dev_err(ths8200_i2c_dev, "No matching mode_info entry found\n");
++		return -EINVAL;
++	}
++	err |= ths8200_setmode(my_mode_info, enc);
++	if (err < 0) {
++		dev_err(ths8200_i2c_dev, "Erron in setting default mode\n");
++		return err;
++	}
++	dev_dbg(ths8200_i2c_dev, "</ths8200_setoutput>\n");
++	return err;
++}
++
++/* Following function is used to get index of the output currently selected.*/
++static int ths8200_getoutput(char *output, struct vid_encoder_device *enc)
++{
++	int err = 0;
++	if ((NULL == enc) || (NULL == output)) {
++		dev_err(ths8200_i2c_dev, "NULL Pointer\n");
++		return -EINVAL;
++	}
++	dev_dbg(ths8200_i2c_dev, "<ths8200_getoutput>\n");
++	strcpy(output, ths8200_configuration.output[0].output_name);
++	dev_dbg(ths8200_i2c_dev, "</ths8200_getoutput>\n");
++	return err;
++}
++
++/* Following function is used to enumerate outputs supported by the driver.
++   It fills in information about the output in the outp. */
++static int ths8200_enumoutput(int index, char *output,
++			      struct vid_encoder_device *enc)
++{
++	int err = 0;
++	if ((NULL == enc) || (NULL == output)) {
++		dev_err(ths8200_i2c_dev, "NULL Pointer.\n");
++		return -EINVAL;
++	}
++	/* Only one output is available */
++	if (index >= ths8200_configuration.no_of_outputs) {
++		return -EINVAL;
++	}
++	strncpy(output,
++		ths8200_configuration.output[index].output_name,
++		VID_ENC_NAME_MAX_CHARS);
++	return err;
++}
++
++/* This function is used to read value from register using i2c client. */
++static int ths8200_i2c_read_reg(struct i2c_client *client, u8 reg, u8 * val)
++{
++	int err = 0;
++	struct i2c_msg msg[1];
++	unsigned char data[1];
++
++	if (!client->adapter) {
++		err = -ENODEV;
++	} else {
++		msg->addr = client->addr;
++		msg->flags = 0;
++		msg->len = 1;
++		msg->buf = data;
++		if (client->addr == CDCE_I2C_ADDR) {
++			data[0] = (reg | 0x80);
++		} else
++			data[0] = reg;
++		err = i2c_transfer(client->adapter, msg, 1);
++		if (err >= 0) {
++			msg->flags = I2C_M_RD;
++			err = i2c_transfer(client->adapter, msg, 1);
++			if (err >= 0) {
++				*val = data[0];
++			}
++		}
++	}
++	if (err < 0)
++		dev_err(ths8200_i2c_dev, "i2c read error\n");
++	return err;
++}
++
++/*This function is used to write value into register using i2c client. */
++static int ths8200_i2c_write_reg(struct i2c_client *client, u8 reg, u8 val)
++{
++	int err = 0;
++	struct i2c_msg msg[1];
++	unsigned char data[2];
++	u8 read_val;
++
++	dev_dbg(ths8200_i2c_dev,
++		"ths8200_i2c_write_reg, reg = %x, val = %x\n", reg, val);
++	if (!client->adapter) {
++		err = -ENODEV;
++	} else {
++		msg->addr = client->addr;
++		msg->flags = 0;
++		msg->len = 2;
++		msg->buf = data;
++		if (client->addr == CDCE_I2C_ADDR) {
++			data[0] = (reg | 0x80);
++		} else
++			data[0] = reg;
++		data[1] = val;
++		err = i2c_transfer(client->adapter, msg, 1);
++
++		if (err >= 0) {
++			ths8200_i2c_read_reg(client, reg, &read_val);
++
++			if (read_val != val) {
++				dev_err(ths8200_i2c_dev,
++					"i2c write verification failed\n");
++				return -1;
++			}
++		}
++
++		if (err < 0) {
++			dev_err(ths8200_i2c_dev, "i2c write error = %x\n", err);
++			return err;
++		}
++	}
++	return err;
++}
++
++/* This function is used to attach i2c client */
++static int ths8200_i2c_attach_client(struct i2c_client *client,
++				     struct i2c_driver *driver,
++				     struct i2c_adapter *adap, int addr)
++{
++	int err = 0;
++
++	if (client->adapter) {
++		err = -EBUSY;	/* our client is already attached */
++	} else {
++		client->addr = addr;
++		client->driver = driver;
++		client->adapter = adap;
++
++		err = i2c_attach_client(client);
++		if (err) {
++			client->adapter = NULL;
++		}
++	}
++	return err;
++}
++
++/* This function is used to detach i2c client */
++static int ths8200_i2c_detach_client(struct i2c_client *client)
++{
++	int err = 0;
++	if (!client->adapter) {
++		return -ENODEV;	/* our client isn't attached */
++	} else {
++		err = i2c_detach_client(client);
++		client->adapter = NULL;
++	}
++	return err;
++}
++
++static int ths8200_i2c_probe_adapter(struct i2c_adapter *adap)
++{
++	int err = 0;
++	int i;
++	ths8200_i2c_dev = &(adap->dev);
++	dev_dbg(ths8200_i2c_dev, "THS8200 i2c probe adapter called...\n");
++
++	/* Attach the clients */
++	for (i = 0; i < THS8200_MAX_I2C_DEVICES; i++) {
++		err |=
++		    ths8200_i2c_attach_client(&ths8200_channel_info.i2c_dev.
++					      clients[i].client,
++					      &ths8200_channel_info.i2c_dev.
++					      driver, adap,
++					      ths8200_channel_info.i2c_dev.
++					      clients[i].i2c_addr);
++	}
++	dev_info(ths8200_i2c_dev, "THS8200 encoder initialized\n");
++	return err;
++}
++static char ths8200_driver_name[] = "THS8200 encoder I2C driver";
++/* This function used to initialize the i2c driver */
++static int ths8200_init(void)
++{
++	int err = 0;
++	/* Take instance of driver */
++	struct i2c_driver *driver;
++	driver = &ths8200_channel_info.i2c_dev.driver;
++	driver->driver.name = ths8200_driver_name;
++	driver->id = I2C_DRIVERID_MISC;
++	driver->attach_adapter = ths8200_i2c_probe_adapter;
++	driver->detach_client = ths8200_i2c_detach_client;
++	err |= vid_enc_register_encoder(&ths8200_dev);
++	if (err < 0) {
++		vid_enc_unregister_encoder(&ths8200_dev);
++		return err;
++	}
++	return err;
++}
++
++/* Function used to cleanup i2c driver */
++static void ths8200_cleanup(void)
++{
++	int j;
++	if (ths8200_channel_info.i2c_dev.i2c_registration & 0x01) {
++		i2c_del_driver(&ths8200_channel_info.i2c_dev.driver);
++		for (j = 0; j < THS8200_MAX_I2C_DEVICES; j++) {
++			ths8200_channel_info.i2c_dev.clients[j].client.adapter =
++			    NULL;
++		}
++		ths8200_channel_info.i2c_dev.i2c_registration = 0;
++		vid_enc_unregister_encoder(&ths8200_dev);
++	}
++}
++
++device_initcall(ths8200_init);
++module_exit(ths8200_cleanup);
++
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/include/media/davinci/ths8200_encoder.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/media/davinci/ths8200_encoder.h
+@@ -0,0 +1,326 @@
++/*
++ * Copyright (C) 2007 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/*ths8200_encoder.h*/
++
++#ifndef THS8200_ENCODER_H
++#define THS8200_ENCODER_H
++
++#ifdef __KERNEL__
++/* Kernel Header files */
++#include <linux/i2c.h>
++#include <media/davinci/vid_encoder_if.h>
++
++/* encoder standard related strctures */
++#define THS8200_MAX_NO_OUTPUTS			(1)
++#define THS8200_COMPONENT_NUM_STD		(2)
++#define THS8200_MAX_NUM_STD		        (2)
++#define THS8200_STANDARD_INFO_SIZE THS8200_COMPONENT_NUM_STD
++
++enum ths8200_i2_devices {
++	THS8200,
++	CDCE_CLK_SYNTH,
++	THS7303_VIDEO_BUFFER,
++};
++
++struct ths8200_std_info {
++	int reg;
++	u32 val;
++};
++
++struct ths8200_params {
++	int outindex;
++	char *mode;
++};
++
++struct ths8200_config {
++	int no_of_outputs;
++	struct {
++		char *output_name;
++		int no_of_standard;
++		char *standards[THS8200_MAX_NUM_STD];
++		struct ths8200_std_info *std_info;
++	} output[THS8200_MAX_NO_OUTPUTS];
++};
++
++struct ths8200_i2c_client {
++	struct i2c_client client;
++	u8 i2c_addr;
++};
++
++#define THS8200_MAX_I2C_DEVICES 3
++struct ths8200_channel {
++	struct vid_encoder_device *enc_device;
++	struct {
++		struct i2c_driver driver;
++		struct ths8200_i2c_client clients[THS8200_MAX_I2C_DEVICES];
++		int i2c_registration;
++	} i2c_dev;
++	struct ths8200_params params;
++};
++
++#define THS8200_I2C_ADDR  0x21
++#define THS7303_I2C_ADDR0 0x2c
++#define CDCE_I2C_ADDR     0x6c
++
++#define THS7303_CHANNEL_1 0x1
++#define THS7303_CHANNEL_2 0x2
++#define THS7303_CHANNEL_3 0x3
++
++#define THS7303_DEFAULT_CHANNEL_VAL 0x92
++
++/* Register Macros */
++#define THS8200_VERSION             0x02
++#define THS8200_CHIP_CTL            0x03
++#define THS8200_CSC_R11             0x04
++#define THS8200_CSC_R12             0x05
++#define THS8200_CSC_R21             0x06
++#define THS8200_CSC_R22             0x07
++#define THS8200_CSC_R31             0x08
++#define THS8200_CSC_R32             0x09
++#define THS8200_CSC_G11             0x0a
++#define THS8200_CSC_G12             0x0b
++#define THS8200_CSC_G21             0x0c
++#define THS8200_CSC_G22             0x0d
++#define THS8200_CSC_G31             0x0e
++#define THS8200_CSC_G32             0x0f
++#define THS8200_CSC_B11             0x10
++#define THS8200_CSC_B12             0x11
++#define THS8200_CSC_B21             0x12
++#define THS8200_CSC_B22             0x13
++#define THS8200_CSC_B31             0x14
++#define THS8200_CSC_B32             0x15
++#define THS8200_CSC_OFFS1           0x16
++#define THS8200_CSC_OFFS12          0x17
++#define THS8200_CSC_OFFS23          0x18
++#define THS8200_CSC_OFFS3           0x19
++#define THS8200_TST_CNTL1           0x1a
++#define THS8200_TST_CNTL2           0x1b
++#define THS8200_DATA_CNTL           0x1c
++#define THS8200_DTG1_Y_SYNC1_LSB    0x1d
++#define THS8200_DTG1_Y_SYNC2_LSB    0x1e
++#define THS8200_DTG1_Y_SYNC3_LSB    0x1f
++#define THS8200_DTG1_CBCR_SYNC1_LSB 0x20
++#define THS8200_DTG1_CBCR_SYNC2_LSB 0x21
++#define THS8200_DTG1_CBCR_SYNC3_LSB 0x22
++#define THS8200_DTG1_Y_SYNC_MSB     0x23
++#define THS8200_DTG1_CBCR_SYNC_MSB  0x24
++#define THS8200_DTG1_SPEC_A         0x25
++#define THS8200_DTG1_SPEC_B         0x26
++#define THS8200_DTG1_SPEC_C         0x27
++#define THS8200_DTG1_SPEC_D_LSB     0x28
++#define THS8200_DTG1_SPEC_D1        0x29
++#define THS8200_DTG1_SPEC_E_LSB     0x2a
++#define THS8200_DTG1_SPEC_DEH_MSB   0x2b
++#define THS8200_DTG1_SPEC_H_LSB     0x2c
++#define THS8200_DTG1_SPEC_I_MSB     0x2d
++#define THS8200_DTG1_SPEC_I_LSB     0x2e
++#define THS8200_DTG1_SPEC_K_LSB     0x2f
++#define THS8200_DTG1_SPEC_K_MSB     0x30
++#define THS8200_DTG1_SPEC_K1        0x31
++#define THS8200_DTG1_SPEC_G_LSB     0x32
++#define THS8200_DTG1_SPEC_G_MSB     0x33
++#define THS8200_DTG1_TOT_PIXELS_MSB 0x34
++#define THS8200_DTG1_TOT_PIXELS_LSB 0x35
++#define THS8200_DTG1_FLD_FLIP_LINECNT_MSB 0x36
++#define THS8200_DTG1_LINECNT_LSB    0x37
++#define THS8200_DTG1_MODE           0x38
++#define THS8200_DTG1_FRAME_FIELD_SZ_MSB   0x39
++#define THS8200_DTG1_FRAME_SZ_LSB   0x3a
++#define THS8200_DTG1_FIELD_SZ_LSB   0x3b
++#define THS8200_DTG1_VESA_CBAR_SIZE 0x3c
++#define THS8200_DAC_CNTL_MSB        0x3d
++#define THS8200_DAC1_CNTL_LSB       0x3e
++#define THS8200_DAC2_CNTL_LSB       0x3f
++#define THS8200_DAC3_CNTL_LSB       0x40
++#define THS8200_CSM_CLIP_GY_LOW     0x41
++#define THS8200_CSM_CLIP_BCB_LOW    0x42
++#define THS8200_CSM_CLIP_RCR_LOW    0x43
++#define THS8200_CSM_CLIP_GY_HIGH    0x44
++#define THS8200_CSM_CLIP_BCB_HIGH   0x45
++#define THS8200_CSM_CLIP_RCR_HIGH   0x46
++#define THS8200_CSM_SHIFT_GY        0x47
++#define THS8200_CSM_SHIFT_BCB       0x48
++#define THS8200_CSM_SHIFT_RCR       0x49
++#define THS8200_CSM_GY_CNTL_MULT_MSB     0x4a
++#define THS8200_CSM_MULT_BCB_RCR_MSB     0x4b
++#define THS8200_CSM_MULT_GY_LSB     0x4c
++#define THS8200_CSM_MULT_BCB_LSB    0x4d
++#define THS8200_CSM_MULT_RCR_LSB    0x4e
++#define THS8200_CSM_MULT_RCR_BCB_CNTL    0x4f
++#define THS8200_CSM_MULT_RCR_LSB    0x4e
++#define THS8200_DTG2_BP1_2_MSB      0x50
++#define THS8200_DTG2_BP3_4_MSB      0x51
++#define THS8200_DTG2_BP5_6_MSB      0x52
++#define THS8200_DTG2_BP7_8_MSB      0x53
++#define THS8200_DTG2_BP9_10_MSB     0x54
++#define THS8200_DTG2_BP11_12_MSB    0x55
++#define THS8200_DTG2_BP13_14_MSB    0x56
++#define THS8200_DTG2_BP15_16_MSB    0x57
++#define THS8200_DTG2_BP1_LSB        0x58
++#define THS8200_DTG2_BP2_LSB        0x59
++#define THS8200_DTG2_BP3_LSB        0x5a
++#define THS8200_DTG2_BP4_LSB        0x5b
++#define THS8200_DTG2_BP5_LSB        0x5c
++#define THS8200_DTG2_BP6_LSB        0x5d
++#define THS8200_DTG2_BP7_LSB        0x5e
++#define THS8200_DTG2_BP8_LSB        0x5f
++#define THS8200_DTG2_BP9_LSB        0x60
++#define THS8200_DTG2_BP10_LSB       0x61
++#define THS8200_DTG2_BP11_LSB       0x62
++#define THS8200_DTG2_BP12_LSB       0x63
++#define THS8200_DTG2_BP13_LSB       0x64
++#define THS8200_DTG2_BP14_LSB       0x65
++#define THS8200_DTG2_BP15_LSB       0x66
++#define THS8200_DTG2_BP16_LSB       0x67
++#define THS8200_DTG2_LINETYPE1      0x68
++#define THS8200_DTG2_LINETYPE2      0x69
++#define THS8200_DTG2_LINETYPE3      0x6a
++#define THS8200_DTG2_LINETYPE4      0x6b
++#define THS8200_DTG2_LINETYPE5      0x6c
++#define THS8200_DTG2_LINETYPE6      0x6d
++#define THS8200_DTG2_LINETYPE7      0x6e
++#define THS8200_DTG2_LINETYPE8      0x6f
++#define THS8200_DTG2_HLENGTH_LSB    0x70
++#define THS8200_DTG2_HLENGTH_LSB_HDLY_MSB    0x71
++#define THS8200_DTG2_HLENGTH_HDLY_LSB        0x72
++#define THS8200_DTG2_VLENGTH1_LSB   0x73
++#define THS8200_DTG2_VLENGTH1_MSB_VDLY1_MSB  0x74
++#define THS8200_DTG2_VDLY1_LSB      0x75
++#define THS8200_DTG2_VLENGTH2_LSB   0x76
++#define THS8200_DTG2_VLENGTH2_MSB_VDLY2_MSB  0x77
++#define THS8200_DTG2_VDLY2_LSB      0x78
++#define THS8200_DTG2_HS_IN_DLY_MSB  0x79
++#define THS8200_DTG2_HS_IN_DLY_LSB  0x7a
++#define THS8200_DTG2_VS_IN_DLY_MSB  0x7b
++#define THS8200_DTG2_VS_IN_DLY_LSB  0x7c
++#define THS8200_DTG2_PIXEL_CNT_MSB  0x7d
++#define THS8200_DTG2_PIXEL_CNT_LSB  0x7e
++#define THS8200_DTG2_LINE_CNT_MSB   0x7f
++#define THS8200_DTG2_LINE_CNT_LSB   0x80
++#define THS8200_DTG2_CNTL           0x82
++#define THS8200_CGMS_CNTL_HEADER    0x83
++#define THS8200_CGMS_PAYLOAD_MSB    0x84
++#define THS8200_CGMS_PAYLOAD_LSB    0x85
++#define THS8200_MISC_PPL_LSB        0x86
++#define THS8200_MISC_PPL_MSB        0x87
++#define THS8200_MISC_LPF_MSB        0x88
++#define THS8200_MISC_LPF_LSB        0x89
++
++/* Default values for the registers */
++#define THS8200_DTG1_Y_SYNC1_LSB_DEFAULT    0xff
++#define THS8200_DTG1_Y_SYNC2_LSB_DEFAULT    0x49
++#define THS8200_DTG1_Y_SYNC3_LSB_DEFAULT    0xb6
++#define THS8200_DTG1_CBCR_SYNC1_LSB_DEFAULT 0xff
++#define THS8200_DTG1_CBCR_SYNC2_LSB_DEFAULT 0xff
++#define THS8200_DTG1_CBCR_SYNC3_LSB_DEFAULT 0xff
++#define THS8200_DTG1_Y_SYNC_MSB_DEFAULT     0x13
++#define THS8200_DTG1_CBCR_SYNC_MSB_DEFAULT  0x15
++#define THS8200_DTG1_SPEC_H_LSB_DEFAULT     0x0
++#define THS8200_DTG1_SPEC_K_MSB_DEFAULT     0x0
++#define THS8200_DTG1_FLD_FLIP_LINECNT_MSB_DEFAULT 0x0
++#define THS8200_DTG1_LINECNT_LSB_DEFAULT 0x1
++#define THS8200_DTG2_HS_IN_DLY_MSB_DEFAULT 0x0
++
++/* defaults for 720P HD */
++#define THS8200_DTG2_CNTL_720P_DEFAULT    0x1b
++#define THS8200_DTG1_SPEC_A_720P_DEFAULT  0x28
++/* distance from end of active video to start of sync */
++#define THS8200_DTG1_SPEC_B_720P_DEFAULT  0x46
++#define THS8200_DTG1_SPEC_C_720P_DEFAULT  0x28
++#define THS8200_DTG1_SPEC_D_LSB_720P_DEFAULT 0x2c
++/* distance from Hsync to start of active video */
++#define THS8200_DTG1_SPEC_E_LSB_720P_DEFAULT 0x2c
++#define THS8200_DTG1_SPEC_DEH_MSB_720P_DEFAULT 0xc0
++#define THS8200_DTG1_SPEC_K_LSB_720P_DEFAULT 0x46
++#define THS8200_DTG1_TOT_PIXELS_MSB_720P_DEFAULT 0x06
++#define THS8200_DTG1_TOT_PIXELS_LSB_720P_DEFAULT 0x72
++#define THS8200_DTG1_MODE_720P_DEFAULT 0x82
++#define THS8200_DTG1_FRAME_FIELD_SZ_MSB_720P_DEFAULT 0x27
++#define THS8200_DTG1_FRAME_SZ_LSB_720P_DEFAULT 0xee
++#define THS8200_DTG1_FIELD_SZ_LSB_720P_DEFAULT 0xff
++#define THS8200_DTG2_HS_IN_DLY_LSB_720P_DEFAULT 0x60
++#define THS8200_DTG2_VS_IN_DLY_MSB_720P_DEFAULT 0x08
++#define THS8200_DTG2_VS_IN_DLY_LSB_720P_DEFAULT 0x06
++
++/* defaults for 1080i HD */
++#define THS8200_TST_CNTL1_1080I_DEFAULT             0x0
++#define THS8200_TST_CNTL2_1080I_DEFAULT             0x0
++#define THS8200_CSM_GY_CNTL_MULT_MSB_1080I_DEFAULT  0x0
++#define THS8200_DTG2_CNTL_1080I_DEFAULT 0x1f
++#define THS8200_DTG1_SPEC_A_1080I_DEFAULT 0x2c
++/* distance from end of active video to start of sync */
++#define THS8200_DTG1_SPEC_B_1080I_DEFAULT 0x58
++#define THS8200_DTG1_SPEC_C_1080I_DEFAULT 0x2c
++#define THS8200_DTG1_SPEC_D1_1080I_DEFAULT 0x0
++#define THS8200_DTG1_SPEC_D_LSB_1080I_DEFAULT 0x84
++/* distance from Hsync to start of active video */
++#define THS8200_DTG1_SPEC_E_LSB_1080I_DEFAULT 0xc0
++#define THS8200_DTG1_SPEC_DEH_MSB_1080I_DEFAULT 0x0
++#define THS8200_DTG1_SPEC_K_LSB_1080I_DEFAULT 0x58
++#define THS8200_DTG1_SPEC_G_LSB_1080I_DEFAULT 0x58
++#define THS8200_DTG1_SPEC_G_MSB_1080I_DEFAULT 0x0
++#define THS8200_DTG1_TOT_PIXELS_MSB_1080I_DEFAULT 0x08
++/* Total pixels per line */
++#define THS8200_DTG1_TOT_PIXELS_LSB_1080I_DEFAULT 0x98
++#define THS8200_DTG1_MODE_1080I_DEFAULT 0x81
++#define THS8200_DTG1_FRAME_FIELD_SZ_MSB_1080I_DEFAULT 0x42
++#define THS8200_DTG1_FRAME_SZ_LSB_1080I_DEFAULT 0x65
++#define THS8200_DTG1_FIELD_SZ_LSB_1080I_DEFAULT 0x33
++#define THS8200_DTG2_HLENGTH_LSB_1080I_DEFAULT 0x58
++#define THS8200_DTG2_HLENGTH_LSB_HDLY_MSB_1080I_DEFAULT 0x0
++#define THS8200_DTG2_HLENGTH_HDLY_LSB_1080I_DEFAULT 0x0
++#define THS8200_DTG2_VLENGTH1_LSB_1080I_DEFAULT 0x05
++#define THS8200_DTG2_VLENGTH1_MSB_VDLY1_MSB_1080I_DEFAULT 0x0
++#define THS8200_DTG2_VDLY1_LSB_1080I_DEFAULT 0x0
++#define THS8200_DTG2_VLENGTH2_LSB_1080I_DEFAULT 0x5
++#define THS8200_DTG2_VDLY2_LSB_1080I_DEFAULT 0x0
++#define THS8200_DTG2_VLENGTH2_MSB_VDLY2_MSB_1080I_DEFAULT 0x0
++#define THS8200_DTG2_VDLY1_LSB_1080I_DEFAULT 0x0
++#define THS8200_DTG2_HS_IN_DLY_LSB_1080I_DEFAULT 0x44
++#define THS8200_DTG2_VS_IN_DLY_MSB_1080I_DEFAULT 0x0
++#define THS8200_DTG2_VS_IN_DLY_LSB_1080I_DEFAULT 0x1
++
++/* MASKS */
++
++/* MODE VALUES */
++#define THS8200_ATSCHD_MODE_1080P    0x0
++#define THS8200_ATSCHD_MODE_1080I    0x1
++#define THS8200_ATSCHD_MODE_720P     0x2
++#define THS8200_HDMODE_GENERIC       0x3
++#define THS8200_ATSCSD_MODE_480I     0x4
++#define THS8200_ATSCSD_MODE_480P     0x5
++#define THS8200_VESA_MASTER          0x6
++#define THS8200_VESA_SLAVE           0x7
++#define THS8200_SD625I               0x8
++#define THS8200_MODE_MAX             0x8
++#define THS8200_DTG1_MODE_MASK       0xf
++
++/* Reset */
++#define THS8200_CHIP_CNTL_RESET            0x10
++#define THS8200_CHIP_CNTL_RESET_NORMAL     0x11
++
++/* CSC bypass */
++#define THS8200_CSC_BYPASS_SHIFT           0x1
++#define THS8200_CSC_BYPASS                 0x1
++#define THS8200_CSC_UOF_CNTL               0x1
++
++/* data manager control input mode */
++#define THS8200_DATA_CNTL_MODE_20BIT_YCBCR 0x3	/* 20 but YCbCr 4:2:2 */
++
++#endif				/* End of #ifdef __KERNEL__ */
++#endif				/* End of #ifndef THS8200_ENCODER_H */
+Index: linux-2.6.18/mvl_patches/pro50-1583.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1583.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1583);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

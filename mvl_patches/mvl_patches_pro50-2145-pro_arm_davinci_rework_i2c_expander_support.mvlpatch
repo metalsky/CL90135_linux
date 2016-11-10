@@ -1,0 +1,681 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_rework_i2c_expander_support
+# Date: Thu Feb 19 15:03:44 2009
+# Source: MontaVista Software, Inc.
+# MR: 28546
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Rework DaVinci board I2C GPIO expander support by introducing the board code
+# hooks with which that code can perform the board specific actions. Also make
+# CONFIG_DAVINCI_I2C_EXPANDER option actually control the inclusion of the GPIO
+# expander code.
+# 
+#  arch/arm/mach-davinci/board-dm6467-evm.c   |   34 +++++++--
+#  arch/arm/mach-davinci/board-evm.c          |   51 +++++++++++--
+#  arch/arm/mach-davinci/davinci_vlynq_init.c |    4 -
+#  arch/arm/plat-davinci/i2c-client.c         |  107 +++++++++++++----------------
+#  drivers/char/cir.c                         |    2 
+#  drivers/usb/musb/davinci.c                 |    4 -
+#  include/asm-arm/arch-davinci/i2c-client.h  |   17 +++-
+#  7 files changed, 137 insertions(+), 82 deletions(-)
+# 
+
+PATCHNUM=2145
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28546
+Type: Enhancement
+Disposition: local
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Rework DaVinci board I2C GPIO expander support by introducing the board code
+hooks with which that code can perform the board specific actions. Also make
+CONFIG_DAVINCI_I2C_EXPANDER option actually control the inclusion of the GPIO
+expander code.
+
+ arch/arm/mach-davinci/board-dm6467-evm.c   |   34 +++++++--
+ arch/arm/mach-davinci/board-evm.c          |   51 +++++++++++--
+ arch/arm/mach-davinci/davinci_vlynq_init.c |    4 -
+ arch/arm/plat-davinci/i2c-client.c         |  107 +++++++++++++----------------
+ drivers/char/cir.c                         |    2 
+ drivers/usb/musb/davinci.c                 |    4 -
+ include/asm-arm/arch-davinci/i2c-client.h  |   17 +++-
+ mvl_patches/pro50-2145.c                   |   16 ++++
+ 8 files changed, 153 insertions(+), 82 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm6467-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+@@ -3,8 +3,7 @@
+  *
+  * Derived from: arch/arm/mach-davinci/board-evm.c
+  * Copyright (C) 2006 Texas Instruments.
+- *
+- * (C) 2007-2008, MontaVista Software, Inc.
++ * Copyright (C) 2007-2008, MontaVista Software, Inc.
+  *
+  * This file is licensed under the terms of the GNU General Public License
+  * version 2. This program is licensed "as is" without any warranty of any
+@@ -329,16 +328,33 @@ static void __init davinci_map_io(void)
+ #endif
+ 
+ }
+-static __init void dm6467_evm_i2c_expander_setup(void)
++static __init void dm6467_evm_expander_setup(void)
+ {
+ #if defined(CONFIG_BLK_DEV_PALMCHIP_BK3710) || \
+-	defined(CONFIG_BLK_DEV_PALMCHIP_BK3710_MODULE)
++    defined(CONFIG_BLK_DEV_PALMCHIP_BK3710_MODULE)
+ 
+-	davinci_i2c_expander_op(0x3A, ATA_PWD_DM646X, 0);
+-	davinci_i2c_expander_op(0x3A, ATA_SEL_DM646X, 0);
++	davinci_i2c_expander_op(ATA_PWD_DM646X, 0);
++	davinci_i2c_expander_op(ATA_SEL_DM646X, 0);
+ #endif
+ }
+ 
++static __init int dm646x_evm_expander_validate(enum i2c_expander_pins pin)
++{
++	switch (pin) {
++	case ATA_SEL_DM646X:
++	case ATA_PWD_DM646X:
++	case VSCALE_ON_DM646X:
++	case VLYNQ_RESET_DM646X:
++	case I2C_INT_DM646X:
++	case USB_FB_DM646X:
++	case CIR_MOD_DM646X:
++	case CIR_DEMOD_DM646X:
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
+ static __init void dm6467_evm_init(void)
+ {
+ 	davinci_gpio_init();
+@@ -346,7 +362,11 @@ static __init void dm6467_evm_init(void)
+ 	/* Initialize the DaVinci EVM board settigs */
+ 	board_init();
+ 
+-	board_i2c_expander_setup = dm6467_evm_i2c_expander_setup;
++	davinci_i2c_expander.address = 0x3A;
++	davinci_i2c_expander.init_data = 0xF6;
++	davinci_i2c_expander.name = "dm6467_evm_expander1";
++	davinci_i2c_expander.setup = dm6467_evm_expander_setup;
++	davinci_i2c_expander.validate = dm646x_evm_expander_validate;
+ 
+ 	platform_add_devices(davinci_evm_devices,
+ 		ARRAY_SIZE(davinci_evm_devices));
+Index: linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+@@ -346,7 +346,7 @@ static void __init davinci_psc_init(void
+ 	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, 0, DAVINCI_LPSC_TIMER2, 1);
+ }
+ 
+-static __init void davinci_evm_i2c_expander_setup(void)
++static __init void dm644x_evm_expander_setup(void)
+ {
+ #if defined(CONFIG_BLK_DEV_PALMCHIP_BK3710) || \
+     defined(CONFIG_BLK_DEV_PALMCHIP_BK3710_MODULE)
+@@ -357,22 +357,59 @@ static __init void davinci_evm_i2c_expan
+ 	 * Ensure both are not enabled at once.
+ 	 */
+ #ifdef CONFIG_DAVINCI_EVM_CF_SUPPORT
+-	davinci_i2c_expander_op(0x3A, ATA_SEL,	1);
+-	davinci_i2c_expander_op(0x3A, CF_RESET, 1);
+-	davinci_i2c_expander_op(0x3A, CF_SEL,	0);
++	davinci_i2c_expander_op(ATA_SEL, 1);
++	davinci_i2c_expander_op(CF_RESET, 1);
++	davinci_i2c_expander_op(CF_SEL,	0);
+ #else
+-	davinci_i2c_expander_op(0x3A, CF_SEL,	1);
+-	davinci_i2c_expander_op(0x3A, ATA_SEL,	0);
++	davinci_i2c_expander_op(CF_SEL, 1);
++	davinci_i2c_expander_op(ATA_SEL, 0);
+ #endif
+ #endif
+ }
+ 
++static __init int dm644x_evm_expander_validate(enum i2c_expander_pins pin)
++{
++	switch (pin) {
++	case USB_DRVVBUS:
++	case VDDIMX_EN:
++	case VLYNQ_ON:
++	case CF_RESET:
++	case WLAN_RESET:
++	case ATA_SEL:
++	case CF_SEL:
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
++static __init int dm644x_evm_expander_special(enum i2c_expander_pins pin,
++					      unsigned val)
++{
++	static u8 cmd[4] = { 4, 6, 0x00, 0x09 };
++
++	if (pin == CF_SEL) {
++		int err = davinci_i2c_write(4, cmd, 0x23);
++
++		if (err)
++			return err;
++	}
++
++	return 0;
++}
++
+ static __init void davinci_evm_init(void)
+ {
+ 	davinci_gpio_init();
+ 	davinci_psc_init();
+ 
+-	board_i2c_expander_setup = davinci_evm_i2c_expander_setup;
++	/* There are actually 3 expanders on the board, one is LEDs only... */
++	davinci_i2c_expander.address = 0x3A;
++	davinci_i2c_expander.init_data = 0xF6;
++	davinci_i2c_expander.name = "davinci_evm_expander1";
++	davinci_i2c_expander.setup = dm644x_evm_expander_setup;
++	davinci_i2c_expander.validate = dm644x_evm_expander_validate;
++	davinci_i2c_expander.special = dm644x_evm_expander_special;
+ 
+ #if defined(CONFIG_BLK_DEV_PALMCHIP_BK3710) || \
+     defined(CONFIG_BLK_DEV_PALMCHIP_BK3710_MODULE)
+Index: linux-2.6.18/arch/arm/mach-davinci/davinci_vlynq_init.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/davinci_vlynq_init.c
++++ linux-2.6.18/arch/arm/mach-davinci/davinci_vlynq_init.c
+@@ -22,8 +22,6 @@
+ #include <asm/arch/i2c-client.h>
+ #include <asm/arch/clock.h>
+ 
+-#define GPIO_EXP_GROUP2	0x3A
+-
+ static int __init vlynq_platform_init(void)
+ {
+ 	struct clk *vlynq_clock;
+@@ -37,7 +35,7 @@ static int __init vlynq_platform_init(vo
+ 
+ 	if (machine_is_davinci_dm6467_evm()) {
+ 		printk(KERN_INFO "Enable VLYNQ Switch using I2C...\n");
+-		davinci_i2c_expander_op(GPIO_EXP_GROUP2, 2, 0);
++		davinci_i2c_expander_op(VSCALE_ON_DM646X, 0);
+ 	}
+ 
+ 	return 0;
+Index: linux-2.6.18/arch/arm/plat-davinci/i2c-client.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/i2c-client.c
++++ linux-2.6.18/arch/arm/plat-davinci/i2c-client.c
+@@ -22,8 +22,6 @@
+ #include <linux/i2c.h>
+ #include <asm/arch/i2c-client.h>
+ 
+-static DEFINE_MUTEX(expander_lock);
+-
+ static struct i2c_client davinci_i2c_client;
+ 
+ /* This function is used for internal initialization */
+@@ -66,58 +64,34 @@ int davinci_i2c_write(u8 size, u8 *val, 
+ }
+ EXPORT_SYMBOL(davinci_i2c_write);
+ 
+-int davinci_i2c_expander_op(u16 client_addr, i2c_expander_pins pin, u8 val)
++#ifdef CONFIG_DAVINCI_I2C_EXPANDER
++
++struct davinci_i2c_expander davinci_i2c_expander;
++static DEFINE_MUTEX(expander_lock);
++
++int davinci_i2c_expander_op(enum i2c_expander_pins pin, unsigned val)
+ {
+-	int err = 0;
++	u16 address = davinci_i2c_expander.address;
+ 	u8 data = 0;
++	int err;
+ 
+ 	if (val > 1)
+-		return -1;
+-
+-	if (client_addr != 0x3a) {
+-		printk(KERN_WARNING "Only I/O Expander at address 0x3A is "
+-		       "supported\n");
+ 		return -EINVAL;
+-	}
+ 
+-	if (cpu_is_davinci_dm6467())
+-		switch (pin) {
+-		case ATA_SEL_DM646X:
+-		case ATA_PWD_DM646X:
+-		case VSCALE_ON_DM646X:
+-		case VLYNQ_RESET_DM646X:
+-		case I2C_INT_DM646X:
+-		case USB_FB_DM646X:
+-		case CIR_MOD_DM646X:
+-		case CIR_DEMOD_DM646X:
+-			break;
+-		default:
+-			return -EINVAL;
+-		}
+-	else
+-		switch (pin) {
+-		case USB_DRVVBUS:
+-		case VDDIMX_EN:
+-		case VLYNQ_ON:
+-		case CF_RESET:
+-		case WLAN_RESET:
+-		case ATA_SEL:
+-		case CF_SEL:
+-			break;
+-		default:
+-			return -EINVAL;
+-		}
++	if (davinci_i2c_expander.validate != NULL) {
++		err = davinci_i2c_expander.validate(pin);
++		if (err)
++			return err;
++	}
+ 
+ 	mutex_lock(&expander_lock);
+ 
+-	err = davinci_i2c_read(1, &data, client_addr);
++	err = davinci_i2c_read(1, &data, address);
+ 	if (err)
+ 		goto exit;
+ 
+-	if (!cpu_is_davinci_dm6467() && pin == CF_SEL) {
+-		static u8 cmd[4] = { 4, 6, 0x00, 0x09 };
+-
+-		err = davinci_i2c_write(4, cmd, 0x23);
++	if (davinci_i2c_expander.special != NULL) {
++		err = davinci_i2c_expander.special(pin, val);
+ 		if (err)
+ 			goto exit;
+ 	}
+@@ -125,20 +99,18 @@ int davinci_i2c_expander_op(u16 client_a
+ 	data &= ~(1 << pin);
+ 	data |= val << pin;
+ 
+-	err = davinci_i2c_write(1, &data, client_addr);
++	err = davinci_i2c_write(1, &data, address);
+ 
+ exit:
+ 	mutex_unlock(&expander_lock);
+ 	return err;
+ }
+ EXPORT_SYMBOL(davinci_i2c_expander_op);
+-
+-void (*board_i2c_expander_setup)(void);
++#endif /* CONFIG_DAVINCI_I2C_EXPANDER */
+ 
+ static int davinci_i2c_attach_adapter(struct i2c_adapter *adapter)
+ {
+ 	struct i2c_client *client = &davinci_i2c_client;
+-	u8 data = 0xf6;
+ 	int err;
+ 
+ 	if (client->adapter != NULL)
+@@ -146,31 +118,52 @@ static int davinci_i2c_attach_adapter(st
+ 
+ 	client->adapter = adapter;
+ 
++#ifdef	CONFIG_DAVINCI_I2C_EXPANDER
++	/*
++	 * We may have the I2C expander support enabled without actual
++	 * expander present on the board...
++	 */
++	if (davinci_i2c_expander.name == NULL)
++		return -ENODEV;
++
++	client->addr = davinci_i2c_expander.address;
++	strlcpy(client->name, davinci_i2c_expander.name, I2C_NAME_SIZE);
++
+ 	err = i2c_attach_client(client);
+ 	if (err) {
+ 		client->adapter = NULL;
+ 		return err;
+ 	}
+ 
+-	davinci_i2c_write(1, &data, 0x3A);
++	davinci_i2c_write(1, &davinci_i2c_expander.init_data,
++			  davinci_i2c_expander.address);
+ 
+-	if (board_i2c_expander_setup)
+-		board_i2c_expander_setup();
++	if (davinci_i2c_expander.setup != NULL)
++		davinci_i2c_expander.setup();
++#endif
++	return 0;
++}
++
++static int davinci_i2c_detach_adapter(struct i2c_adapter *adapter)
++{
++	struct i2c_client *client = &davinci_i2c_client;
++
++	if (client->adapter == adapter)
++		client->adapter = NULL;
+ 
+ 	return 0;
+ }
+ 
+ static int davinci_i2c_detach_client(struct i2c_client *client)
+ {
+-	int err;
+-
++#ifdef	CONFIG_DAVINCI_I2C_EXPANDER
+ 	if (client->adapter == NULL)
+ 		return -ENODEV; 	/* our client isn't attached */
+ 
+-	err = i2c_detach_client(client);
+-	if (!err)
+-		client->adapter = NULL;
+-	return err;
++	return i2c_detach_client(client);
++#else
++	return -ENODEV;
++#endif
+ }
+ 
+ /* This is the driver that will be inserted */
+@@ -179,14 +172,12 @@ static struct i2c_driver davinci_evm_dri
+ 		.name	= "davinci_evm",
+ 	},
+ 	.attach_adapter	= davinci_i2c_attach_adapter,
++	.detach_adapter	= davinci_i2c_detach_adapter,
+ 	.detach_client	= davinci_i2c_detach_client,
+ };
+ 
+-/* There are actually 3 expanders on DaVinci EVM, one is LEDs only... */
+ static struct i2c_client davinci_i2c_client = {
+-	.addr	 	= 0x3A,
+ 	.driver 	= &davinci_evm_driver,
+-	.name		= "davinci_evm_expander1",
+ };
+ 
+ static int __init davinci_i2c_client_init(void)
+Index: linux-2.6.18/drivers/char/cir.c
+===================================================================
+--- linux-2.6.18.orig/drivers/char/cir.c
++++ linux-2.6.18/drivers/char/cir.c
+@@ -334,7 +334,7 @@ int cir_open (struct inode *inode, struc
+ 	int i;
+ 
+ 	INIT_COMPLETION(cir_keys);
+-	davinci_i2c_expander_op(0x3a, CIR_MOD_DM646X, 0);
++	davinci_i2c_expander_op(CIR_MOD_DM646X, 0);
+ 	next_key_time = jiffies;
+ 
+ 	if (file->f_mode == FMODE_WRITE) {
+Index: linux-2.6.18/drivers/usb/musb/davinci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/davinci.c
++++ linux-2.6.18/drivers/usb/musb/davinci.c
+@@ -151,9 +151,9 @@ static int vbus_state = -1;
+ static inline void davinci_i2c_drvvbus(int is_on)
+ {
+ 	if (machine_is_davinci_evm())
+-		davinci_i2c_expander_op(0x3a, USB_DRVVBUS, !is_on);
++		davinci_i2c_expander_op(USB_DRVVBUS, !is_on);
+ 	else if (machine_is_davinci_dm6467_evm())
+-		davinci_i2c_expander_op(0x3a, USB_FB_DM646X, !is_on);
++		davinci_i2c_expander_op(USB_FB_DM646X, !is_on);
+ }
+ 
+ /* I2C operations are always synchronous, and require a task context.
+Index: linux-2.6.18/include/asm-arm/arch-davinci/i2c-client.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/i2c-client.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/i2c-client.h
+@@ -22,7 +22,7 @@
+ #ifndef _DAVINCI_I2C_CLIENT_H_
+ #define _DAVINCI_I2C_CLIENT_H_
+ 
+-typedef enum {
++enum i2c_expander_pins {
+         USB_DRVVBUS = 0,
+         VDDIMX_EN = 1,
+         VLYNQ_ON = 2,
+@@ -39,15 +39,24 @@ typedef enum {
+ 	CIR_MOD_DM646X = 5,
+ 	I2C_INT_DM646X = 6,
+ 	USB_FB_DM646X = 7
+-} i2c_expander_pins;
++};
++
++struct davinci_i2c_expander {
++	u16 address;
++	u8 init_data;
++	const char *name;
++	void (*setup)(void);
++	int (*validate)(enum i2c_expander_pins pin);
++	int (*special)(enum i2c_expander_pins pin, unsigned val);
++};
+ 
+ /*
+  * The board code will set this to point to its expander pin setup function
+  * to be called upon registering the I2C client.
+  */
+-extern void (*board_i2c_expander_setup)(void);
++extern struct davinci_i2c_expander davinci_i2c_expander;
+ 
+-int davinci_i2c_expander_op(u16 client_addr, i2c_expander_pins pin, u8 val);
++int davinci_i2c_expander_op(enum i2c_expander_pins pin, unsigned val);
+ int davinci_i2c_write(u8 size, u8 *val, u16 client_addr);
+ int davinci_i2c_read(u8 size, u8 *val, u16 client_addr);
+ 
+Index: linux-2.6.18/mvl_patches/pro50-2145.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2145.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2145);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

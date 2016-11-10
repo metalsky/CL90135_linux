@@ -1,0 +1,349 @@
+#! /usr/bin/env bash
+# Patch: -POWERPC_Change_include_protections_to_ASM_POWERPC
+# Date: Wed Dec  3 14:03:53 2008
+# Source: git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+# MR: 30078
+# Type: Enhancement
+# Disposition: backport
+# Signed-off-by: Randy Vinson <rvinson@mvista.com>
+# Description:
+# From f4dcd3c229a0745aff7d6835ca7c45aaeb293714 Mon Sep 17 00:00:00 2001
+# From: Becky Bruce <becky.bruce@freescale.com>
+# Date: Thu, 10 May 2007 10:13:04 -0500
+# Subject: [PATCH] [POWERPC] Change include protections to ASM_POWERPC
+# 
+# Change several headers in include/asm-powerpc that currently use some variation
+# of ASM_PPC to use ASM_POWERPC instead.
+# 
+# Signed-off-by: Becky Bruce <becky.bruce@freescale.com>
+# Signed-off-by: Kumar Gala <galak@kernel.crashing.org>
+
+PATCHNUM=1958
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+MR: 30078
+Type: Enhancement
+Disposition: backport
+Signed-off-by: Randy Vinson <rvinson@mvista.com>
+Description:
+From f4dcd3c229a0745aff7d6835ca7c45aaeb293714 Mon Sep 17 00:00:00 2001
+From: Becky Bruce <becky.bruce@freescale.com>
+Date: Thu, 10 May 2007 10:13:04 -0500
+Subject: [PATCH] [POWERPC] Change include protections to ASM_POWERPC
+
+Change several headers in include/asm-powerpc that currently use some variation
+of ASM_PPC to use ASM_POWERPC instead.
+
+Signed-off-by: Becky Bruce <becky.bruce@freescale.com>
+Signed-off-by: Kumar Gala <galak@kernel.crashing.org>
+Index: linux-2.6.18/include/asm-powerpc/mpc8260.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-powerpc/mpc8260.h
++++ linux-2.6.18/include/asm-powerpc/mpc8260.h
+@@ -5,8 +5,8 @@
+  * this one and the configuration switching is done here.
+  */
+ #ifdef __KERNEL__
+-#ifndef __ASM_PPC_MPC8260_H__
+-#define __ASM_PPC_MPC8260_H__
++#ifndef __ASM_POWERPC_MPC8260_H__
++#define __ASM_POWERPC_MPC8260_H__
+ 
+ 
+ #ifdef CONFIG_8260
+@@ -20,5 +20,5 @@
+ #endif
+ 
+ #endif /* CONFIG_8260 */
+-#endif /* !__ASM_PPC_MPC8260_H__ */
++#endif /* !__ASM_POWERPC_MPC8260_H__ */
+ #endif /* __KERNEL__ */
+Index: linux-2.6.18/include/asm-powerpc/pmac_feature.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-powerpc/pmac_feature.h
++++ linux-2.6.18/include/asm-powerpc/pmac_feature.h
+@@ -28,8 +28,8 @@
+  */
+ 
+ #ifdef __KERNEL__
+-#ifndef __PPC_ASM_PMAC_FEATURE_H
+-#define __PPC_ASM_PMAC_FEATURE_H
++#ifndef __ASM_POWERPC_PMAC_FEATURE_H
++#define __ASM_POWERPC_PMAC_FEATURE_H
+ 
+ #include <asm/macio.h>
+ #include <asm/machdep.h>
+@@ -393,5 +393,5 @@ extern u32 __iomem *uninorth_base;
+ #define UN_BIC(r,v)	(UN_OUT((r), UN_IN(r) & ~(v)))
+ 
+ 
+-#endif /* __PPC_ASM_PMAC_FEATURE_H */
++#endif /* __ASM_POWERPC_PMAC_FEATURE_H */
+ #endif /* __KERNEL__ */
+Index: linux-2.6.18/include/asm-powerpc/tsi108_irq.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-powerpc/tsi108_irq.h
++++ linux-2.6.18/include/asm-powerpc/tsi108_irq.h
+@@ -26,8 +26,8 @@
+  * demultiplexing on TSI108EMU/SVB boards.
+  */
+ 
+-#ifndef _ASM_PPC_TSI108_IRQ_H
+-#define _ASM_PPC_TSI108_IRQ_H
++#ifndef _ASM_POWERPC_TSI108_IRQ_H
++#define _ASM_POWERPC_TSI108_IRQ_H
+ 
+ /*
+  * Tsi108 interrupts
+@@ -121,4 +121,4 @@ typedef enum {
+ 	TSI108_IRQ_DIRECTED,
+ 	TSI108_IRQ_DISTRIBUTED,
+ } TSI108_IRQ_MODE;
+-#endif				/*  _ASM_PPC_TSI108_IRQ_H */
++#endif				/*  _ASM_POWERPC_TSI108_IRQ_H */
+Index: linux-2.6.18/include/asm-powerpc/tsi108_pci.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-powerpc/tsi108_pci.h
++++ linux-2.6.18/include/asm-powerpc/tsi108_pci.h
+@@ -18,8 +18,8 @@
+  * MA 02111-1307 USA
+  */
+ 
+-#ifndef _ASM_PPC_TSI108_PCI_H
+-#define _ASM_PPC_TSI108_PCI_H
++#ifndef _ASM_POWERPC_TSI108_PCI_H
++#define _ASM_POWERPC_TSI108_PCI_H
+ 
+ #include <asm/tsi108.h>
+ 
+@@ -43,4 +43,4 @@ extern void tsi108_irq_cascade(unsigned 
+ 	       			struct pt_regs *regs);
+ extern void tsi108_clear_pci_cfg_error(void);
+ 
+-#endif				/*  _ASM_PPC_TSI108_PCI_H */
++#endif				/*  _ASM_POWERPC_TSI108_PCI_H */
+Index: linux-2.6.18/include/asm-powerpc/unistd.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-powerpc/unistd.h
++++ linux-2.6.18/include/asm-powerpc/unistd.h
+@@ -1,5 +1,5 @@
+-#ifndef _ASM_PPC_UNISTD_H_
+-#define _ASM_PPC_UNISTD_H_
++#ifndef _ASM_POWERPC_UNISTD_H_
++#define _ASM_POWERPC_UNISTD_H_
+ 
+ /*
+  * This file contains the system call numbers.
+@@ -495,4 +495,4 @@ extern int execve(const char *file, char
+ #endif		/* __ASSEMBLY__ */
+ #endif		/* __KERNEL__ */
+ 
+-#endif /* _ASM_PPC_UNISTD_H_ */
++#endif /* _ASM_POWERPC_UNISTD_H_ */
+Index: linux-2.6.18/mvl_patches/pro50-1958.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1958.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1958);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

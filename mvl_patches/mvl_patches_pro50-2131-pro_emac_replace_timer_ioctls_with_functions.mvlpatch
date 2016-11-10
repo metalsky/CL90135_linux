@@ -1,0 +1,399 @@
+#! /usr/bin/env bash
+# Patch: -pro_emac_replace_timer_ioctls_with_functions
+# Date: Thu Feb 19 15:02:46 2009
+# Source: MontaVista Software, Inc.
+# MR: 28780
+# Type:  Enhancement
+# Disposition: needs submitting to
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+# Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+# Description:
+# Timer ioctls (emac_control_cb) are replaced with functions.
+# 
+
+PATCHNUM=2131
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28780
+Type:  Enhancement
+Disposition: needs submitting to
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+Description:
+Timer ioctls (emac_control_cb) are replaced with functions.
+
+Index: linux-2.6.18/drivers/net/davinci_emac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac.c
++++ linux-2.6.18/drivers/net/davinci_emac.c
+@@ -395,11 +395,6 @@ typedef void *emac_net_data_token;
+ #define EMAC_IOCTL_ETHER_COUNTERS     	 (EMAC_IOCTL_BASE + 14)
+ #define EMAC_IOCTL_IF_PARAMS_UPDT   	 (EMAC_IOCTL_BASE + 15)
+ 
+-#define EMAC_IOCTL_TIMER_START           (EMAC_IOCTL_BASE + 16)
+-#define EMAC_IOCTL_TIMER_STOP            (EMAC_IOCTL_BASE + 17)
+-#define EMAC_IOCTL_MIB64_CNT_TIMER_START (EMAC_IOCTL_BASE + 19)
+-#define EMAC_IOCTL_MIB64_CNT_TIMER_STOP  (EMAC_IOCTL_BASE + 20)
+-
+ #define EMAC_PRIV_FILTERING              (EMAC_IOCTL_BASE + 21)
+ #define EMAC_PRIV_MII_READ               (EMAC_IOCTL_BASE + 22)
+ #define EMAC_PRIV_MII_WRITE              (EMAC_IOCTL_BASE + 23)
+@@ -1414,10 +1409,6 @@ static void emac_enable_interrupt(struct
+  * linux timer API */
+ typedef void (*timer_tick_func) (unsigned long);
+ 
+-/* DDA function table */
+-static int emac_control_cb(struct emac_dev *dev, int cmd,
+-			   void *cmd_arg, void *param);
+-
+ /* function prototypes */
+ static int emac_send(struct emac_dev *dev, net_pkt_obj *pkt,
+ 		     int channel, bool send_args);
+@@ -1573,73 +1564,6 @@ static void emac_str_to_ethaddr(unsigned
+  *  DDA Callback functions
+  *****************************************************************************/
+ 
+-/* emac_control_cb - ioctl function to be called by the DDC */
+-static int emac_control_cb(struct emac_dev *dev, int cmd,
+-			   void *cmd_arg, void *param)
+-{
+-	switch (cmd) {
+-	case EMAC_IOCTL_TIMER_START:
+-		{
+-			/* cmd will directly have the timer period
+-			 * of the periodic timer, param not used */
+-
+-			/* asks for milliSecs. So calculate ticks
+-			 * from ticks per 1000 mSec
+-			 */
+-			struct timer_list *p_timer = &dev->periodic_timer;
+-
+-			dev->periodic_ticks =
+-			    (EMAC_TICKS_PER_SEC * (int)cmd_arg) / 1000;
+-			p_timer->expires = jiffies + dev->periodic_ticks;
+-			add_timer(&dev->periodic_timer);
+-			dev->timer_active = TRUE;
+-
+-		}
+-		break;
+-
+-	case EMAC_IOCTL_TIMER_STOP:
+-		/* cmd and param not used */
+-		if (dev->timer_active == TRUE) {
+-			del_timer_sync(&dev->periodic_timer);
+-			dev->timer_active = FALSE;
+-		}
+-		break;
+-
+-	case EMAC_IOCTL_MIB64_CNT_TIMER_START:
+-		{
+-			/* cmd will directly have the timer period of the
+-			 * periodic timer, param not used */
+-
+-			/* asks for milli_secs. so calculate ticks
+-			 * from ticks per 1000 m_sec */
+-			struct timer_list *p_timer = &dev->mib_timer;
+-
+-			dev->mib_ticks =
+-			    (EMAC_TICKS_PER_SEC * (int)cmd_arg) / 1000;
+-			p_timer->expires = jiffies + dev->mib_ticks;
+-			add_timer(p_timer);
+-			dev->mib_timer_active = TRUE;
+-		}
+-		break;
+-
+-	case EMAC_IOCTL_MIB64_CNT_TIMER_STOP:
+-		{
+-			/* cmd_arg and param not used */
+-			if (dev->mib_timer_active == TRUE) {
+-				del_timer_sync(&dev->mib_timer);
+-				dev->mib_timer_active = FALSE;
+-			}
+-		}
+-		break;
+-
+-	default:
+-		pr_debug("Unhandled ioctl code %d\n", cmd);
+-		break;
+-	}
+-
+-	return (EMAC_SUCCESS);
+-}
+-
+ static void emac_status_update(struct emac_dev *dev, emac_status *cmd_arg)
+ {
+ 
+@@ -1705,6 +1629,30 @@ static void emac_status_update(struct em
+ 			 "Linked" : "NO LINK"));
+ }
+ 
++static void emac_timer_start(struct emac_dev *dev, u32 cmd_arg)
++{
++	/* cmd will directly have the timer period of the
++	 * periodic timer, param not used */
++
++	/* asks for milli_secs. so calculate ticks
++	 * from ticks per 1000 m_sec */
++	struct timer_list *p_timer = &dev->mib_timer;
++
++	dev->mib_ticks = (EMAC_TICKS_PER_SEC * cmd_arg) / 1000;
++	p_timer->expires = jiffies + dev->mib_ticks;
++	add_timer(p_timer);
++	dev->mib_timer_active = TRUE;
++}
++
++static void emac_timer_stop(struct emac_dev *dev)
++{
++	/* cmd_arg and param not used */
++	if (dev->mib_timer_active == TRUE) {
++		del_timer_sync(&dev->mib_timer);
++		dev->mib_timer_active = FALSE;
++	}
++}
++
+ /*****************************************************************************
+  *
+  * emacEndGetConfig - Extract configuration for given unit number/instance
+@@ -3879,11 +3827,6 @@ static int emac_open(struct emac_dev *de
+ 	 * update DDA layer */
+ 	emac_set_phy_mode(dev);
+ 
+-	/* start the tick timer via DDA */
+-	emac_control_cb(dev,
+-			EMAC_IOCTL_TIMER_START,
+-			(void *)init_cfg->mdio_tick_msec, NULL);
+-
+ 	/* enable opened TX channels */
+ 	for (channel = 0; channel < EMAC_MAX_TX_CHANNELS; channel++) {
+ 		if (dev->tx_cppi[channel] != NULL) {
+@@ -3944,9 +3887,7 @@ static int emac_open(struct emac_dev *de
+ 	dev->regs->mac_control = dev->mac_control;
+ 
+ 	/* start the MIB cnt tick timer via DDA */
+-	emac_control_cb(dev,
+-			EMAC_IOCTL_MIB64_CNT_TIMER_START,
+-			(void *)init_cfg->mib64cnt_msec, NULL);
++	emac_timer_start(dev, init_cfg->mib64cnt_msec);
+ 
+ 	/* enable interrupts via module control (wrapper) */
+ 	emac_enable_interrupt(dev, 1);
+@@ -3979,11 +3920,8 @@ static int emac_close(struct emac_dev *d
+ 		return (EMAC_ERR_DEV_ALREADY_CLOSED);
+ 	}
+ 
+-	/* stop the tick timer via DDA */
+-	emac_control_cb(dev, EMAC_IOCTL_TIMER_STOP, NULL, NULL);
+-
+ 	/* stop the mib timer via DDA */
+-	emac_control_cb(dev, EMAC_IOCTL_MIB64_CNT_TIMER_STOP, NULL, NULL);
++	emac_timer_stop(dev);
+ 	/* close TX channels */
+ 	for (channel = 0; channel < EMAC_MAX_TX_CHANNELS; channel++) {
+ 		if (dev->tx_cppi[channel] != NULL) {
+Index: linux-2.6.18/mvl_patches/pro50-2131.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2131.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2131);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

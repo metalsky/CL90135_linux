@@ -1,0 +1,558 @@
+#! /usr/bin/env bash
+# Patch: -pro_davinci_rtc
+# Date: Fri Sep 19 13:56:04 2008
+# Source: MontaVista Software, Inc.
+# MR: 23591
+# Type: Integration
+# Disposition: merged from linux-davinci-2.6.git
+# Signed-off-by: Vladimir Barinov <vbarinov@ru.mvista.com>
+# Description:
+#     Davinci EVM RTC support
+#     
+#     
+
+PATCHNUM=1508
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 23591
+Type: Integration
+Disposition: merged from linux-davinci-2.6.git
+Signed-off-by: Vladimir Barinov <vbarinov@ru.mvista.com>
+Description:
+    Davinci EVM RTC support
+    
+    
+Index: linux-2.6.18/drivers/rtc/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/rtc/Kconfig
++++ linux-2.6.18/drivers/rtc/Kconfig
+@@ -116,6 +116,15 @@ config RTC_DRV_X1205
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called rtc-x1205.
+ 
++config RTC_DRV_DAVINCI_EVM
++	tristate "TI DaVinci EVM RTC"
++	depends on RTC_CLASS && I2C_DAVINCI && MACH_DAVINCI_EVM
++	help
++	  Supports the RTC firmware in the MSP430 on the DaVinci EVM.
++
++	  This driver can also be built as a module. If so, the module
++	  will be called rtc-davinci-evm.
++
+ config RTC_DRV_DS1307
+ 	tristate "Dallas/Maxim DS1307 and similar I2C RTC chips"
+ 	depends on RTC_CLASS && I2C
+Index: linux-2.6.18/drivers/rtc/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/rtc/Makefile
++++ linux-2.6.18/drivers/rtc/Makefile
+@@ -14,6 +14,7 @@ obj-$(CONFIG_RTC_INTF_DEV)	+= rtc-dev.o
+ obj-$(CONFIG_RTC_DRV_CMOS)	+= rtc-cmos.o
+ obj-$(CONFIG_RTC_DRV_X1205)	+= rtc-x1205.o
+ obj-$(CONFIG_RTC_DRV_ISL1208)	+= rtc-isl1208.o
++obj-$(CONFIG_RTC_DRV_DAVINCI_EVM) += rtc-davinci-evm.o
+ obj-$(CONFIG_RTC_DRV_TEST)	+= rtc-test.o
+ obj-$(CONFIG_RTC_DRV_DS1307)	+= rtc-ds1307.o
+ obj-$(CONFIG_RTC_DRV_DS1374)	+= rtc-ds1374.o
+Index: linux-2.6.18/drivers/rtc/rtc-davinci-evm.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/rtc/rtc-davinci-evm.c
+@@ -0,0 +1,271 @@
++/*
++ * rtc-davinci-evm.c
++ *
++ * Copyright (C) 2004 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#include <linux/init.h>
++#include <linux/fs.h>
++#include <linux/module.h>
++#include <linux/proc_fs.h>
++#include <linux/ctype.h>
++#include <linux/delay.h>
++#include <linux/rtc.h>
++#include <linux/bcd.h>
++#include <linux/err.h>
++#include <linux/platform_device.h>
++
++#include <asm/mach-types.h>
++#include <asm/arch/i2c-client.h>
++
++
++/* REVISIT
++ *  - the firmware expects no I2C writes at all, not just no RTC-via-I2C
++ *    writes, for 100 usec after i2c read or write... that can't be
++ *    assured here.
++ *
++ *  - this am vs pm thing is bizarre ... firmware should just do a 24 hour
++ *    clock, rather than 12 hour with hidden am/pm (we must guess).
++ *    similarly with it trying to handle DST for us...
++ *
++ *  - better (and simpler!!) firmware would support an RTC alarm, and just
++ *    count seconds since some UTC instant, letting Linux handle calendar
++ *    issues (leapyear, day of week, etc) and DST.
++ */
++static unsigned char am;
++
++
++static int evm_read_time(struct device *dev, struct rtc_time *tm)
++{
++	char rtcdata [9];
++
++	rtcdata[0] = 2;
++	rtcdata[1] = 1;
++	davinci_i2c_write(2, rtcdata, 0x23);
++
++	msleep(1);
++	davinci_i2c_read(9, rtcdata, 0x23);
++	msleep(1);
++
++	/* FIXME the RTC reports 12-hour time, without an AM/PM indicator,
++	 * but Linux requires that we report 24 hour time...
++	 */
++
++	tm->tm_year = BCD_TO_BIN(rtcdata[3]) * 100
++			+ BCD_TO_BIN(rtcdata[2])
++			- 1900;
++	tm->tm_mon = BCD_TO_BIN(rtcdata[4]);
++	tm->tm_mday = BCD_TO_BIN(rtcdata[5]);
++	tm->tm_hour = BCD_TO_BIN(rtcdata[6]);
++	tm->tm_min = BCD_TO_BIN(rtcdata[7]);
++	tm->tm_sec = BCD_TO_BIN(rtcdata[8]);
++
++	return 0;
++}
++
++static void am_or_pm(struct device *dev)
++{
++	char rtcdata [9];
++	struct rtc_time tm, time, temp;
++	unsigned char mon, day, hrs, min, sec;
++	unsigned char yr_low, yr_high;
++	unsigned int yrs;
++
++	evm_read_time(dev, &tm);
++
++	temp = tm;
++
++	yrs = temp.tm_year + 1900;
++	yr_high = yrs / 100;
++	yr_low = yrs % 100;
++
++	mon = temp.tm_mon + 1;
++	day = temp.tm_mday;
++	min = 59;
++	sec = 59;
++	hrs = 11;
++
++	rtcdata [0] = 9;
++	rtcdata [1] = 0;
++	rtcdata [2] = BIN_TO_BCD(yr_low);
++	rtcdata [3] = BIN_TO_BCD(yr_high);
++	mon--;
++	rtcdata [4] = BIN_TO_BCD(mon);
++	rtcdata [5] = BIN_TO_BCD(day);
++	rtcdata [6] = BIN_TO_BCD(hrs);
++	rtcdata [7] = BIN_TO_BCD(min);
++	rtcdata [8] = BIN_TO_BCD(sec);
++	davinci_i2c_write(9, rtcdata, 0x23);
++	msleep(1);
++	msleep(1000);
++	evm_read_time(dev, &time);
++
++	if (time.tm_mday == temp.tm_mday)
++		am = 1;
++	else
++		am = 0;
++
++	davinci_i2c_write(9, rtcdata, 0x23);
++	msleep(1);
++	msleep(1000);
++
++	yrs = tm.tm_year + 1900;
++	yr_high = yrs / 100;
++	yr_low = yrs % 100;
++
++	mon = tm.tm_mon + 1;
++	day = tm.tm_mday;
++	min = tm.tm_min;
++	hrs = tm.tm_hour;
++
++	if (tm.tm_sec < 58)
++		sec = tm.tm_sec + 2;
++	else
++		sec = 59;
++
++	davinci_i2c_write(9, rtcdata, 0x23);
++	msleep(1);
++}
++
++static int evm_set_time(struct device *dev, struct rtc_time *tm)
++{
++	char rtcdata [9];
++	char ampmdata [9];
++	unsigned char mon, day, hrs = 0, min, sec, leap_yr;
++	unsigned char yr_low, yr_high;
++	unsigned int yrs;
++
++	am_or_pm(dev);
++
++	yrs = tm->tm_year + 1900;
++	yr_high = yrs / 100;
++	yr_low = yrs % 100;
++
++	mon = tm->tm_mon;
++	hrs = tm->tm_hour;
++	day = tm->tm_mday;
++	min = tm->tm_min;
++	sec = tm->tm_sec;
++
++        leap_yr = ((!(yrs % 4) && (yrs % 100)) || !(yrs % 400));
++
++	if (am == 1 && tm->tm_hour <= 12) {
++		hrs = tm->tm_hour;
++		if (tm->tm_hour == 0)
++			hrs = tm->tm_hour + 12;
++
++	} else if ((am == 1 && tm->tm_hour > 12)
++			|| (am == 0 && tm->tm_hour < 12)) {
++		unsigned char mon1 = mon, day1 = day, hrs1 = 11;
++		unsigned char min1 = 59, sec1 = 59;
++		unsigned char yr_low1 = yr_low, yr_high1 = yr_high;
++
++		ampmdata [0] = 9;
++		ampmdata [1] = 0;
++		ampmdata [2] = BIN_TO_BCD(yr_low1);
++		ampmdata [3] = BIN_TO_BCD(yr_high1);
++		ampmdata [4] = BIN_TO_BCD(mon1);
++		ampmdata [5] = BIN_TO_BCD(day1);
++		ampmdata [6] = BIN_TO_BCD(hrs1);
++		ampmdata [7] = BIN_TO_BCD(min1);
++		ampmdata [8] = BIN_TO_BCD(sec1);
++		davinci_i2c_write(9, ampmdata, 0x23);
++		msleep(1);
++		msleep(1000);
++		am = (am == 1) ? 0 : 1;
++
++		if (!am)
++			hrs = tm->tm_hour - 12;
++		else if (tm->tm_hour == 0)
++			hrs = tm->tm_hour + 12;
++
++	} else if (am == 0 && tm->tm_hour > 12)
++		hrs = tm->tm_hour - 12;
++
++	rtcdata [0] = 9;
++	rtcdata [1] = 0;
++	rtcdata [2] = BIN_TO_BCD(yr_low);
++	rtcdata [3] = BIN_TO_BCD(yr_high);
++	rtcdata [4] = BIN_TO_BCD(mon);
++	rtcdata [5] = BIN_TO_BCD(day);
++	rtcdata [6] = BIN_TO_BCD(hrs);
++	rtcdata [7] = BIN_TO_BCD(min);
++	rtcdata [8] = BIN_TO_BCD(sec);
++
++	davinci_i2c_write(9, rtcdata, 0x23);
++	msleep(1);
++
++	return 0;
++}
++
++static struct rtc_class_ops evm_rtc_ops = {
++	.read_time	= evm_read_time,
++	.set_time	= evm_set_time,
++};
++
++static int __devinit evm_rtc_probe(struct platform_device *pdev)
++{
++	struct rtc_device	*rtc;
++
++	/* the 2005-12-05 firmware doesn't issue RTC alarms on GPIO(7);
++	 * it only uses IRQ for card detect irqs with removable media.
++	 * plus it also hides the am/pm indicator and does magic DST...
++	 */
++	rtc = rtc_device_register(pdev->name, &pdev->dev,
++			&evm_rtc_ops, THIS_MODULE);
++	if (IS_ERR(rtc))
++		return PTR_ERR(rtc);
++
++	printk(KERN_WARNING "%s: hours 12-23 are misreported as "
++			"duplicate hours 00-11\n",
++			rtc->class_dev.class_id);
++
++	platform_set_drvdata(pdev, rtc);
++	return 0;
++}
++
++static int __devexit evm_rtc_remove(struct platform_device *pdev)
++{
++	rtc_device_unregister(platform_get_drvdata(pdev));
++	return 0;
++}
++
++static struct platform_driver evm_rtc_driver = {
++	.driver = {
++		.name		= "rtc_davinci_evm",
++	},
++	.probe		= evm_rtc_probe,
++	.remove		= __devexit_p(evm_rtc_remove),
++};
++
++static int evm_rtc_init(void)
++{
++	if (!machine_is_davinci_evm())
++		return -ENODEV;
++
++	return platform_driver_register(&evm_rtc_driver);
++}
++module_init(evm_rtc_init);
++
++static void evm_rtc_exit(void)
++{
++	platform_driver_unregister(&evm_rtc_driver);
++}
++module_exit(evm_rtc_exit);
++
++MODULE_DESCRIPTION("RTC driver for TI DaVinci EVM");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+@@ -92,8 +92,14 @@ static struct platform_device davinci_ev
+ 	.resource	= &davinci_evm_flash_resource,
+ };
+ 
++static struct platform_device rtc_dev = {
++	.name		= "rtc_davinci_evm",
++	.id		= -1,
++};
++
+ static struct platform_device *davinci_evm_devices[] __initdata = {
+ 	&davinci_evm_flash_device,
++	&rtc_dev,
+ };
+ 
+ static void __init
+Index: linux-2.6.18/mvl_patches/pro50-1508.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1508.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1508);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

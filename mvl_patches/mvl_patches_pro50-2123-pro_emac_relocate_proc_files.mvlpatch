@@ -1,0 +1,436 @@
+#! /usr/bin/env bash
+# Patch: -pro_emac_relocate_proc_files
+# Date: Thu Feb 19 15:01:59 2009
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+# Source: MontaVista Software, Inc.   
+# MR: 28780  
+# Type: enhancement
+# Disposition: local  
+# Description:   
+#   
+# Put initialization of the proc files to the right location.
+# 
+#  drivers/net/davinci_emac.c |  122 ++++++++++++++++++++++++++++-----------------
+#  1 file changed, 77 insertions(+), 45 deletions(-)
+# 
+
+PATCHNUM=2123
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>
+Source: MontaVista Software, Inc.   
+MR: 28780  
+Type: enhancement
+Disposition: local  
+Description:   
+  
+Put initialization of the proc files to the right location.
+
+ drivers/net/davinci_emac.c |  125 +++++++++++++++++++++++++++------------------
+ mvl_patches/pro50-2123.c   |   16 +++++
+ 2 files changed, 93 insertions(+), 48 deletions(-)
+
+Index: linux-2.6.18/drivers/net/davinci_emac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac.c
++++ linux-2.6.18/drivers/net/davinci_emac.c
+@@ -1570,21 +1570,6 @@ static struct net_device_stats *emac_dev
+ /* internal function prototypes */
+ static int __init emac_p_detect_manual_cfg(int, char *);
+ 
+-static int emac_p_read_stats(char *buf, char **start, off_t offset, int count,
+-			     int *eof, void *data);
+-
+-static int emac_p_write_stats(struct file *fp, const char *buf,
+-			      unsigned long count, void *data);
+-
+-static int emac_p_read_link(char *buf, char **start, off_t offset, int count,
+-			    int *eof, void *data);
+-
+-static int emac_dump_config(char *buf, char **start, off_t offset, int count,
+-			    int *eof, void *data);
+-
+-static int emac_p_get_version(char *buf, char **start, off_t offset,
+-			      int count, int *eof, void *data);
+-
+ static int emac_p_update_statistics(struct net_device *netdev, char *buf,
+ 				    int limit, int *p_len);
+ 
+@@ -6704,9 +6689,67 @@ static void emac_enable_interrupt(struct
+         }
+ }
+ 
+-/******************************************************************************
+- *  Linux Module Init/Exit
+- *****************************************************************************/
++/*
++ * proc/sysfs stuff
++ */
++
++static int init_proc(void)
++{
++	struct proc_dir_entry *gp_stats_file;
++
++	create_proc_read_entry("net/emac_link", 0, NULL, emac_p_read_link,
++			NULL);
++	create_proc_read_entry("net/emac_ver", 0, NULL, emac_p_get_version,
++			NULL);
++	create_proc_read_entry("net/emac_config", 0, NULL, emac_dump_config,
++			NULL);
++	gp_stats_file = create_proc_entry("net/emac_stats", 0644, NULL);
++	if (gp_stats_file) {
++		gp_stats_file->read_proc = emac_p_read_stats;
++		gp_stats_file->write_proc = emac_p_write_stats;
++	}
++
++	return 0;
++}
++
++static void exit_proc(void)
++{
++	remove_proc_entry("net/emac_link", NULL);
++	remove_proc_entry("net/emac_ver", NULL);
++	remove_proc_entry("net/emac_config", NULL);
++	remove_proc_entry("net/emac_stats", NULL);
++}
++
++static void format_proc_name(char *buf, int len, struct emac_dev *dev)
++{
++	strncpy(buf, "net/emac_", len);
++	buf[len - 1] = 0;
++	strncat(buf, ((struct net_device *)dev->owner)->name, len - strlen(buf));
++	strncat(buf, "_rfc2665_stats", len - strlen(buf));
++}
++
++#define PROC_NAME_MAX_LEN 50
++
++static int create_proc_entries_for_dev(struct emac_dev *dev)
++{
++	char proc_name[PROC_NAME_MAX_LEN];
++
++	format_proc_name(proc_name, PROC_NAME_MAX_LEN, dev);
++
++	create_proc_read_entry(proc_name, 0, NULL,
++			emac_p_read_rfc2665_stats, dev->owner);
++
++	return 0;
++}
++
++static void delete_proc_entries_for_dev(struct emac_dev *dev)
++{
++	char proc_name[PROC_NAME_MAX_LEN];
++
++	format_proc_name(proc_name, PROC_NAME_MAX_LEN, dev);
++
++	remove_proc_entry(proc_name, NULL);
++}
+ 
+ static ssize_t emac_show_version(struct device_driver *drv, char *buf)
+ {
+@@ -6715,7 +6758,10 @@ static ssize_t emac_show_version(struct 
+ 
+ static DRIVER_ATTR(version, S_IRUGO, emac_show_version, NULL);
+ 
+-/* probe number of EMAC instances and register net_device structure */
++/*
++ * probe/remove stuff
++ */
++
+ static int __init davinci_emac_probe(struct platform_device *pdev)
+ {
+ 	struct emac_init_config *pdata = pdev->dev.platform_data;
+@@ -6774,9 +6820,7 @@ static int __init davinci_emac_probe(str
+ 		pr_debug("%s irq=%2d io=%04x\n",
+ 		    netdev->name, (int)netdev->irq,
+ 		    (int)netdev->base_addr);
+-		create_proc_read_entry("net/emac_rfc2665_stats", 0,
+-				       NULL, emac_p_read_rfc2665_stats,
+-				       netdev);
++		create_proc_entries_for_dev (dev);
+ 	}
+ 	if (err == 0) {
+ 		/* to maintain backward compatibility with NSP. */
+@@ -6785,12 +6829,6 @@ static int __init davinci_emac_probe(str
+ 			gp_stats_file->read_proc = emac_p_read_stats;
+ 			gp_stats_file->write_proc = emac_p_write_stats;
+ 		}
+-		create_proc_read_entry("net/emac_link", 0, NULL,
+-				       emac_p_read_link, NULL);
+-		create_proc_read_entry("net/emac_ver", 0, NULL,
+-				       emac_p_get_version, NULL);
+-		create_proc_read_entry("net/emac_config", 0, NULL,
+-				       emac_dump_config, NULL);
+ 	}
+ 	emac_devices_installed++;
+ 
+@@ -6811,9 +6849,6 @@ static int __devexit davinci_emac_remove
+ 	struct emac_dev *dev = NETDEV_PRIV(netdev);
+ 	int ret_code;
+ 
+-	char proc_name[100];
+-	int proc_category_name_len = 0;
+-
+ 	/* free EMAC clock */
+ 	clk_disable(emac_clk);
+ 
+@@ -6831,11 +6866,7 @@ static int __devexit davinci_emac_remove
+ 	}
+ 
+ 	/* delete the proc entry */
+-	strcpy(proc_name, "davinci/");
+-	strcat(proc_name, netdev->name);
+-	proc_category_name_len = strlen(proc_name);
+-	strcpy(proc_name + proc_category_name_len, "_rfc2665_stats");
+-	remove_proc_entry(proc_name, NULL);
++	delete_proc_entries_for_dev(dev);
+ 
+ 	if (g_init_enable_flag)
+ 		emac_p_dev_disable(dev);
+@@ -6855,13 +6886,6 @@ static int __devexit davinci_emac_remove
+ 
+ 	emac_devices_installed--;
+ 
+-	if (gp_stats_file)
+-		remove_proc_entry("net/emac_stats", NULL);
+-
+-	remove_proc_entry("net/emac_link", NULL);
+-	remove_proc_entry("net/emac_ver", NULL);
+-	remove_proc_entry("net/emac_config", NULL);
+-
+ 	return 0;
+ }
+ 
+@@ -6877,17 +6901,22 @@ static struct platform_driver davinci_em
+ static int __init davinci_emac_init(void)
+ {
+ 	int err = platform_driver_register(&davinci_emac_driver);
+-	if (!err)
+-		driver_create_file(&davinci_emac_driver.driver,
+-				&driver_attr_version);
+-	return err;
++	if (err)
++		return err;
++
++	driver_create_file(&davinci_emac_driver.driver, &driver_attr_version);
++
++	init_proc();
++
++	return 0;
+ }
+ 
+ static void __exit davinci_emac_exit(void)
+ {
++	exit_proc();
++
+ 	driver_remove_file(&davinci_emac_driver.driver, &driver_attr_version);
+ 	platform_driver_unregister(&davinci_emac_driver);
+-
+ }
+ 
+ module_init(davinci_emac_init);
+Index: linux-2.6.18/mvl_patches/pro50-2123.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2123.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2123);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

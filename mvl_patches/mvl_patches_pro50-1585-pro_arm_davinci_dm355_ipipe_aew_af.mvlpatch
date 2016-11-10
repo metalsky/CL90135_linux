@@ -1,0 +1,6352 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_dm355_ipipe_aew_af
+# Date: Fri Sep 19 14:01:27 2008
+# Source: MontaVista Software, Inc.
+# MR: 28149
+# Type: Integration
+# Disposition: merged from pro_40
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description: DaVinci dm355 auto focus, auto white balance and ipipe support.
+# 
+#  drivers/media/video/Kconfig                   |   26 
+#  drivers/media/video/davinci/Makefile          |    7 
+#  drivers/media/video/davinci/dm355_aew.c       |  818 +++++++++++++
+#  drivers/media/video/davinci/dm355_aew_hw.c    |  149 ++
+#  drivers/media/video/davinci/dm355_af.c        |  798 +++++++++++++
+#  drivers/media/video/davinci/dm355_af_hw.c     |  171 ++
+#  drivers/media/video/davinci/dm355_ipipe.c     | 1564 ++++++++++++++++++++++++++
+#  drivers/media/video/davinci/dm355_ipipe_hw.c  |  725 ++++++++++++
+#  drivers/media/video/davinci/ipipe_para.h      |  228 +++
+#  include/asm-arm/arch-davinci/dm355_aew.h      |  156 ++
+#  include/asm-arm/arch-davinci/dm355_aew_hw.h   |  136 ++
+#  include/asm-arm/arch-davinci/dm355_af.h       |  182 +++
+#  include/asm-arm/arch-davinci/dm355_af_hw.h    |  164 ++
+#  include/asm-arm/arch-davinci/dm355_ipipe.h    |  553 +++++++++
+#  include/asm-arm/arch-davinci/dm355_ipipe_hw.h |  324 +++++
+#  15 files changed, 5998 insertions(+), 3 deletions(-)
+# 
+
+PATCHNUM=1585
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28149
+Type: Integration
+Disposition: merged from pro_40
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description: DaVinci dm355 auto focus, auto white balance and ipipe support.
+
+ drivers/media/video/Kconfig                   |   26 
+ drivers/media/video/davinci/Makefile          |    7 
+ drivers/media/video/davinci/dm355_aew.c       |  818 +++++++++++++
+ drivers/media/video/davinci/dm355_aew_hw.c    |  149 ++
+ drivers/media/video/davinci/dm355_af.c        |  798 +++++++++++++
+ drivers/media/video/davinci/dm355_af_hw.c     |  171 ++
+ drivers/media/video/davinci/dm355_ipipe.c     | 1564 ++++++++++++++++++++++++++
+ drivers/media/video/davinci/dm355_ipipe_hw.c  |  725 ++++++++++++
+ drivers/media/video/davinci/ipipe_para.h      |  228 +++
+ include/asm-arm/arch-davinci/dm355_aew.h      |  156 ++
+ include/asm-arm/arch-davinci/dm355_aew_hw.h   |  136 ++
+ include/asm-arm/arch-davinci/dm355_af.h       |  182 +++
+ include/asm-arm/arch-davinci/dm355_af_hw.h    |  164 ++
+ include/asm-arm/arch-davinci/dm355_ipipe.h    |  553 +++++++++
+ include/asm-arm/arch-davinci/dm355_ipipe_hw.h |  324 +++++
+ mvl_patches/pro50-1585.c                      |   16 
+ 16 files changed, 6014 insertions(+), 3 deletions(-)
+
+Index: linux-2.6.18/drivers/media/video/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/Kconfig
++++ linux-2.6.18/drivers/media/video/Kconfig
+@@ -94,14 +94,34 @@ config AF
+ 	depends on VIDEO_DEV && VIDEO_DAVINCI_CAPTURE && ARCH_DAVINCI_DM644x
+ 	default n
+ 	help
+-		DaVinci Auto Focus Driver
++	  DaVinci Auto Focus Driver
+ 
+ config AEW
+ 	tristate "DaVinci Auto Exposure/White Balancing Driver"
+ 	depends on VIDEO_DEV && VIDEO_DAVINCI_CAPTURE && ARCH_DAVINCI_DM644x
+ 	default n
+-        help
+-		DaVinci Auto Exposure/White Balancing Driver
++	help
++	  DaVinci Auto Exposure/White Balancing Driver
++
++config DM355_IPIPE
++	depends on ARCH_DAVINCI && VIDEO_MT9T001 && ARCH_DAVINCI_DM355
++	tristate "DM355 IPIPE"
++	help
++	  DM3555 IPIPE driver
++
++config DM355_AF
++	tristate "DM355 Auto Focus Driver"
++	depends on ARCH_DAVINCI && VIDEO_DAVINCI_CAPTURE && ARCH_DAVINCI_DM355
++	help
++	  DM355 Auto Focus Driver.This may be able to work for Davinci H3A as well,
++	  but it is not validated
++
++config DM355_AEW
++	tristate "DM355 Auto exposure /White Balance Driver"
++	depends on ARCH_DAVINCI && VIDEO_DAVINCI_CAPTURE && ARCH_DAVINCI_DM355
++	help
++	  DM355 Auto Exposure and Auto White Balancing Driver. This may be able to
++	  work for Davinci H3A as well, but it is not validated
+ 
+ source "drivers/media/video/bt8xx/Kconfig"
+ 
+Index: linux-2.6.18/drivers/media/video/davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/Makefile
++++ linux-2.6.18/drivers/media/video/davinci/Makefile
+@@ -34,3 +34,10 @@ davinci_aew_driver-objs := davinci_aew_h
+ obj-$(CONFIG_AEW) += davinci_aew_driver.o
+ davinci_af_driver-objs := davinci_af_hw.o davinci_af.o
+ obj-$(CONFIG_AF) += davinci_af_driver.o
++
++dm355_ipipe_driver-objs := dm355_ipipe.o dm355_ipipe_hw.o
++obj-$(CONFIG_DM355_IPIPE) += dm355_ipipe_driver.o
++dm355_af_driver-objs := dm355_af_hw.o dm355_af.o
++obj-$(CONFIG_DM355_AF) += dm355_af_driver.o
++dm355_aew_driver-objs := dm355_aew_hw.o dm355_aew.o
++obj-$(CONFIG_DM355_AEW) += dm355_aew_driver.o
+Index: linux-2.6.18/drivers/media/video/davinci/dm355_aew.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/dm355_aew.c
+@@ -0,0 +1,818 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* dm355_aew.c file */
++
++/* Kernel specific header files */
++#include <linux/config.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/kernel.h>	/* printk */
++#include <linux/slab.h>		/* kmalloc() */
++#include <linux/fs.h>		/* File Structure fops... */
++#include <linux/errno.h>	/* error codes */
++#include <linux/types.h>	/* Types like size_t */
++#include <linux/cdev.h>
++#include <linux/interrupt.h>	/* For interrupt */
++#include <linux/dma-mapping.h>
++#include <asm/uaccess.h>
++#include <linux/wait.h>		/* FILES FOR WAIT QUEUE */
++#include <asm/semaphore.h>
++#include <linux/platform_device.h>
++#include <linux/major.h>
++/* Driver Header Files */
++#include <asm/arch/dm355_aew.h>	/*Local Definitions */
++#include <asm/arch/dm355_aew_hw.h>	/* Local Definitions */
++
++/*Global structure*/
++static struct class *aew_class;
++struct aew_device *aew_dev_configptr;
++struct device *aewdev;
++/* device structure to make entry in device*/
++static dev_t dev;
++
++/* For registeration of charatcer device*/
++static struct cdev c_dev;
++
++/* Module License*/
++MODULE_LICENSE("GPL");
++int aew_validate_parameters(void)
++{
++	int result = 0;
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++	/* Check horizontal Count */
++	if ((aew_dev_configptr->config->window_config.hz_cnt <
++	     AEW_WINDOW_HORIZONTAL_COUNT_MIN)
++	    || (aew_dev_configptr->config->window_config.hz_cnt >
++		AEW_WINDOW_HORIZONTAL_COUNT_MAX)) {
++		dev_err(aewdev, "\n Horizontal Count is incorrect");
++		result = -EINVAL;
++	}
++	/* Check Vertical Count */
++	if ((aew_dev_configptr->config->window_config.vt_cnt <
++	     AEW_WINDOW_VERTICAL_COUNT_MIN)
++	    || (aew_dev_configptr->config->window_config.vt_cnt >
++		AEW_WINDOW_VERTICAL_COUNT_MAX)) {
++		dev_err(aewdev, "\n Vertical Count is incorrect");
++		result = -EINVAL;
++	}
++	/* Check line increment */
++	if ((AEW_NOT_EVEN ==
++	     AEW_CHECK_EVEN(aew_dev_configptr->config->window_config.
++			    hz_line_incr))
++	    || (aew_dev_configptr->config->window_config.hz_line_incr <
++		AEW_HZ_LINEINCR_MIN)
++	    || (aew_dev_configptr->config->window_config.hz_line_incr >
++		AEW_HZ_LINEINCR_MAX)) {
++		dev_err(aewdev, "\n Invalid Parameters");
++		dev_err(aewdev, "\n Horizontal Line Increment is incorrect");
++		result = -EINVAL;
++	}
++	/* Check line increment */
++	if ((AEW_NOT_EVEN ==
++	     AEW_CHECK_EVEN(aew_dev_configptr->config->window_config.
++			    vt_line_incr))
++	    || (aew_dev_configptr->config->window_config.vt_line_incr <
++		AEW_VT_LINEINCR_MIN)
++	    || (aew_dev_configptr->config->window_config.vt_line_incr >
++		AEW_VT_LINEINCR_MAX)) {
++		dev_err(aewdev, "\n Invalid Parameters");
++		dev_err(aewdev, "\n Vertical Line Increment is incorrect");
++		result = -EINVAL;
++	}
++	/* Check width */
++	if ((AEW_NOT_EVEN ==
++	     AEW_CHECK_EVEN(aew_dev_configptr->config->window_config.width))
++	    || (aew_dev_configptr->config->window_config.width < AEW_WIDTH_MIN)
++	    || (aew_dev_configptr->config->window_config.width > AEW_WIDTH_MAX)) {
++		dev_err(aewdev, "\n Width is incorrect");
++
++		result = -EINVAL;
++	}
++	/* Check Height */
++	if ((AEW_NOT_EVEN ==
++	     AEW_CHECK_EVEN(aew_dev_configptr->config->window_config.height))
++	    || (aew_dev_configptr->config->window_config.height <
++		AEW_HEIGHT_MIN)
++	    || (aew_dev_configptr->config->window_config.height >
++		AEW_HEIGHT_MAX)) {
++		dev_err(aewdev, "\n height incorrect");
++		result = -EINVAL;
++	}
++	/* Check Horizontal Start */
++	if ((aew_dev_configptr->config->window_config.hz_start <
++	     AEW_HZSTART_MIN)
++	    || (aew_dev_configptr->config->window_config.hz_start >
++		AEW_HZSTART_MAX)) {
++		dev_err(aewdev, "\n horizontal start is  incorrect");
++		result = -EINVAL;
++	}
++	if ((aew_dev_configptr->config->window_config.vt_start >
++	     AEW_VTSTART_MAX)) {
++		dev_err(aewdev, "\n Vertical start is  incorrect");
++		result = -EINVAL;
++	}
++	if ((aew_dev_configptr->config->alaw_enable > H3A_AEW_ENABLE)
++	    || (aew_dev_configptr->config->alaw_enable < H3A_AEW_DISABLE)) {
++		dev_err(aewdev, "\n A Law setting is incorrect");
++		result = -EINVAL;
++	}
++	if (aew_dev_configptr->config->saturation_limit > AEW_AVELMT_MAX) {
++		dev_err(aewdev, "\n Saturation Limit is incorrect");
++		result = -EINVAL;
++	}
++	/* Check Black Window Height */
++	if (AEW_NOT_EVEN ==
++	    AEW_CHECK_EVEN(aew_dev_configptr->config->blackwindow_config.height)
++	    || (aew_dev_configptr->config->blackwindow_config.height <
++		AEW_BLKWINHEIGHT_MIN)
++	    || (aew_dev_configptr->config->blackwindow_config.height >
++		AEW_BLKWINHEIGHT_MAX)) {
++		dev_err(aewdev, "\n Black Window height incorrect");
++		result = -EINVAL;
++	}
++	/* Check Black Window Height */
++	if ((AEW_NOT_EVEN ==
++	     AEW_CHECK_EVEN(aew_dev_configptr->config->blackwindow_config.
++			    height))
++	    || (aew_dev_configptr->config->blackwindow_config.vt_start <
++		AEW_BLKWINVTSTART_MIN)
++	    || (aew_dev_configptr->config->blackwindow_config.vt_start >
++		AEW_BLKWINVTSTART_MAX)) {
++		dev_err(aewdev, "\n Black Window vertical Start is incorrect");
++
++		result = -EINVAL;
++	}
++
++	if (((aew_dev_configptr->config->window_config.vt_cnt)
++	     * (aew_dev_configptr->config->window_config.height)
++	     + (aew_dev_configptr->config->window_config.vt_start)) > 156) {
++		dev_err(aewdev,
++			"\n Only 156 Lines are supported for CCDC mode");
++		dev_err(aewdev, "\n Vertical count * Height + vertical Start \
++                        should not exceed 156");
++		result = -EINVAL;
++	}
++	return result;
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++}
++
++/* inline function to free reserver pages  */
++void inline aew_free_pages(unsigned long addr, unsigned long bufsize)
++{
++	unsigned long tempaddr;
++	unsigned long size;
++	tempaddr = addr;
++	if (!addr)
++		return;
++	size = PAGE_SIZE << (get_order(bufsize));
++	while (size > 0) {
++		ClearPageReserved(virt_to_page(addr));
++		addr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++	free_pages(tempaddr, get_order(bufsize));
++}
++
++/* Function to perform hardware Configuration */
++int aew_hardware_setup(void)
++{
++	int result;
++	/*Size for buffer in bytes */
++	int buff_size = 0;
++	unsigned long adr;
++	unsigned long size;
++	unsigned int busyaew;
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Get the value of PCR register */
++	busyaew = AEW_GET_PCR;
++
++	/* Mask with BUSYAF bit */
++	busyaew = busyaew & AEW_BUSYAEWB;
++
++	/* Shift it 18 times to get value of 1 or 0 */
++	busyaew = busyaew >> AEW_BUSYAEWB_SHIFT;
++
++	/* If H3A Engine is busy then return */
++	if (busyaew == 1) {
++		dev_err(aewdev, "\n Error : AEW Engine is busy");
++		return -EBUSY;
++	}
++
++	result = aew_validate_parameters();
++	dev_dbg(aewdev, "Result =  %d\n", result);
++	if (result < 0) {
++		dev_err(aewdev, "Error : Parameters are incorrect \n");
++		return result;
++	}
++
++	/* Deallocate the previously allocated buffers */
++	if (aew_dev_configptr->buff_old)
++		aew_free_pages((unsigned long)aew_dev_configptr->buff_old,
++			       aew_dev_configptr->size_window);
++
++	if (aew_dev_configptr->buff_curr)
++		aew_free_pages((unsigned long)aew_dev_configptr->
++			       buff_curr, aew_dev_configptr->size_window);
++
++	if (aew_dev_configptr->buff_app)
++		aew_free_pages((unsigned long)aew_dev_configptr->
++			       buff_app, aew_dev_configptr->size_window);
++
++	/*Allocat the buffers as per the new buffer size */
++	/*Allocate memory for old buffer */
++	buff_size = (aew_dev_configptr->config->window_config.hz_cnt)
++	    * (aew_dev_configptr->config->window_config.vt_cnt) *
++	    AEW_WINDOW_SIZE;
++
++	aew_dev_configptr->buff_old =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (aew_dev_configptr->buff_old == NULL)
++		return -ENOMEM;
++
++	/*Make pges reserved so that they will be swapped out */
++	adr = (unsigned long)aew_dev_configptr->buff_old;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/*Allocate memory for current buffer */
++	aew_dev_configptr->buff_curr =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (aew_dev_configptr->buff_curr == NULL) {
++
++		/*Free all  buffer that are allocated */
++		if (aew_dev_configptr->buff_old)
++			aew_free_pages((unsigned long)aew_dev_configptr->
++				       buff_old, buff_size);
++		return -ENOMEM;
++	}
++
++	/*Make pges reserved so that they will be swapped out */
++	adr = (unsigned long)aew_dev_configptr->buff_curr;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/*Allocate memory for application buffer */
++	aew_dev_configptr->buff_app =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (aew_dev_configptr->buff_app == NULL) {
++		/*Free all  buffer that were allocated previously */
++		if (aew_dev_configptr->buff_old)
++			aew_free_pages((unsigned long)aew_dev_configptr->
++				       buff_old, buff_size);
++		if (aew_dev_configptr->buff_curr)
++			aew_free_pages((unsigned long)aew_dev_configptr->
++				       buff_curr, buff_size);
++		return -ENOMEM;
++	}
++
++	/*Make pges reserved so that they will be swapped out */
++	adr = (unsigned long)aew_dev_configptr->buff_app;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/* Set the registers */
++	aew_register_setup(aew_dev_configptr);
++	aew_dev_configptr->size_window = buff_size;
++	aew_dev_configptr->aew_config = H3A_AEW_CONFIG;
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;		/*Success */
++}
++
++/* This Function is called when driver is opened */
++static int aew_open(struct inode *inode, struct file *filp)
++{
++
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/*Return if Device is in use (Single Channel Support is provided) */
++	if (aew_dev_configptr->in_use == AEW_IN_USE)
++		return -EBUSY;
++
++	/* Set the aew_dev_configptr structure */
++	aew_dev_configptr->config = NULL;
++
++	/* Allocate memory for configuration  structure of this channel */
++	aew_dev_configptr->config = (struct aew_configuration *)
++	    kmalloc(sizeof(struct aew_configuration), GFP_KERNEL);
++
++	if (aew_dev_configptr->config == NULL) {
++		dev_err(aewdev, "Error : Kmalloc fail\n");
++		return -ENOMEM;
++	}
++
++	/* Initiaze the wait queue */
++	init_waitqueue_head(&(aew_dev_configptr->aew_wait_queue));
++
++	/*Device is in use */
++	aew_dev_configptr->in_use = AEW_IN_USE;
++
++	/* No Hardware Set up done */
++	aew_dev_configptr->aew_config = H3A_AEW_CONFIG_NOT_DONE;
++
++	/* No statistics are available */
++	aew_dev_configptr->buffer_filled = 0;
++
++	/* Set Window Size to 0 */
++	aew_dev_configptr->size_window = 0;
++
++	/* Initialize the semaphore */
++	init_MUTEX(&(aew_dev_configptr->read_blocked));
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;
++}
++static void aew_platform_release(struct device *device)
++{
++	/* This is called when the reference count goes to zero */
++}
++static int aew_probe(struct device *device)
++{
++	aewdev = device;
++	return 0;
++}
++
++static int aew_remove(struct device *device)
++{
++	return 0;
++}
++
++/* This Function is called when driver is closed */
++static int aew_release(struct inode *inode, struct file *filp)
++{
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	aew_engine_setup(0);
++	/* The Application has closed device so device is not in use */
++	aew_dev_configptr->in_use = AEW_NOT_IN_USE;
++
++	/*Release memory for configuration structure of this channel */
++	if (aew_dev_configptr->config)
++		kfree(aew_dev_configptr->config);
++
++	/* Free Old Buffer */
++	if (aew_dev_configptr->buff_old)
++		aew_free_pages((unsigned long)aew_dev_configptr->buff_old,
++			       aew_dev_configptr->size_window);
++
++	/* Free Current Buffer */
++	if (aew_dev_configptr->buff_curr)
++		aew_free_pages((unsigned long)aew_dev_configptr->
++			       buff_curr, aew_dev_configptr->size_window);
++
++	/* Free Application Buffer */
++	if (aew_dev_configptr->buff_app)
++		aew_free_pages((unsigned long)aew_dev_configptr->buff_app,
++			       aew_dev_configptr->size_window);
++
++	aew_dev_configptr->buff_old = NULL;
++	aew_dev_configptr->buff_curr = NULL;
++	aew_dev_configptr->config = NULL;
++	aew_dev_configptr->buff_app = NULL;
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;
++}
++
++/* This function will process IOCTL commands sent by the application and
++ * control the devices IO operations.
++ */
++static int aew_ioctl(struct inode *inode, struct file *filep,
++		     unsigned int cmd, unsigned long arg)
++{
++	/* Stores Previous Configurations */
++	struct aew_configuration aewconfig = *(aew_dev_configptr->config);
++	int result = 0;
++
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Decrement the semaphore */
++	down_interruptible(&aew_dev_configptr->read_blocked);
++
++	/*Extract the type and number bitfields, and don't decode wrong cmds: */
++	/*verify the magic number */
++	if (_IOC_TYPE(cmd) != AEW_MAGIC_NO) {
++		up(&aew_dev_configptr->read_blocked);
++		return -ENOTTY;
++	}
++
++	/*verify the command number */
++	if (_IOC_NR(cmd) > AEW_IOC_MAXNR) {
++		/* Release semaphore  in case of fault */
++		up(&aew_dev_configptr->read_blocked);
++		return -ENOTTY;
++	}
++
++	/* check for the permission of the operation */
++	if (_IOC_DIR(cmd) & _IOC_READ)
++		result =
++		    !access_ok(VERIFY_WRITE, (void __user *)arg,
++			       _IOC_SIZE(cmd));
++	else if (_IOC_DIR(cmd) & _IOC_WRITE)
++		result =
++		    !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
++
++	if (result) {
++		/* Release semaphore in case of fault */
++		up(&aew_dev_configptr->read_blocked);
++		return -EFAULT;
++	}
++
++	/* Switch according to IOCTL command */
++	switch (cmd) {
++		/* This ioctl is used to perform hardware set up
++		 * and will set all the regiseters */
++		/*for AF engine */
++	case AEW_S_PARAM:
++
++		/*Copy config structure passed by user */
++		if (copy_from_user(aew_dev_configptr->config,
++				   (struct aew_configuration *)arg,
++				   sizeof(struct aew_configuration))) {
++			*(aew_dev_configptr->config) = aewconfig;
++			up(&aew_dev_configptr->read_blocked);
++			return -EFAULT;
++		}
++
++		/*Call aew_hardware_setup to perform register configuration */
++		result = aew_hardware_setup();
++		if (!result) {	/* Hardware Set up is successful */
++			/*Return the no of bytes required for buffer */
++			result = aew_dev_configptr->size_window;
++		} else {
++			/*Change Configuration Structure to original */
++			*(aew_dev_configptr->config) = aewconfig;
++			dev_err(aewdev, "Error : AEW_S_PARAM  failed\n");
++		}
++
++		break;
++
++		/* This ioctl is used to return parameters in user space */
++	case AEW_G_PARAM:
++		if (aew_dev_configptr->aew_config == H3A_AEW_CONFIG) {
++			if (copy_to_user
++			    ((struct aew_configuration *)arg,
++			     aew_dev_configptr->config,
++			     sizeof(struct aew_configuration))) {
++				up(&aew_dev_configptr->read_blocked);
++				return -EFAULT;
++			} else
++				result = aew_dev_configptr->size_window;
++		} else {
++			dev_err(aewdev,
++				"Error : AEW Hardware is not configured.\n");
++			result = -EINVAL;
++		}
++		break;
++
++		/* This ioctl is used to enable AEW Engine */
++	case AEW_ENABLE:
++		/*Enable AEW Engine if Hardware set up is done */
++		if (aew_dev_configptr->aew_config == H3A_AEW_CONFIG_NOT_DONE) {
++			dev_err(aewdev,
++				"Error : AEW Hardware is not configured.\n");
++			result = -EINVAL;
++		} else
++			/* Enable AF Engine */
++			aew_engine_setup(1);
++		break;
++
++		/* This ioctl is used to disable AEW Engine */
++	case AEW_DISABLE:
++		/* Disable AEW Engine */
++		aew_engine_setup(0);
++		break;
++
++		/* Invalid Command */
++	default:
++		dev_err(aewdev, "Error: It should not come here!!\n");
++		result = -ENOTTY;
++		break;
++	}
++
++	/*Release the semaphore */
++	up(&aew_dev_configptr->read_blocked);
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return result;
++}
++
++/* This function will return statistics to user */
++static ssize_t aew_read(struct file *filep, char *kbuff,
++			size_t size, loff_t *offset)
++{
++	void *buffer_temp;
++	int result = 0;
++	int ret;
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Semaphore will return immediately if read call is busy */
++	ret = down_trylock(&(aew_dev_configptr->read_blocked));
++	if (ret != 0) {
++		dev_dbg(aewdev, "Read Call : busy  : %d\n", ret);
++		return -EBUSY;
++	}
++
++	/* First Check the size given by user */
++	if (size < aew_dev_configptr->size_window) {
++		/* Return Failure to applicaiton */
++		/*if size is less than required size */
++		dev_dbg(aewdev, "Error : Invalid size of buffer\n");
++		up(&(aew_dev_configptr->read_blocked));
++		return -1;
++	}
++
++	/* The value of buffer_filled flag determines
++	 * the status of statistics
++	 */
++	if (aew_dev_configptr->buffer_filled == 0) {
++		/* Decrement the semaphore */
++		dev_dbg(aewdev, "READ CALL IS BLOCKED............\n");
++		/* Block the read call */
++		wait_event_interruptible_timeout(aew_dev_configptr->
++						 aew_wait_queue,
++						 aew_dev_configptr->
++						 buffer_filled, AEW_TIMEOUT);
++		dev_dbg(aewdev, "Read Call is unbloked and waking up.......\n");
++		dev_dbg(aewdev, "Buffer Filled.... %d\n",
++			aew_dev_configptr->buffer_filled);
++	}
++
++	if (aew_dev_configptr->buffer_filled == 1) {
++		/* Disable the interrupts and then swap the buffers */
++		dev_dbg(aewdev, "READING............\n");
++		disable_irq(IRQ_DM355_H3AINT);
++
++		/* New Statistics are availaible */
++		aew_dev_configptr->buffer_filled = 0;
++
++		/*Swap application buffer and old buffer */
++		buffer_temp = aew_dev_configptr->buff_old;
++		aew_dev_configptr->buff_old = aew_dev_configptr->buff_app;
++		aew_dev_configptr->buff_app = buffer_temp;
++
++		/* Interrupts are enabled */
++		enable_irq(IRQ_DM355_H3AINT);
++
++		/* Copy the entire statistics located in application
++		 * buffer to user space
++		 */
++		if (copy_to_user(kbuff, aew_dev_configptr->buff_app,
++				 aew_dev_configptr->size_window)) {
++			dev_err(aewdev, "Error : Read Fault\n");
++			up(&(aew_dev_configptr->read_blocked));
++			return -EFAULT;
++		} else
++			result = aew_dev_configptr->size_window;
++
++		dev_dbg(aewdev, "Reading Done........................\n");
++	}
++
++	dev_dbg(aewdev, "APP BUFF VALUE %x\n",
++		(*((unsigned int *)(aew_dev_configptr->buff_app))));
++
++	/*Increment the semaphore */
++	up(&(aew_dev_configptr->read_blocked));
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return result;
++}
++
++/* This function will handle interrupt generated by H3A Engine. */
++static irqreturn_t aew_isr(int irq, void *dev_id, struct pt_regs *regs)
++{
++	/* Busy AF Bit */
++	unsigned int busyaew;
++	/* Temporary Buffer for Swapping */
++	void *buffer_temp;
++
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Get the value of PCR register */
++	busyaew = AEW_GET_PCR;
++
++	/* If AEW engine is not enabled, interrupt is not for AEW */
++	if (((busyaew & 0x10000) >> 16) == 0)
++		return -1;
++
++	/*Interrupt is generated by AEW, so Service the Interrupt */
++	/*Swap current buffer and old buffer */
++	buffer_temp = aew_dev_configptr->buff_curr;
++	aew_dev_configptr->buff_curr = aew_dev_configptr->buff_old;
++	aew_dev_configptr->buff_old = buffer_temp;
++
++	/* Set the AEWBUFSTAT REgister to current buffer Address */
++	aew_set_address((unsigned
++			 long)(virt_to_phys(aew_dev_configptr->buff_curr)));
++
++	/*Set buffer filled flag to indicate statistics are available */
++	aew_dev_configptr->buffer_filled = 1;
++
++	/*new statistics are available */
++	/* Wake up the read call */
++	wake_up(&(aew_dev_configptr->aew_wait_queue));
++
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return IRQ_HANDLED;
++}
++
++/* file Operation Structure*/
++static struct file_operations aew_fops = {
++	.owner = THIS_MODULE,
++	.open = aew_open,
++	.read = aew_read,
++	.ioctl = aew_ioctl,
++	.release = aew_release,
++};
++static struct platform_device aewdevice = {
++	.name = "dm355_aew",
++	.id = 2,
++	.dev = {
++		.release = aew_platform_release,
++		}
++};
++
++static struct device_driver aew_driver = {
++	.name = "dm355_aew",
++	.bus = &platform_bus_type,
++	.probe = aew_probe,
++	.remove = aew_remove,
++};
++
++#define DRIVERNAME  "DM355AEW"
++/* Function to register the AF character device driver. */
++int __init aew_init(void)
++{
++	int err;
++	int result = 0;
++	unsigned int vpssclk;
++
++	/* Register the driver in the kernel */
++	/* dynmically get the major number for the driver using
++	   alloc_chrdev_region function */
++	result = alloc_chrdev_region(&dev, 0, 1, DRIVERNAME);
++
++	if (result < 0) {
++		printk("Error :  Could not register character device");
++		return -ENODEV;
++	}
++	printk(KERN_INFO "aew major#: %d, minor# %d\n", MAJOR(dev), MINOR(dev));
++	/*allocate memory for device structure and initialize it with 0 */
++	aew_dev_configptr =
++	    (struct aew_device *)kmalloc(sizeof(struct aew_device), GFP_KERNEL);
++	if (!aew_dev_configptr) {
++		printk("Error : kmalloc fail");
++		unregister_chrdev_region(dev, AEW_NR_DEVS);
++		return -ENOMEM;
++
++	}
++
++	/* Initialize character device */
++	cdev_init(&c_dev, &aew_fops);
++	c_dev.owner = THIS_MODULE;
++	c_dev.ops = &aew_fops;
++	err = cdev_add(&c_dev, dev, 1);
++	if (err) {
++		printk("Error : Error in  Adding Davinci AEW");
++		unregister_chrdev_region(dev, AEW_NR_DEVS);
++		if (aew_dev_configptr)
++			kfree(aew_dev_configptr);
++		return -err;
++	}
++	/* register driver as a platform driver */
++	if (driver_register(&aew_driver) != 0) {
++		unregister_chrdev_region(dev, 1);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++
++	/* Register the drive as a platform device */
++	if (platform_device_register(&aewdevice) != 0) {
++		driver_unregister(&aew_driver);
++		unregister_chrdev_region(dev, 1);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++
++	aew_class = class_create(THIS_MODULE, "dm355_aew");
++	if (!aew_class) {
++		printk("aew_init: error in creating device class\n");
++		driver_unregister(&aew_driver);
++		platform_device_unregister(&aewdevice);
++		unregister_chrdev_region(dev, 1);
++		unregister_chrdev(MAJOR(dev), DRIVERNAME);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++
++	class_device_create(aew_class, NULL, dev, NULL, "dm355_aew");
++
++	/* AEW_SELINT(interrupt_no);*/
++	AEW_SETGAMMAWD;
++	vpssclk = AEW_GETCLKCTRL;
++	vpssclk |= (1 << 4);
++	AEW_SETCLKCTRL(vpssclk);
++	/* Set up the Interrupt handler for H3AINT interrupt */
++	result =
++	    request_irq(IRQ_DM355_H3AINT, aew_isr, SA_SHIRQ, "dm644xh3a_aew",
++			(void *)aew_dev_configptr);
++
++	if (result != 0) {
++		printk("Error : Request IRQ Failed");
++		unregister_chrdev_region(dev, AEW_NR_DEVS);
++		class_device_destroy(aew_class, dev);
++		class_destroy(aew_class);
++		if (aew_dev_configptr)
++			kfree(aew_dev_configptr);
++		driver_unregister(&aew_driver);
++		platform_device_unregister(&aewdevice);
++		cdev_del(&c_dev);
++		return result;
++	}
++
++	/* Initialize device structure */
++	memset(aew_dev_configptr, 0, sizeof(struct aew_device));
++
++	aew_dev_configptr->in_use = AEW_NOT_IN_USE;
++	aew_dev_configptr->buffer_filled = 0;
++	return 0;		/*Sucess */
++}
++
++/*
++=====================aew_cleanup===========================
++*/
++/* This Function is called by the kernel while unloading the driver
++This will unregister the
++ Character Device Driver
++*/
++void __exit aew_cleanup(void)
++{
++	/* Device is in use */
++	if (aew_dev_configptr->in_use == AEW_IN_USE) {
++		printk("Error : Driver in use");
++		return;
++	}
++
++	free_irq(IRQ_DM355_H3AINT, aew_dev_configptr);
++	/*Free device structure */
++	if (aew_dev_configptr)
++		kfree(aew_dev_configptr);
++	aew_dev_configptr = NULL;
++	unregister_chrdev_region(dev, AEW_NR_DEVS);
++
++	driver_unregister(&aew_driver);
++
++	class_device_destroy(aew_class, dev);
++
++	class_destroy(aew_class);
++
++	platform_device_unregister(&aewdevice);
++
++	cdev_del(&c_dev);
++
++	/*unregistering the driver from the kernel */
++	unregister_chrdev(MAJOR(dev), DEVICE_NAME);
++}
++
++module_init(aew_init)
++    module_exit(aew_cleanup)
++    MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/media/video/davinci/dm355_aew_hw.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/dm355_aew_hw.c
+@@ -0,0 +1,149 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_aew_hw.c file */
++
++/* include driver header files */
++#include <asm/arch-davinci/dm355_aew.h>
++#include <asm/arch-davinci/dm355_aew_hw.h>
++#include <linux/device.h>
++extern struct device *aewdev;
++/* Function to set hardware configuration registers */
++int aew_register_setup(struct aew_device *aew_dev)
++{
++	unsigned int pcr = 0, win1 = 0, winstart = 0, blkwin = 0, subwin = 0;
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++
++	/* Set up the registers */
++	pcr = regr(AEWPCR);
++
++	/* Enable A Law */
++	if (aew_dev->config->alaw_enable == H3A_AEW_ENABLE)
++		pcr |= AEW_ALAW_EN;
++	else
++		pcr &= ~AEW_ALAW_EN;
++
++	/*Configure Saturation limit */
++	pcr &= ~AVE2LMT;
++	pcr |= aew_dev->config->saturation_limit << AEW_AVE2LMT_SHIFT;
++	/* Set Input Source */
++	pcr &= ~AEW_INP_SRC;
++	pcr |= (AEW_CCDC) << AEW_INP_SRC_SHIFT;
++
++	regw(pcr, AEWPCR);
++
++	/*Window parameter configuration */
++
++	/* Configure Window Width in AEWWIN1 register */
++	win1 = 0;
++	win1 |=
++	    ((AEW_SET_VAL(aew_dev->config->window_config.height)) <<
++	     AEW_WINH_SHIFT);
++
++	/* Configure Window height  in AEWWIN1 register */
++	win1 |=
++	    ((AEW_SET_VAL(aew_dev->config->window_config.width)) <<
++	     AEW_WINW_SHIFT);
++
++	/* Configure Window vertical count  in AEWWIN2 register */
++	win1 |=
++	    ((aew_dev->config->window_config).vt_cnt - 1) << AEW_VT_COUNT_SHIFT;
++
++	/* Configure Window horizontal count  in AEWWIN1 register */
++	win1 |= ((aew_dev->config->window_config).hz_cnt - 1);
++
++	/* Configure Window vertical start  in AEWWIN1 register */
++	regw(win1, AEWWIN1);
++
++	/*Window Start parameter configuration */
++
++	winstart &= ~WINSV;
++	winstart |=
++	    (aew_dev->config->window_config).vt_start << AEW_VT_START_SHIFT;
++
++	/* Configure Window horizontal start  in AEWWIN2 register */
++	winstart &= ~WINSH;
++	winstart |= (aew_dev->config->window_config).hz_start;
++	regw(winstart, AEWINSTART);
++
++	/*Window Line Increment configuration */
++	/*Configure vertical line increment in AEWSUBWIN */
++	subwin &= ~AEWINCV;
++	subwin |=
++	    (AEW_SET_VAL(aew_dev->config->window_config.
++			 vt_line_incr) << AEW_LINE_INCR_SHIFT);
++
++	/* Configuring Horizontal Line increment in AEWSUBWIN */
++	subwin &= ~AEWINCH;
++	subwin |= (AEW_SET_VAL(aew_dev->config->window_config.hz_line_incr));
++
++	regw(subwin, AEWSUBWIN);
++
++	/* Black Window Configuration */
++	/* Configure vertical start and height in AEWWINBLK */
++	blkwin &= ~BLKWINSV;
++	blkwin |=
++	    (aew_dev->config->blackwindow_config).
++	    vt_start << AEW_BLKWIN_VT_START_SHIFT;
++
++	/* Configure height in Black window */
++	blkwin &= ~BLKWINH;
++	blkwin |= (AEW_SET_VAL(aew_dev->config->blackwindow_config.height));
++	regw(blkwin, AEWINBLK);
++
++	/* Set AFBUFST to Current buffer Physical Address */
++	regw((unsigned int)(virt_to_phys(aew_dev->buff_curr)), AEWBUFST);
++	dev_dbg(aewdev, "\n PCR is %x", regr(AEWPCR));
++	dev_dbg(aewdev, "\n SUBWIN is %x", regr(AEWSUBWIN));
++	dev_dbg(aewdev, "\n WINSTART is %x", regr(AEWINSTART));
++	dev_dbg(aewdev, "\n WINBLK is %x", regr(AEWINBLK));
++	dev_dbg(aewdev, "\n WIN1  is %x", regr(AEWWIN1));
++	dev_dbg(aewdev, "\n AEWBUST %x", regr(AEWBUFST));
++
++	AEW_SETGAMMAWD;
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++	return 0;
++}
++
++/* Function to enable/ disable AEW Engine */
++inline void aew_engine_setup(int value)
++{
++	unsigned int pcr;
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++	dev_dbg(aewdev, "\nAEW_REG(PCR) Before Setting %x", regr(AEWPCR));
++
++	/* Read Pcr Register */
++	pcr = regr(AEWPCR);
++	pcr &= ~AEW_EN;
++	pcr |= (value << AEW_EN_SHIFT);
++
++	/*Set AF_EN bit in PCR Register */
++	regw(pcr, AEWPCR);
++
++	dev_dbg(aewdev, "\nAfter Setting %d : PCR VALUE %x", value,
++		regr(AEWPCR));
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++
++}
++
++/* Function used to set adddress */
++inline void aew_set_address(unsigned long address)
++{
++	dev_dbg(aewdev, __FUNCTION__ "E\n");
++	regw(address, AEWBUFST);
++	dev_dbg(aewdev, __FUNCTION__ "L\n");
++}
+Index: linux-2.6.18/drivers/media/video/davinci/dm355_af.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/dm355_af.c
+@@ -0,0 +1,798 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* dm355_af.c file */
++/* Linux specific include files */
++#include <linux/config.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/kernel.h>	/* printk  */
++#include <linux/slab.h>		/* kmalloc() */
++#include <linux/fs.h>		/* File Structure... */
++#include <linux/errno.h>	/* error codes */
++#include <linux/types.h>	/* size_t */
++#include <linux/cdev.h>
++#include <linux/interrupt.h>	/* For interrupt */
++#include <linux/dma-mapping.h>
++#include <asm/uaccess.h>
++#include <linux/wait.h>		/* FILES FOR WAIT QUEUE */
++#include <asm/semaphore.h>	/* Semaphore */
++#include <linux/platform_device.h>
++#include <linux/major.h>
++/* Driver include files */
++#include <asm/arch/dm355_af.h>	/*Local Definitions */
++#include <asm/arch/dm355_af_hw.h>	/* Local Definitions */
++
++/* Module License */
++MODULE_LICENSE("GPL");
++
++/*Global structure for device */
++struct af_device *af_dev_configptr;
++
++/* For registeration of charatcer device */
++static struct cdev c_dev;
++
++/* device structure to make entry in device */
++static struct class *af_class;
++static dev_t dev;
++struct device *afdev;
++/* Function to check paxel parameters */
++/* inline function to free reserver pages  */
++void inline af_free_pages(unsigned long addr, unsigned long bufsize)
++{
++	unsigned long tempaddr;
++	unsigned long size;
++	tempaddr = addr;
++	if (!addr)
++		return;
++	size = PAGE_SIZE << (get_order(bufsize));
++	while (size > 0) {
++		ClearPageReserved(virt_to_page(addr));
++		addr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++	free_pages(tempaddr, get_order(bufsize));
++}
++
++/* Function to check paxel parameters */
++static int af_validate_parameters(void)
++{
++	int result = 0;
++	dev_dbg(afdev, "E\n");
++	/* Check horizontal Count */
++	if ((af_dev_configptr->config->paxel_config.hz_cnt <
++	     AF_PAXEL_HORIZONTAL_COUNT_MIN)
++	    || (af_dev_configptr->config->paxel_config.hz_cnt >
++		AF_PAXEL_HORIZONTAL_COUNT_MAX)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev, "\n Paxel Horizontal Count is incorrect");
++		result = -EINVAL;
++	}
++	/* Check Vertical Count */
++	if ((af_dev_configptr->config->paxel_config.vt_cnt <
++	     AF_PAXEL_VERTICAL_COUNT_MIN)
++	    || (af_dev_configptr->config->paxel_config.vt_cnt >
++		AF_PAXEL_VERTICAL_COUNT_MAX)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev, "\n Paxel Vertical Count is incorrect");
++		result = -EINVAL;
++	}
++	/* Check line increment */
++	if ((AF_NOT_EVEN ==
++	     AF_CHECK_EVEN(af_dev_configptr->config->paxel_config.line_incr))
++	    || (af_dev_configptr->config->paxel_config.line_incr <
++		AF_LINE_INCR_MIN)
++	    || (af_dev_configptr->config->paxel_config.line_incr >
++		AF_LINE_INCR_MAX)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev, "\n Paxel Line Increment is incorrect");
++		result = -EINVAL;
++	}
++	/* Check width */
++	if ((AF_NOT_EVEN ==
++	     AF_CHECK_EVEN(af_dev_configptr->config->paxel_config.width))
++	    || (af_dev_configptr->config->paxel_config.width < AF_WIDTH_MIN)
++	    || (af_dev_configptr->config->paxel_config.width > AF_WIDTH_MAX)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev, "\n Paxel Width is incorrect");
++		result = -EINVAL;
++	}
++	/* Check Height */
++	if ((AF_NOT_EVEN ==
++	     AF_CHECK_EVEN(af_dev_configptr->config->paxel_config.height))
++	    || (af_dev_configptr->config->paxel_config.height < AF_HEIGHT_MIN)
++	    || (af_dev_configptr->config->paxel_config.height > AF_HEIGHT_MAX)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev, "\n Paxel Height is incorrect");
++		result = -EINVAL;
++	}
++	/* Check Horizontal Start */
++	if ((AF_NOT_EVEN ==
++	     AF_CHECK_EVEN(af_dev_configptr->config->paxel_config.hz_start))
++	    || (af_dev_configptr->config->paxel_config.hz_start <
++		(af_dev_configptr->config->iir_config.hz_start_pos + 2))
++	    || (af_dev_configptr->config->paxel_config.hz_start <
++		AF_HZSTART_MIN)
++	    || (af_dev_configptr->config->paxel_config.hz_start >
++		AF_HZSTART_MAX)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev, "\n Paxel horizontal start is  incorrect");
++		result = -EINVAL;
++	}
++	/* Check Vertical Start */
++	if ((af_dev_configptr->config->paxel_config.vt_start < AF_VTSTART_MIN)
++	    || (af_dev_configptr->config->paxel_config.vt_start >
++		AF_VTSTART_MAX)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev, "\n Paxel vertical start is  incorrect");
++		result = -EINVAL;
++	}
++	/* Check Threshold  */
++	if ((af_dev_configptr->config->hmf_config.threshold > AF_MEDTH_MAX)
++	    && (af_dev_configptr->config->hmf_config.enable == H3A_AF_ENABLE)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev,
++			"\n Horizontal Median Filter Threshold is  incorrect");
++		result = -EINVAL;
++	}
++	/* Check IIRSH start */
++	if (af_dev_configptr->config->iir_config.hz_start_pos > AF_IIRSH_MAX) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev,
++			"\n IIR FITLER  horizontal start position is incorrect");
++		result = -EINVAL;
++	}
++	/* Verify ALaw */
++	if ((af_dev_configptr->config->alaw_enable < H3A_AF_DISABLE)
++	    || (af_dev_configptr->config->alaw_enable > H3A_AF_ENABLE)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev, "\n ALaw Setting is incorrect");
++		result = -EINVAL;
++	}
++	/* Check RGB position */
++	if ((af_dev_configptr->config->rgb_pos < GR_GB_BAYER)
++	    || (af_dev_configptr->config->rgb_pos > RB_GG_CUSTOM)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev, "\n RGB Position Setting is incorrect");
++		result = -EINVAL;
++	}
++	/* Verify Horizontal Median Filter Setting */
++	if ((af_dev_configptr->config->hmf_config.enable < H3A_AF_DISABLE)
++	    || (af_dev_configptr->config->hmf_config.enable > H3A_AF_ENABLE)) {
++		dev_err(afdev, "\n Invalid Parameters");
++		dev_err(afdev,
++			"\n Horizontal Median Filter Setting is incorrect");
++		result = -EINVAL;
++	}
++	if (((af_dev_configptr->config->paxel_config.vt_cnt)
++	     * (af_dev_configptr->config->paxel_config.height)
++	     + (af_dev_configptr->config->paxel_config.vt_start)) > 156) {
++
++		dev_err(afdev, "\n Only 156 Lines are supported for CCDC mode");
++		dev_err(afdev, "\n Paxel count * Height + vertical Start \
++			should not exceed 156");
++		result = -EINVAL;
++	}
++	dev_dbg(afdev, "L\n");
++	return result;
++}
++
++/* Function to perform hardware set up */
++int af_hardware_setup(void)
++{
++	int result;
++
++	/*Size for buffer in bytes */
++	int buff_size;
++	unsigned long adr, size;
++	unsigned int busyaf;
++	dev_dbg(afdev, "E\n");
++
++	/* Get the value of PCR register */
++	busyaf = AF_GET_PCR;
++
++	/* Mask with BUSYAF bit */
++	busyaf = busyaf & AF_BUSYAF;
++
++	/* Shift it 15 times to get value of 1 or 0 */
++	busyaf = busyaf >> 15;
++
++	/*If busy bit is 1 then busy lock registers caanot be configured */
++	if (busyaf == 1) {
++		/* Hardware cannot be configure while engine is busy */
++		dev_err(afdev, "AF_register_setup_ERROR : Engine Busy");
++		dev_err(afdev, "\n Configuration cannot be done ");
++		return -EBUSY;
++	}
++
++	/*Check IIR Coefficient and start Values */
++	result = af_validate_parameters();
++	if (result < 0)
++		return result;
++
++	/* Compute buffer size */
++	buff_size =
++	    (af_dev_configptr->config->paxel_config.hz_cnt) *
++	    (af_dev_configptr->config->paxel_config.vt_cnt) * AF_PAXEL_SIZE;
++
++	/*Deallocate the previosu buffers */
++	/* free old buffers */
++	if (af_dev_configptr->buff_old)
++		af_free_pages((unsigned long)af_dev_configptr->buff_old,
++			      af_dev_configptr->size_paxel);
++
++	/* Free current buffer */
++	if (af_dev_configptr->buff_curr)
++		af_free_pages((unsigned long)af_dev_configptr->buff_curr,
++			      af_dev_configptr->size_paxel);
++
++	/* Free application buffers */
++	if (af_dev_configptr->buff_app)
++		af_free_pages((unsigned long)af_dev_configptr->buff_app,
++			      af_dev_configptr->size_paxel);
++
++	/* Reallocate the buffer as per new paxel configurations */
++	/*Allocate memory for old buffer */
++	af_dev_configptr->buff_old =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (af_dev_configptr->buff_old == NULL)
++		return -ENOMEM;
++
++	/* allocate the memory for storing old statistics */
++	adr = (unsigned long)af_dev_configptr->buff_old;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/*Allocate memory for current buffer */
++	af_dev_configptr->buff_curr =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	/* Free the previously allocated buffer */
++	if (af_dev_configptr->buff_curr == NULL) {
++		if (af_dev_configptr->buff_old)
++			af_free_pages((unsigned long)af_dev_configptr->
++				      buff_old, buff_size);
++		return -ENOMEM;
++	}
++
++	adr = (unsigned long)af_dev_configptr->buff_curr;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	/*Allocate memory for old buffer */
++	af_dev_configptr->buff_app =
++	    (void *)__get_free_pages(GFP_KERNEL | GFP_DMA,
++				     get_order(buff_size));
++
++	if (af_dev_configptr->buff_app == NULL) {
++
++		/*Free the previously allocated buffer */
++		if (af_dev_configptr->buff_curr)
++			af_free_pages((unsigned long)af_dev_configptr->
++				      buff_curr, buff_size);
++		/*Free the previously allocated buffer */
++		if (af_dev_configptr->buff_old)
++			af_free_pages((unsigned long)af_dev_configptr->
++				      buff_old, buff_size);
++		return -ENOMEM;
++	}
++
++	adr = (unsigned long)af_dev_configptr->buff_app;
++	size = PAGE_SIZE << (get_order(buff_size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++
++	result = af_register_setup(af_dev_configptr);
++	if (result < 0)
++		return result;
++	af_dev_configptr->size_paxel = buff_size;
++
++	/*Set configuration flag to indicate HW setup done */
++	af_dev_configptr->af_config = H3A_AF_CONFIG;
++
++	dev_dbg(afdev, "L\n");
++	/*Success */
++	return 0;
++}
++
++/* This function called when driver is opened.It creates Channel
++ * Configuration Structure
++ */
++static int af_open(struct inode *inode, struct file *filp)
++{
++	dev_dbg(afdev, "E\n");
++
++	/*Return if device is in use */
++	if (af_dev_configptr->in_use == AF_IN_USE)
++		return -EBUSY;
++	af_dev_configptr->config = NULL;
++
++	/* Allocate memory for Device Structure */
++	af_dev_configptr->config = (struct af_configuration *)
++	    kmalloc(sizeof(struct af_configuration)
++		    , GFP_KERNEL);
++	if (af_dev_configptr->config == NULL) {
++		dev_err(afdev, "Error : Kmalloc fail\n");
++		return -ENOMEM;
++	}
++
++	/* Initialize the wait queue */
++	init_waitqueue_head(&(af_dev_configptr->af_wait_queue));
++
++	/* Driver is in use */
++	af_dev_configptr->in_use = AF_IN_USE;
++
++	/* Hardware is not set up */
++	af_dev_configptr->af_config = H3A_AF_CONFIG_NOT_DONE;
++	af_dev_configptr->buffer_filled = 0;
++
++	/* Initialize the semaphore */
++	init_MUTEX(&(af_dev_configptr->read_blocked));
++	dev_dbg(afdev, "L\n");
++	return 0;
++}
++
++/* This function called when driver is closed.
++ * It will deallocate all the buffers.
++ */
++static int af_release(struct inode *inode, struct file *filp)
++{
++	dev_dbg(afdev, "E\n");
++
++	af_engine_setup(0);
++	/* Free all the buffers */
++	/* free current buffer */
++	if (af_dev_configptr->buff_curr)
++		af_free_pages((unsigned long)af_dev_configptr->buff_curr,
++			      af_dev_configptr->size_paxel);
++
++	/*Free old buffer */
++	if (af_dev_configptr->buff_old)
++		af_free_pages((unsigned long)af_dev_configptr->buff_old,
++			      af_dev_configptr->size_paxel);
++
++	/* Free application buffer */
++	if (af_dev_configptr->buff_app)
++		af_free_pages((unsigned long)af_dev_configptr->buff_app,
++			      af_dev_configptr->size_paxel);
++
++	/*Release memory for configuration structure of this channel */
++	af_dev_configptr->buff_curr = NULL;
++	af_dev_configptr->buff_old = NULL;
++	af_dev_configptr->buff_app = NULL;
++	if (af_dev_configptr->config)
++		kfree(af_dev_configptr->config);
++	af_dev_configptr->config = NULL;
++
++	/*Device is not in use */
++	af_dev_configptr->in_use = AF_NOT_IN_USE;
++
++	dev_dbg(afdev, "L\n");
++
++	return 0;
++}
++static void af_platform_release(struct device *device)
++{
++	/* This is called when the reference count goes to zero */
++}
++static int af_probe(struct device *device)
++{
++	afdev = device;
++	return 0;
++}
++
++static int af_remove(struct device *device)
++{
++	return 0;
++}
++
++/* This function will process IOCTL commands sent by the application and
++ * control the device IO operations.
++ */
++static int af_ioctl(struct inode *inode, struct file *filep,
++		    unsigned int cmd, unsigned long arg)
++{
++	struct af_configuration afconfig = *(af_dev_configptr->config);
++	int result = 0;
++	dev_dbg(afdev, "E\n");
++
++	/* Block the semaphore while ioctl is called */
++	down_interruptible(&af_dev_configptr->read_blocked);
++
++	/*Extract the type and number bitfields, and don't */
++	/* decode wrong cmds */
++	/*return ENOTTY (inappropriate ioctl) */
++	if (_IOC_TYPE(cmd) != AF_MAGIC_NO) {
++		/* Release the semaphore */
++		up(&af_dev_configptr->read_blocked);
++		return -ENOTTY;
++	}
++
++	if (_IOC_NR(cmd) > AF_IOC_MAXNR) {
++		/* Release the semaphore */
++		up(&af_dev_configptr->read_blocked);
++		return -ENOTTY;
++	}
++
++	/*Use 'access_ok' to validate user space pointer */
++	if (_IOC_DIR(cmd) & _IOC_READ)
++		result =
++		    !access_ok(VERIFY_WRITE, (void __user *)arg,
++			       _IOC_SIZE(cmd));
++	else if (_IOC_DIR(cmd) & _IOC_WRITE)
++		result =
++		    !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
++
++	if (result) {
++		/* Release the semaphore */
++		up(&af_dev_configptr->read_blocked);
++		return -EFAULT;
++	}
++
++	switch (cmd) {
++
++		/* This ioctl is used to perform hardware */
++		/* set up for AF Engine */
++		/* It will configura all the registers. */
++	case AF_S_PARAM:
++		/*Copy params structure passed by user */
++		if (copy_from_user(af_dev_configptr->config,
++				   (struct af_configuration *)arg,
++				   sizeof(struct af_configuration))) {
++			/* Release the semaphore */
++			up(&af_dev_configptr->read_blocked);
++			return -EFAULT;
++		}
++
++		/*Call AF_hardware_setup to perform register configuration */
++		result = af_hardware_setup();
++		if (!result) {
++			result = af_dev_configptr->size_paxel;
++		} else {
++			dev_err(afdev, "Error : AF_S_PARAM failed");
++			*(af_dev_configptr->config) = afconfig;
++		}
++		break;
++
++		/* This ioctl will get the paramters from application */
++	case AF_G_PARAM:
++		/*Check if Hardware is configured or not */
++		if (af_dev_configptr->af_config == H3A_AF_CONFIG) {
++			if (copy_to_user((struct af_configuration *)arg,
++					 af_dev_configptr->config,
++					 sizeof(struct af_configuration))) {
++				up(&af_dev_configptr->read_blocked);
++				return -EFAULT;
++			} else
++				result = af_dev_configptr->size_paxel;
++
++		} else {
++			dev_dbg(afdev, "Error : AF Hardware not configured.");
++			result = -EINVAL;
++		}
++
++		break;
++
++		/* This ioctl will enable AF Engine */
++		/*if hardware configuration is done */
++	case AF_ENABLE:
++		/* Check if hardware is configured or not */
++		if (af_dev_configptr->af_config == H3A_AF_CONFIG_NOT_DONE) {
++			dev_err(afdev, "Error :  AF Hardware not configured.");
++			result = -EINVAL;
++		} else
++			af_engine_setup(1);
++		break;
++
++		/* This ioctl will disable AF Engine */
++	case AF_DISABLE:
++		af_engine_setup(0);
++		break;
++
++	default:
++		dev_err(afdev, "Error : Invalid IOCTL!");
++		result = -ENOTTY;
++		break;
++	}
++
++	/* Before returning increment semaphore */
++	up(&af_dev_configptr->read_blocked);
++	dev_dbg(afdev, "L\n");
++	return result;
++}
++
++/* Function will return the statistics to user */
++ssize_t af_read(struct file * filep, char *kbuff, size_t size, loff_t * offset)
++{
++	void *buff_temp;
++	int result = 0;
++	int ret;
++	dev_dbg(afdev, "E\n");
++	/* Semaphore will return immediately if read call is busy */
++	ret = down_trylock(&(af_dev_configptr->read_blocked));
++	if (ret != 0) {
++		dev_err(afdev, "\n Read Call : busy");
++		return -EBUSY;
++	}
++
++	/*If no of bytes specified by the user is less */
++	/* than that of buffer return error */
++	if (size < af_dev_configptr->size_paxel) {
++		dev_err(afdev, "\n Error : Invalid buffer size");
++		up(&(af_dev_configptr->read_blocked));
++		return -1;	/* Return error to application */
++	}
++
++	/* The value of bufffer_filled flag determines
++	   the status of statistics */
++	if (af_dev_configptr->buffer_filled == 0) {
++		dev_dbg(afdev, "Read call is blocked .......................");
++		/* Block the read call until new statistics are available */
++		/* or timer expires */
++		/* Decrement the semaphore count */
++		wait_event_interruptible_timeout(af_dev_configptr->
++						 af_wait_queue,
++						 af_dev_configptr->
++						 buffer_filled, AF_TIMEOUT);
++		dev_dbg(afdev,
++			"\n Read Call Unblocked..........................");
++	}
++	if (af_dev_configptr->buffer_filled == 1) {
++		/* New Statistics are available */
++		/* Disable the interrupts while swapping the buffers */
++		dev_dbg(afdev, "\n Reading.............................");
++		disable_irq(IRQ_DM355_H3AINT);
++
++		af_dev_configptr->buffer_filled = 0;
++
++		/*Swap application buffer and old buffer */
++		buff_temp = af_dev_configptr->buff_old;
++		af_dev_configptr->buff_old = af_dev_configptr->buff_app;
++		af_dev_configptr->buff_app = buff_temp;
++
++		dev_dbg(afdev, "\n Reading Done.............................");
++
++		/* Enable the interrupts  once swapping is done */
++		enable_irq(IRQ_DM355_H3AINT);
++
++		/* New Statistics are not availaible */
++		/* copy the application buffer to user */
++		/* Return the entire statistics to user */
++		if (copy_to_user(kbuff, af_dev_configptr->buff_app,
++				 af_dev_configptr->size_paxel)) {
++			/* Release the semaphore in case of fault */
++			up(&(af_dev_configptr->read_blocked));
++			return -EFAULT;
++		} else
++			result = af_dev_configptr->size_paxel;
++	}
++
++	/* Release the seamphore */
++	up(&(af_dev_configptr->read_blocked));
++	dev_dbg(afdev, "\n Read APPLICATION  BUFFER %d",
++		*((int *)((af_dev_configptr->buff_app))));
++	dev_dbg(afdev, "L\n");
++	return result;
++}
++
++/* This function will handle the H3A interrupt. */
++static irqreturn_t af_isr(int irq, void *dev_id, struct pt_regs *regs)
++{
++	void *buff_temp;	/*Temporary buffer for swapping */
++	int busyaf;
++
++	dev_dbg(afdev, "E\n");
++
++	/* Get the value of PCR register */
++	busyaf = AF_GET_PCR;
++
++	/* If AF Engine has enabled, interrupt is not for AF */
++	if ((busyaf & 0x01) == 0)
++		return -1;
++
++	/*Service  the Interrupt */
++	/*Set buffer filled flag to indicate statistics are available */
++	/*Swap current buffer and old buffer */
++	buff_temp = af_dev_configptr->buff_curr;
++	af_dev_configptr->buff_curr = af_dev_configptr->buff_old;
++	af_dev_configptr->buff_old = buff_temp;
++
++	/* Set AF Buf st to current register address */
++	if (af_dev_configptr->buff_curr)
++		af_set_address((unsigned long)
++			       virt_to_phys(af_dev_configptr->buff_curr));
++
++	/* Wake up read as new statistics are available */
++	af_dev_configptr->buffer_filled = 1;
++	wake_up(&(af_dev_configptr->af_wait_queue));
++	dev_dbg(afdev, "L\n");
++	return IRQ_HANDLED;
++}
++
++/* File Operation Structure */
++static struct file_operations af_fops = {
++	.owner = THIS_MODULE,
++	.open = af_open,
++	.ioctl = af_ioctl,
++	.read = af_read,
++	.release = af_release
++};
++static struct platform_device afdevice = {
++	.name = "dm355_af",
++	.id = 2,
++	.dev = {
++		.release = af_platform_release,
++		}
++};
++
++static struct device_driver af_driver = {
++	.name = "dm355_af",
++	.bus = &platform_bus_type,
++	.probe = af_probe,
++	.remove = af_remove,
++};
++
++/* Function to register the AF character device driver. */
++/* Function to register the AF character device driver. */
++#define DRIVERNAME  "DM355AF"
++int __init af_init(void)
++{
++	int err;
++	int result = 0;
++	unsigned int vpssclk;
++
++	/* Register the driver in the kernel */
++	/* dynmically get the major number for the driver using
++	   alloc_chrdev_region function */
++	result = alloc_chrdev_region(&dev, 0, 1, DRIVERNAME);
++
++	if (result < 0) {
++		printk("Error :  Could not register character device");
++		return -ENODEV;
++	}
++	printk(KERN_INFO "af major#: %d, minor# %d\n", MAJOR(dev), MINOR(dev));
++	/*allocate memory for device structure and initialize it with 0 */
++	af_dev_configptr =
++	    (struct af_device *)kmalloc(sizeof(struct af_device), GFP_KERNEL);
++	if (!af_dev_configptr) {
++		printk("Error : kmalloc fail");
++		unregister_chrdev_region(dev, AF_NR_DEVS);
++		return -ENOMEM;
++
++	}
++	/* Initialize character device */
++	cdev_init(&c_dev, &af_fops);
++	c_dev.owner = THIS_MODULE;
++	c_dev.ops = &af_fops;
++	err = cdev_add(&c_dev, dev, 1);
++	if (err) {
++		printk("Error : Error in  Adding Davinci AF");
++		unregister_chrdev_region(dev, AF_NR_DEVS);
++		if (af_dev_configptr)
++			kfree(af_dev_configptr);
++		return -err;
++	}
++	/* register driver as a platform driver */
++	if (driver_register(&af_driver) != 0) {
++		unregister_chrdev_region(dev, 1);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++
++	/* Register the drive as a platform device */
++	if (platform_device_register(&afdevice) != 0) {
++		driver_unregister(&af_driver);
++		unregister_chrdev_region(dev, 1);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++	af_class = class_create(THIS_MODULE, "dm355_af");
++	if (!af_class) {
++		printk("af_init: error in creating device class\n");
++		driver_unregister(&af_driver);
++		platform_device_unregister(&afdevice);
++		unregister_chrdev_region(dev, 1);
++		unregister_chrdev(MAJOR(dev), DRIVERNAME);
++		cdev_del(&c_dev);
++		return -EINVAL;
++	}
++	/* register device class */
++	class_device_create(af_class, NULL, dev, NULL, "dm355_af");
++
++	AF_SETGAMMAWD;
++
++	vpssclk = AF_GETCLKCTRL;
++	vpssclk |= (1 << 4);
++	AF_SETCLKCTRL(vpssclk);
++	/* Set up the Interrupt handler for H3AINT interrupt */
++	result =
++	    request_irq(IRQ_DM355_H3AINT, af_isr, SA_SHIRQ, "dm644xh3a_af",
++			(void *)af_dev_configptr);
++
++	if (result != 0) {
++		printk("Error : Request IRQ Failed");
++		unregister_chrdev_region(dev, AF_NR_DEVS);
++		if (af_dev_configptr)
++			kfree(af_dev_configptr);
++		class_device_destroy(af_class, dev);
++		class_destroy(af_class);
++		driver_unregister(&af_driver);
++		platform_device_unregister(&afdevice);
++		cdev_del(&c_dev);
++		return result;
++	}
++
++	/* Initialize device structure */
++	memset((unsigned char *)af_dev_configptr, 0, sizeof(struct af_device));
++
++	af_dev_configptr->in_use = AF_NOT_IN_USE;
++	af_dev_configptr->buffer_filled = 0;
++	return 0;		/*Sucess */
++}
++
++/* This function is called by the kernel while unloading the driver.
++ * It will unregister character device driver
++ */
++void __exit af_cleanup(void)
++{
++	/* Return if driver is busy */
++	if (af_dev_configptr->in_use == AF_IN_USE) {
++		printk("Error : Driver in use. Can't remove.");
++		return;
++	}
++	free_irq(IRQ_DM355_H3AINT, af_dev_configptr);
++	/*Free device structure */
++	if (af_dev_configptr)
++		kfree(af_dev_configptr);
++
++	unregister_chrdev_region(dev, AF_NR_DEVS);
++
++	driver_unregister(&af_driver);
++
++	class_device_destroy(af_class, dev);
++
++	class_destroy(af_class);
++
++	platform_device_unregister(&afdevice);
++	/*unregistering the driver from the kernel */
++	cdev_del(&c_dev);
++
++}
++
++module_init(af_init)
++    module_exit(af_cleanup)
++    MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/media/video/davinci/dm355_af_hw.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/dm355_af_hw.c
+@@ -0,0 +1,171 @@
++/* Include driver header file */
++#include <asm/arch-davinci/dm355_af_hw.h>
++#include <linux/device.h>
++extern struct device *afdev;
++/* Function to set register */
++int af_register_setup(struct af_device *af_dev)
++{
++	unsigned int pcr = 0, pax1 = 0, pax2 = 0, paxstart = 0;
++	unsigned int coef = 0;
++	unsigned int base_coef_set0 = 0;
++	unsigned int base_coef_set1 = 0;
++	int index;
++//      unsigned int vpssclk;
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	/* Configure Hardware Registers */
++	/* Set PCR Register */
++	pcr = regr(AFPCR);	/* Read PCR Register */
++
++	/*Set Accumulator Mode */
++	if (af_dev->config->mode == ACCUMULATOR_PEAK)
++		pcr |= FVMODE;
++	else
++		pcr &= ~FVMODE;
++
++	/* Set A-law */
++	if (af_dev->config->alaw_enable == H3A_AF_ENABLE)
++		pcr |= AF_ALAW_EN;
++	else
++		pcr &= ~AF_ALAW_EN;
++
++	/* Set RGB Position */
++	pcr &= ~RGBPOS;
++	pcr |= (af_dev->config->rgb_pos) << AF_RGBPOS_SHIFT;
++
++	/*HMF Configurations */
++	if (af_dev->config->hmf_config.enable == H3A_AF_ENABLE) {
++		pcr &= ~AF_MED_EN;
++		/* Enable HMF */
++		pcr |= AF_MED_EN;
++
++		/* Set Median Threshold */
++		pcr &= ~MED_TH;
++		pcr |=
++		    (af_dev->config->hmf_config.threshold) << AF_MED_TH_SHIFT;
++	} else
++		pcr &= ~AF_MED_EN;
++
++	/* Set Input Source as CCDC */
++	pcr &= ~AF_INP_SRC;
++	pcr |= (AF_CCDC) << AF_INP_SRC_SHIFT;
++
++	/* Set PCR Register */
++	regw(pcr, AFPCR);
++
++	/* Configure AFPAX1 */
++	/*Paxel parameter configuration */
++	/*Set Width in AFPAX1 Register */
++	pax1 &= ~PAXW;
++	pax1 |=
++	    (AF_SET_VAL(af_dev->config->paxel_config.width)) << AF_PAXW_SHIFT;
++
++	/* Set height in AFPAX1 */
++	pax1 &= ~PAXH;
++	pax1 |= (AF_SET_VAL(af_dev->config->paxel_config.height));
++
++	regw(pax1, AFPAX1);
++
++	/* Configure AFPAX2 Register */
++	/* Set Line Increment in AFPAX2 Register */
++	pax2 &= ~AFINCV;
++	pax2 |=
++	    (AF_SET_VAL(af_dev->config->paxel_config.line_incr)) <<
++	    AF_LINE_INCR_SHIFT;
++	/* Set Vertical Count */
++	pax2 &= ~PAXVC;
++	pax2 |= (af_dev->config->paxel_config.vt_cnt - 1) << AF_VT_COUNT_SHIFT;
++	/* Set Horizontal Count */
++	pax2 &= ~PAXHC;
++	pax2 |= (af_dev->config->paxel_config.hz_cnt - 1);
++	regw(pax2, AFPAX2);
++
++	/* Configure PAXSTART Register */
++	/*Configure Horizontal Start */
++	paxstart &= ~PAXSH;
++	paxstart |=
++	    (af_dev->config->paxel_config.hz_start) << AF_HZ_START_SHIFT;
++	/* Configure Vertical Start */
++	paxstart &= ~PAXSV;
++	paxstart |= af_dev->config->paxel_config.vt_start;
++	regw(paxstart, AFPAXSTART);
++
++	/*SetIIRSH Register */
++	regw(af_dev->config->iir_config.hz_start_pos, AFIIRSH);
++
++	/* Set IIR Filter0 Coefficients */
++	base_coef_set0 = AFCOEF010;
++	for (index = 0; index <= 8; index += 2) {
++		coef &= ~COEF_MASK0;
++		coef |= af_dev->config->iir_config.coeff_set0[index];
++		coef &= ~COEF_MASK1;
++		coef |=
++		    (af_dev->config->iir_config.
++		     coeff_set0[index + 1]) << AF_COEF_SHIFT;
++		regw(coef, base_coef_set0);
++		dev_dbg(afdev, "\n COEF0 %x", regr(base_coef_set0));
++		base_coef_set0 = base_coef_set0 + AFCOEF_OFFSET;
++	}
++
++	/* Set AFCOEF0010 Register */
++	regw(af_dev->config->iir_config.coeff_set0[10], AFCOEF0010);
++
++	/*Set IIR Filter1 Coefficients */
++
++	base_coef_set1 = AFCOEF110;
++	for (index = 0; index <= 8; index += 2) {
++		coef &= ~COEF_MASK0;
++		coef |= af_dev->config->iir_config.coeff_set1[index];
++		coef &= ~COEF_MASK1;
++		coef |=
++		    (af_dev->config->iir_config.
++		     coeff_set1[index + 1]) << AF_COEF_SHIFT;
++		regw(coef, base_coef_set1);
++		dev_dbg(afdev, "\n COEF1 %x", regr(base_coef_set1));
++		base_coef_set1 = base_coef_set1 + AFCOEF_OFFSET;
++	}
++	/* Set AFCOEF0110 */
++	regw(af_dev->config->iir_config.coeff_set1[10], AFCOEF1010);
++
++	/* Set AFBUFST to Current buffer Physical Address */
++	regw((unsigned int)(virt_to_phys(af_dev->buff_curr)), AFBUFST);
++
++	AF_SETGAMMAWD;
++	dev_dbg(afdev, "\n PCR %x", pcr);
++	dev_dbg(afdev, "\n AFPAX1 %x", regr(AFPAX1));
++	dev_dbg(afdev, "\n PAXSTART %x", paxstart);
++	dev_dbg(afdev, "\n PAX2 %x", regr(AFPAX2));
++	dev_dbg(afdev, "\n COEF 10  %x", regr(AFCOEF0010));
++	dev_dbg(afdev, "\n COEF 10  %x", regr(AFCOEF1010));
++	dev_dbg(afdev, "\n AFBUFST %x", regr(AFBUFST));
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++	return 0;
++
++}
++
++/* Function to Enable/Disable AF Engine */
++inline void af_engine_setup(int enable)
++{
++	unsigned int pcr;
++	dev_dbg(afdev, __FUNCTION__ "E\n");
++
++	pcr = regr(AFPCR);
++	dev_dbg(afdev, "\nEngine Setup value before PCR : %x", pcr);
++
++	/* Set AF_EN bit in PCR Register */
++	if (enable)
++		pcr |= AF_EN;
++	else
++		pcr &= ~AF_EN;
++
++	regw(pcr, AFPCR);
++
++	dev_dbg(afdev, "\n Engine Setup value after PCR : %x", pcr);
++	dev_dbg(afdev, __FUNCTION__ "L\n");
++}
++
++/* Function to set address */
++inline void af_set_address(unsigned long address)
++{
++	regw(address, AFBUFST);
++}
+Index: linux-2.6.18/drivers/media/video/davinci/dm355_ipipe.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/dm355_ipipe.c
+@@ -0,0 +1,1564 @@
++/*
++ *
++ *
++ * Copyright (C) 2005 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* dm355_ipipe.c file */
++
++/* include Linux files */
++#include <linux/config.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/kernel.h>	/* printk() */
++#include <linux/slab.h>		/* kmalloc() */
++#include <linux/fs.h>		/* everything... */
++#include <linux/errno.h>	/* error codes */
++#include <linux/types.h>	/* size_t */
++#include <linux/cdev.h>		/* Used for struct cdev */
++#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>	/* For IRQ_HANDLED and irqreturn_t */
++#include <asm/uaccess.h>	/* for VERIFY_READ/VERIFY_WRITE/
++				   copy_from_user */
++#include <linux/platform_device.h>
++#include <asm/semaphore.h>
++#include <asm-arm/arch-davinci/dm355_ipipe_hw.h>
++#include <linux/major.h>
++#include <asm-arm/arch-davinci/dm355_ipipe.h>
++
++#include "ipipe_para.h"
++
++/* Keeps track of how many times the device driver has been opened */
++static atomic_t reference_count = ATOMIC_INIT(0);
++
++static struct class *ipipe_class = NULL;
++struct device *ipipe_dev;
++/* ipipe_isr: It is interrupt handler for PRVINT interrupt.
++ It will be called when ipipe completes processing of one
++ frame and writes data to the DDR. It unblocks the IPIPE
++ ioctl which is waiting for the processing to be completed */
++irqreturn_t ipipe_isr(int irq, void *device_id, struct pt_regs *regs)
++{
++
++	struct ipipe_device *ipipedevice = (struct ipipe_device *)device_id;
++	dev_dbg(ipipe_dev, "IPIPE isr returned.\n");
++	/* indicate the completion ofr frame processing */
++	if (ipipedevice)
++		complete(&(ipipedevice->wfc));
++
++	return IRQ_HANDLED;
++}
++
++#define DRIVERNAME  "DM355IPIPE"
++
++/* global object of ipipe_device structure */
++struct ipipe_device ipipedevice = { 0 };
++
++/* inline function to free reserver pages  */
++void inline ipipe_free_pages(unsigned long addr, unsigned long bufsize)
++{
++	unsigned long size, ad = addr;
++	size = PAGE_SIZE << (get_order(bufsize));
++	if (!addr)
++		return;
++	while (size > 0) {
++		ClearPageReserved(virt_to_page(addr));
++		addr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++	free_pages(ad, get_order(bufsize));
++}
++
++/* This function is used to free memory allocated to buffers */
++int free_buffers(struct ipipe_device *device)
++{
++	int i;
++	unsigned long adr;
++	if (!device) {
++		dev_err(ipipe_dev, "\nfree_buffers:error in argument");
++		return -EINVAL;
++	}
++	/* free memory allocated to in buffers */
++	for (i = 0; i < device->in_numbuffers; i++) {
++		if (device->in_buff[i]) {
++			adr = device->in_buff[i]->offset;
++			if (adr)
++				ipipe_free_pages((unsigned long)
++						 phys_to_virt(adr),
++						 device->in_buff[i]->size);
++
++			kfree(device->in_buff[i]);
++
++			device->in_buff[i] = NULL;
++		}
++	}
++	device->in_numbuffers = 0;
++	/* free memory allocated to out buffers */
++	for (i = 0; i < device->out_numbuffers; i++) {
++		if (device->out_buff[i]) {
++			adr = device->out_buff[i]->offset;
++			if (adr)
++				ipipe_free_pages((unsigned long)
++						 phys_to_virt(adr),
++						 device->out_buff[i]->size);
++
++			kfree(device->out_buff[i]);
++
++			device->out_buff[i] = NULL;
++		}
++	}
++
++	device->out_numbuffers = 0;
++	return 0;
++}
++
++/*
++ * This function will query the buffer's physical address
++ * whose index is passed in ipipe_buffer.
++ * It will store that address in ipipe_buffer.
++ */
++int query_buffer(struct ipipe_device *device, struct ipipe_buffer *buffer)
++{
++
++	if (!buffer || !device) {
++		dev_err(ipipe_dev, "query_buffer: error in argument\n");
++		return -EINVAL;
++	}
++
++	if (buffer->index < 0) {
++		dev_err(ipipe_dev, "query_buffer: invalid index %d\n",
++			buffer->index);
++		return -EINVAL;
++	}
++
++	if ((buffer->buf_type != IPIPE_BUF_IN)
++	    && (buffer->buf_type != IPIPE_BUF_OUT)) {
++		dev_err(ipipe_dev, "request_buffer: invalid buffer type\n");
++		return -EINVAL;
++	}
++	/* if buf_type is input buffer then get offset of input buffer */
++	if (buffer->buf_type == IPIPE_BUF_IN) {
++		/* error checking for wrong index number */
++		if (buffer->index >= device->in_numbuffers) {
++			dev_err(ipipe_dev, "query_buffer: invalid index");
++
++			return -EINVAL;
++		}
++
++		/* get the offset and size of the buffer and store
++		   it in buffer */
++		buffer->offset = device->in_buff[buffer->index]->offset;
++		buffer->size = device->in_buff[buffer->index]->size;
++	}
++	/* if buf_type is output buffer then get offset of output buffer */
++	else if (buffer->buf_type == IPIPE_BUF_OUT) {
++		/* error checking for wrong index number */
++		if (buffer->index >= device->out_numbuffers) {
++			dev_err(ipipe_dev, "query_buffer: invalid index\n");
++
++			return -EINVAL;
++		}
++		/* get the offset and size of the buffer and store
++		   it in buffer */
++		buffer->offset = device->out_buff[buffer->index]->offset;
++		buffer->size = device->out_buff[buffer->index]->size;
++	} else {
++		dev_err(ipipe_dev, "query_buffer: invalid buffer type\n");
++
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++int request_buffer(struct ipipe_device *device, struct ipipe_reqbufs *reqbufs)
++{
++	struct ipipe_buffer *buffer = NULL;
++	int count = 0;
++	unsigned long adr;
++	u32 size;
++
++	if (!reqbufs || !device) {
++		dev_err(ipipe_dev, "request_buffer: error in argument\n");
++		return -EINVAL;
++	}
++
++	/* if number of buffers requested is more then support return error */
++	if (reqbufs->count > MAX_BUFFER) {
++		dev_err(ipipe_dev, "request_buffer: invalid buffer count\n");
++		return -EINVAL;
++	}
++
++	if ((reqbufs->buf_type != IPIPE_BUF_IN)
++	    && (reqbufs->buf_type != IPIPE_BUF_OUT)) {
++		dev_err(ipipe_dev, "request_buffer: invalid buffer type %d\n",
++			reqbufs->buf_type);
++		return -EINVAL;
++	}
++	if (reqbufs->count < 0) {
++		dev_err(ipipe_dev, "request_buffer: invalid buffer count %d\n",
++			reqbufs->count);
++		return -EINVAL;
++	}
++	/* if buf_type is input then allocate buffers for input */
++	if (reqbufs->buf_type == IPIPE_BUF_IN) {
++		/*if buffer count is zero, free all the buffers */
++		if (reqbufs->count == 0) {
++			/* free all the buffers */
++			for (count = 0; count < device->in_numbuffers; count++) {
++				/* free memory allocate for the image */
++				if (device->in_buff[count]) {
++					adr =
++					    (unsigned long)device->
++					    in_buff[count]->offset;
++					if (adr)
++						ipipe_free_pages((unsigned long)
++								 phys_to_virt
++								 (adr),
++								 device->in_buff
++								 [count]->size);
++
++					/* free the memory allocated
++					   to ipipe_buffer */
++					kfree(device->in_buff[count]);
++
++					device->in_buff[count] = NULL;
++				}
++			}
++			device->in_numbuffers = 0;
++			return 0;
++		}
++
++		/* free the extra buffers */
++		if (device->in_numbuffers > reqbufs->count &&
++		    reqbufs->size == device->in_buff[0]->size) {
++			for (count = reqbufs->count;
++			     count < device->in_numbuffers; count++) {
++				/* free memory allocate for the image */
++				if (device->in_buff[count]) {
++					adr = device->in_buff[count]->offset;
++					if (adr)
++						ipipe_free_pages((unsigned long)
++								 phys_to_virt
++								 (adr),
++								 device->in_buff
++								 [count]->size);
++
++					/* free the memory allocated
++					   to ipipe_buffer */
++					kfree(device->in_buff[count]);
++
++					device->in_buff[count] = NULL;
++				}
++			}
++			device->in_numbuffers = reqbufs->count;
++			return 0;
++		}
++		/* if size requested is different from already allocated,
++		   free memory of all already allocated buffers */
++		if (device->in_numbuffers) {
++			if (reqbufs->size != device->in_buff[0]->size) {
++				for (count = 0;
++				     count < device->in_numbuffers; count++) {
++					if (device->in_buff[count]) {
++						adr =
++						    device->
++						    in_buff[count]->offset;
++						if (adr)
++							ipipe_free_pages((unsigned long)
++									 phys_to_virt
++									 (adr),
++									 device->
++									 in_buff
++									 [count]->
++									 size);
++
++						kfree(device->in_buff[count]);
++
++						device->in_buff[count] = NULL;
++					}
++				}
++				device->in_numbuffers = 0;
++			}
++		}
++
++		/* allocate the buffer */
++		for (count = device->in_numbuffers; count < reqbufs->count;
++		     count++) {
++			/* Allocate memory for struct ipipe_buffer */
++			buffer =
++			    kmalloc(sizeof(struct ipipe_buffer), GFP_KERNEL);
++
++			/* if memory allocation fails then return error */
++			if (!buffer) {
++				/* free all the buffers */
++				while (--count >= device->in_numbuffers) {
++					adr = device->in_buff[count]->offset;
++					if (adr)
++						ipipe_free_pages((unsigned long)
++								 phys_to_virt
++								 (adr),
++								 device->in_buff
++								 [count]->size);
++					kfree(device->in_buff[count]);
++					device->in_buff[count] = NULL;
++				}
++				dev_err(ipipe_dev, "1.request_buffer:not \
++					enough memory\n");
++				return -ENOMEM;
++			}
++
++			/* assign buffer's address in configuration */
++			device->in_buff[count] = buffer;
++
++			/* set buffers index and buf_type,size parameters */
++			buffer->index = count;
++			buffer->buf_type = IPIPE_BUF_IN;
++			buffer->size = reqbufs->size;
++			/* allocate memory for buffer of size passed
++			   in reqbufs */
++			buffer->offset =
++			    (unsigned long)__get_free_pages(GFP_KERNEL |
++							    GFP_DMA,
++							    get_order
++							    (reqbufs->size));
++
++			/* if memory allocation fails, return error */
++			if (!(buffer->offset)) {
++				/* free all the buffer's space */
++				kfree(buffer);
++				device->in_buff[count] = NULL;
++				while (--count >= device->in_numbuffers) {
++					adr = device->in_buff[count]->offset;
++					if (adr)
++						ipipe_free_pages((unsigned long)
++								 phys_to_virt
++								 (adr),
++								 device->in_buff
++								 [count]->size);
++					kfree(device->in_buff[count]);
++					device->in_buff[count] = NULL;
++				}
++				dev_err(ipipe_dev, "2.request_buffer:not \
++					enough memory\n");
++
++				return -ENOMEM;
++			}
++
++			adr = (unsigned long)buffer->offset;
++			size = PAGE_SIZE << (get_order(reqbufs->size));
++			while (size > 0) {
++				/* make sure the frame buffers
++				   are never swapped out of memory */
++				SetPageReserved(virt_to_page(adr));
++				adr += PAGE_SIZE;
++				size -= PAGE_SIZE;
++			}
++			/* convert vertual address to physical */
++			buffer->offset = (unsigned long)
++			    virt_to_phys((void *)(buffer->offset));
++		}
++		device->in_numbuffers = reqbufs->count;
++	}
++	/* if buf_type is output then allocate buffers for output */
++	else if (reqbufs->buf_type == IPIPE_BUF_OUT) {
++		if (reqbufs->count == 0) {
++			/* free all the buffers */
++			for (count = 0; count < device->out_numbuffers; count++) {
++				/* free memory allocate for the image */
++				if (device->out_buff[count]) {
++					adr = device->out_buff[count]->offset;
++					if (adr)
++						ipipe_free_pages((unsigned long)
++								 phys_to_virt
++								 (adr),
++								 device->
++								 out_buff
++								 [count]->size);
++
++					/* free the memory allocated to
++					   ipipe_buffer */
++					kfree(device->out_buff[count]);
++
++					device->out_buff[count] = NULL;
++				}
++			}
++			device->out_numbuffers = 0;
++
++			return 0;
++		}
++		/* free the buffers */
++		if (device->out_numbuffers > reqbufs->count &&
++		    reqbufs->size == device->out_buff[0]->size) {
++			for (count = reqbufs->count;
++			     count < device->out_numbuffers; count++) {
++				/* free memory allocate for the image */
++				if (device->out_buff[count]) {
++					adr = device->out_buff[count]->offset;
++					if (adr)
++						ipipe_free_pages((unsigned long)
++								 phys_to_virt
++								 (adr),
++								 device->
++								 out_buff
++								 [count]->size);
++
++					/* free the memory allocated to
++					   ipipe_buffer */
++					kfree(device->out_buff[count]);
++
++					device->out_buff[count] = NULL;
++				}
++			}
++			device->out_numbuffers = reqbufs->count;
++
++			return 0;
++		}
++		/* if size requested is different from already allocated,
++		   free memory of all already allocated buffers */
++		if (device->out_numbuffers) {
++			if (reqbufs->size != device->out_buff[0]->size) {
++				for (count = 0;
++				     count < device->out_numbuffers; count++) {
++					if (device->out_buff[count]) {
++						adr =
++						    device->
++						    out_buff[count]->offset;
++
++						if (adr)
++							ipipe_free_pages((unsigned long)
++									 phys_to_virt
++									 (adr),
++									 device->
++									 out_buff
++									 [count]->
++									 size);
++
++						kfree(device->out_buff[count]);
++
++						device->out_buff[count] = NULL;
++					}
++				}
++				device->out_numbuffers = 0;
++			}
++		}
++
++		/* allocate the buffer */
++		for (count = device->out_numbuffers;
++		     count < reqbufs->count; count++) {
++			/* Allocate memory for struct ipipe_buffer */
++			buffer =
++			    kmalloc(sizeof(struct ipipe_buffer), GFP_KERNEL);
++
++			/* if memory allocation fails then return error */
++			if (!buffer) {
++				/* free all the buffers */
++				while (--count >= device->out_numbuffers) {
++					adr = device->out_buff[count]->offset;
++					if (adr)
++						ipipe_free_pages((unsigned long)
++								 phys_to_virt
++								 (adr),
++								 device->
++								 out_buff
++								 [count]->size);
++					kfree(device->out_buff[count]);
++					device->out_buff[count] = NULL;
++				}
++
++				dev_err(ipipe_dev,
++					"3.request_buffer:not enough \
++					memory\n");
++
++				return -ENOMEM;
++			}
++
++			/* assign buffer's address out configuration */
++			device->out_buff[count] = buffer;
++
++			/* set buffers outdex and buf_type,size parameters */
++			buffer->index = count;
++			buffer->buf_type = IPIPE_BUF_OUT;
++			buffer->size = reqbufs->size;
++			/* allocate memory for buffer of size passed
++			   in reqbufs */
++			buffer->offset =
++			    (unsigned long)__get_free_pages(GFP_KERNEL |
++							    GFP_DMA,
++							    get_order
++							    (reqbufs->size));
++
++			/* if memory allocation fails, return error */
++			if (!(buffer->offset)) {
++				/* free all the buffer's space */
++				kfree(buffer);
++				device->out_buff[count] = NULL;
++				while (--count >= device->out_numbuffers) {
++					adr = device->out_buff[count]->offset;
++					if (adr)
++						ipipe_free_pages((unsigned long)
++								 phys_to_virt
++								 (adr),
++								 device->
++								 out_buff
++								 [count]->size);
++					kfree(device->out_buff[count]);
++					device->out_buff[count] = NULL;
++				}
++				dev_err(ipipe_dev, "4.request_buffer:not \
++					enough memory\n");
++
++				return -ENOMEM;
++			}
++
++			adr = (unsigned long)buffer->offset;
++			size = PAGE_SIZE << (get_order(reqbufs->size));
++			while (size > 0) {
++				/* make sure the frame buffers
++				   are never swapped out of memory */
++				SetPageReserved(virt_to_page(adr));
++				adr += PAGE_SIZE;
++				size -= PAGE_SIZE;
++			}
++			/* convert vertual address to physical */
++			buffer->offset = (unsigned long)
++			    virt_to_phys((void *)(buffer->offset));
++		}
++		device->out_numbuffers = reqbufs->count;
++	} else {
++		dev_err(ipipe_dev, "request_buffer: invalid buffer type\n");
++
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++/* Functions */
++int ipipe_open(struct inode *inode, struct file *filp)
++{
++	struct ipipe_params *config = NULL;
++
++	if (atomic_inc_return(&reference_count) != 1) {
++		dev_err(ipipe_dev, "ipipe_open: device is already openend\n");
++		return -EBUSY;
++	}
++
++	/* allocate memory for a new configuration */
++	if ((config = kmalloc(sizeof(struct ipipe_params), GFP_KERNEL)) == NULL)
++		return -ENOMEM;
++
++	/* store the pointer of ipipe_params in private_data member of file
++	   and params member of ipipe_device */
++	filp->private_data = config;
++
++	/* initialize mutex to 0 */
++	ipipedevice.params = config;
++	ipipedevice.opened = 1;
++	ipipedevice.in_numbuffers = 0;
++	ipipedevice.out_numbuffers = 0;
++	init_completion(&(ipipedevice.wfc));
++	ipipedevice.wfc.done = 0;
++	init_MUTEX(&(ipipedevice.sem));
++
++	return 0;
++}
++int write_out_addr(int resize_no, unsigned int address)
++{
++	unsigned int utemp;
++	unsigned int rsz_start_add;
++	if ((resize_no == 0) || (resize_no == 1)) {
++		if (resize_no)
++			rsz_start_add = RSZ_EN_1;
++		else
++			rsz_start_add = RSZ_EN_0;
++	} else
++		return -EINVAL;
++
++	utemp = address & SET_LOW_ADD;
++	regw_ip(utemp, rsz_start_add + RSZ_SDR_BAD_L);
++	regw_ip(utemp, rsz_start_add + RSZ_SDR_SAD_L);
++
++	utemp = (address & SET_HIGH_ADD) >> 16;
++	regw_ip(utemp, rsz_start_add + RSZ_SDR_BAD_H);
++	regw_ip(utemp, rsz_start_add + RSZ_SDR_SAD_H);
++	return 0;
++}
++int validate_params(struct ipipe_params *params)
++{
++
++	u32 data_format;
++
++	if ((params->ipipeif_param.source == SDRAM_RAW) &&
++	    (params->ipipe_dpaths_fmt == YUV2YUV)) {
++
++		dev_err(ipipe_dev,
++			"validate:input source and data format does not match\n");
++		return -EINVAL;
++	}
++
++	if ((params->ipipeif_param.source == SDRAM_YUV) &&
++	    (params->ipipe_dpaths_fmt == RAW2YUV)) {
++
++		dev_err(ipipe_dev,
++			"validate:input source and data format does not match\n");
++		return -EINVAL;
++	}
++
++	if ((params->ipipeif_param.source < CCDC) ||
++	    (params->ipipeif_param.source > SDRAM_YUV)) {
++
++		dev_err(ipipe_dev,
++			"validate:invalidate input source of ipipeif\n");
++		return -EINVAL;
++	}
++
++	if (params->ipipeif_param.source == CCDC_DARKFM) {
++		if (!(params->ipipeif_param.glob_ver_size)) {
++
++			dev_err(ipipe_dev, "validate:glob_ver_size is 0\n");
++			return -EINVAL;
++		}
++		/*Data should be read from SDRAM with CFG.ALAW set to .0 and
++		   CFG.PACK8IN set to 1 */
++		if ((params->ipipeif_param.ialaw)
++		    || (!(params->ipipeif_param.pack_mode))) {
++
++			dev_err(ipipe_dev,
++				"validate: error in either ialaw or ipipeif pack mode\n");
++			return -EINVAL;
++		}
++	}
++
++	if ((params->ipipeif_param.source == CCDC_DARKFM)
++	    || (params->ipipeif_param.source == CCDC)) {
++		if (params->ipipeif_param.clock_select) {
++			dev_err(ipipe_dev, "validate:error in clock select\n");
++			return -EINVAL;
++		}
++	}
++
++	if (params->ipipeif_param.decimation) {
++		if ((params->ipipeif_param.rsz < ONE) ||
++		    (params->ipipeif_param.rsz > ONE_SEVENTH)) {
++			dev_err(ipipe_dev,
++				"validate:error in resize factor for decimation \n");
++			return -EINVAL;
++		}
++	}
++
++	if (params->ipipeif_param.clock_select) {
++		if ((params->ipipeif_param.clk_div < DIVIDE_HALF) ||
++		    (params->ipipeif_param.clk_div > DIVIDE_THIRTY)) {
++			dev_err(ipipe_dev,
++				"validate:error in clock divisor factor value\n");
++			return -EINVAL;
++		}
++	}
++
++	if ((params->ipipeif_param.data_shift < BITS15_2)
++	    || (params->ipipeif_param.data_shift > BITS9_0)) {
++
++		dev_err(ipipe_dev, "validate:error in data shift value\n");
++		return -EINVAL;
++	}
++
++	if ((params->ipipeif_param.clock_select != SDRAM_CLK)
++	    && (params->ipipeif_param.clock_select != PIXCEL_CLK)) {
++
++		dev_err(ipipe_dev, "validate:error in clock select value\n");
++		return -EINVAL;
++	}
++	if ((params->ipipeif_param.ialaw != ALAW_OFF)
++	    && (params->ipipeif_param.ialaw != ALAW_ON)) {
++
++		dev_err(ipipe_dev, "validate:error in ialaw value\n");
++		return -EINVAL;
++	}
++	if ((params->ipipeif_param.pack_mode != SIXTEEN_BIT)
++	    && (params->ipipeif_param.pack_mode != EIGHT_BIT)) {
++
++		dev_err(ipipe_dev, "validate:error in pack mode value\n");
++		return -EINVAL;
++	}
++
++	if ((params->ipipeif_param.avg_filter != AVG_OFF)
++	    && (params->ipipeif_param.avg_filter != AVG_ON)) {
++
++		dev_err(ipipe_dev, "validate:error in average filter value\n");
++		return -EINVAL;
++	}
++
++	if ((params->ipipeif_param.decimation != DECIMATION_OFF)
++	    && (params->ipipeif_param.decimation != DECIMATION_ON)) {
++
++		dev_err(ipipe_dev, "validate:error in decimation value\n");
++		return -EINVAL;
++	}
++
++	if ((params->ipipeif_param.mode != CONTINUOUS)
++	    && (params->ipipeif_param.mode != ONE_SHOT)) {
++
++		dev_err(ipipe_dev, "validate:error in ipipeif mode value\n");
++		return -EINVAL;
++	}
++
++	data_format =
++	    (params->ipipe_dpaths_fmt | (params->ipipe_dpaths_bypass) << 2);
++	/*in raw pass through mode   data can be < 4096 */
++	if (data_format == RAW2RAW_BYPASS) {
++		if (params->ipipe_hsz > MAX_SIZE_RAW_BY_PASS) {
++
++			dev_err(ipipe_dev,
++				"validate:invalid ipipe horizontal size\n");
++			return -EINVAL;
++		}
++	}
++	if (data_format != RAW2RAW_BYPASS) {
++		if (params->ipipe_hsz > MAX_SIZE) {
++
++			dev_err(ipipe_dev,
++				"validate:invalid ipipe horizontal size\n");
++			return -EINVAL;
++		}
++	}
++
++	if ((params->ipipe_mode != 0) && (params->ipipe_mode != 1)) {
++
++		dev_err(ipipe_dev, "validate:invalid ipipe mode\n");
++		return -EINVAL;
++	}
++	if ((params->ipipe_dpaths_bypass != RAW_MODE_OFF) &&
++	    (params->ipipe_dpaths_bypass != RAW_MODE_ON)) {
++
++		dev_err(ipipe_dev, "validate:invalid ipipe datapath\n");
++		return -EINVAL;
++
++	}
++	if ((params->ipipe_colpat_elep < RED)
++	    || (params->ipipe_colpat_elep > BLUE)) {
++
++		dev_err(ipipe_dev, "validate:invalid elep value\n");
++		return -EINVAL;
++	}
++	if ((params->ipipe_colpat_elop < RED)
++	    || (params->ipipe_colpat_elop > BLUE)) {
++
++		dev_err(ipipe_dev, "validate:invalid elop value\n");
++		return -EINVAL;
++	}
++	if ((params->ipipe_colpat_olep < RED)
++	    || (params->ipipe_colpat_olep > BLUE)) {
++
++		dev_err(ipipe_dev, "validate:invalid olep value\n");
++		return -EINVAL;
++	}
++	if ((params->ipipe_colpat_olop < RED)
++	    || (params->ipipe_colpat_olop > BLUE)) {
++
++		dev_err(ipipe_dev, "validate:invalid olop value\n");
++		return -EINVAL;
++	}
++
++	if (params->def_cor.dfc_en) {
++		if ((params->def_cor.dfc_sel != FROMTOP)
++		    && (params->def_cor.dfc_sel != FROMBOTTON)) {
++
++			dev_err(ipipe_dev,
++				"validate:invalid copy method in defect correction\n");
++			return -EINVAL;
++		}
++		if (params->def_cor.dfc_siz > 1024) {
++
++			dev_err(ipipe_dev,
++				"validate:invalid defect correction table size\n");
++			return -EINVAL;
++		}
++	}
++
++	if (params->prog_nf.noise_fil_en) {
++		if ((params->prog_nf.type != BOX)
++		    && (params->prog_nf.type != DIAMOND)) {
++
++			dev_err(ipipe_dev,
++				"validate:invalid noise filter type\n");
++			return -EINVAL;
++		}
++
++	}
++	if (params->prefilter.pre_en) {
++
++		if ((params->prefilter.sel_0 != AVG2MEDPIX)
++		    && (params->prefilter.sel_0 != AVG4PIX)) {
++
++			dev_err(ipipe_dev,
++				"validate:invalid averaging method(sel0) in prefilter\n");
++			return -EINVAL;
++		}
++
++		if ((params->prefilter.sel_1 != AVG2MEDPIX)
++		    && (params->prefilter.sel_1 != AVG4PIX)) {
++
++			dev_err(ipipe_dev,
++				"validate:invalid averaging method(sel1) in prefilter\n");
++			return -EINVAL;
++		}
++
++		if ((params->prefilter.typ_adaptive != DISABLE) &&
++		    (params->prefilter.typ_adaptive != ENABLE)) {
++
++			dev_err(ipipe_dev,
++				"validate:invalid adaptive filter value(en0) in pre filter\n");
++			return -EINVAL;
++		}
++		if ((params->prefilter.typ_adaptive_dotred != DISABLE) &&
++		    (params->prefilter.typ_adaptive_dotred != ENABLE)) {
++
++			dev_err(ipipe_dev,
++				"validate:invalid adaptive dot reduction value(en1) in pre filter\n");
++			return -EINVAL;
++		}
++	}
++
++	if ((params->rgb2rgb.gmm_cfg_bypr != GC_ENABLE) &&
++	    (params->rgb2rgb.gmm_cfg_bypr != GC_BYPASS)) {
++
++		dev_err(ipipe_dev,
++			"validate:invalid gamma correction enable/bypass value\n");
++		return -EINVAL;
++	}
++	if ((params->rgb2rgb.gmm_cfg_bypr == GC_ENABLE)
++	    && params->rgb2rgb.gmm_cfg_tbl == IPIPE_RAM
++	    && (params->rgb2rgb.gmm_tbl_r == NULL)) {
++		dev_err(ipipe_dev,
++			"validate:gamma red enabled but table field is NULL\n");
++		return -EINVAL;
++	}
++
++	if ((params->rgb2rgb.gmm_cfg_bypg != GC_ENABLE)
++	    && params->rgb2rgb.gmm_cfg_tbl == IPIPE_RAM
++	    && (params->rgb2rgb.gmm_cfg_bypg != GC_BYPASS)) {
++
++		dev_err(ipipe_dev,
++			"validate:invalid gamma green correction enable/bypass value\n");
++		return -EINVAL;
++	}
++
++	if ((params->rgb2rgb.gmm_cfg_bypg == GC_ENABLE)
++	    && params->rgb2rgb.gmm_cfg_tbl == IPIPE_RAM
++	    && (params->rgb2rgb.gmm_tbl_g == NULL)) {
++		dev_err(ipipe_dev,
++			"validate:gamma green enabled but table field is NULL\n");
++		return -EINVAL;
++	}
++
++	if ((params->rgb2rgb.gmm_cfg_bypb != GC_ENABLE)
++	    && (params->rgb2rgb.gmm_cfg_bypb != GC_BYPASS)) {
++
++		dev_err(ipipe_dev,
++			"validate:invalid gamma blue correction enable/bypass value\n");
++		return -EINVAL;
++	}
++	if ((params->rgb2rgb.gmm_cfg_bypb == GC_ENABLE)
++	    && params->rgb2rgb.gmm_cfg_tbl == IPIPE_RAM
++	    && (params->rgb2rgb.gmm_tbl_b == NULL)) {
++		dev_err(ipipe_dev,
++			"validate:gamma blue enabled but table field is NULL\n");
++		return -EINVAL;
++	}
++	if ((params->rgb2rgb.gmm_cfg_tbl != IPIPE_RAM)
++	    && (params->rgb2rgb.gmm_cfg_tbl != IPIPE_ROM)) {
++
++		dev_err(ipipe_dev, "invlid gamma table source\n");
++		return -EINVAL;
++	}
++
++	if ((params->rgb2rgb.gmm_cfg_siz < IPIPE_128)
++	    || (params->rgb2rgb.gmm_cfg_siz > IPIPE_512)) {
++
++		dev_err(ipipe_dev, "invalid gamma table size\n");
++		return -EINVAL;
++	}
++
++	if ((params->rgb2yuv.yuv_phs_position != COSITING)
++	    && (params->rgb2yuv.yuv_phs_position != CENTERING)) {
++
++		dev_err(ipipe_dev, "invalid phase position\n");
++		return -EINVAL;
++	}
++	if ((params->rgb2yuv.yuv_phs_lpf != ENABLE)
++	    && (params->rgb2yuv.yuv_phs_lpf != DISABLE)) {
++
++		dev_err(ipipe_dev, "invalid phase position\n");
++		return -EINVAL;
++	}
++
++	if ((params->edge_enhancer.yee_en != ENABLE)
++	    && (params->edge_enhancer.yee_en != DISABLE)) {
++
++		dev_err(ipipe_dev,
++			"invalid value in edge enhancement enable field\n");
++		return -EINVAL;
++	}
++
++	if ((params->edge_enhancer.yee_emf != ENABLE)
++	    && (params->edge_enhancer.yee_emf != DISABLE)) {
++
++		dev_err(ipipe_dev, "invalid value in median NR enable field\n");
++		return -EINVAL;
++	}
++
++	if (params->false_color_suppresion.fcs_en) {
++		if ((params->false_color_suppresion.fcs_typ_typ < Y) ||
++		    (params->false_color_suppresion.fcs_typ_typ > HPF_2D_YEE)) {
++
++			dev_err(ipipe_dev,
++				"invalid value in color suppresion enable field\n");
++			return -EINVAL;
++		}
++	}
++
++	if ((params->rsz_seq_seq != ENABLE) && (params->rsz_seq_seq != DISABLE)) {
++
++		dev_err(ipipe_dev, "invalid value of operation mode field\n");
++		return -EINVAL;
++	}
++
++	if ((params->rsz_seq_tmm != ENABLE) && (params->rsz_seq_tmm != DISABLE)) {
++
++		dev_err(ipipe_dev,
++			"invalid value of terminal condition enable field\n");
++		return -EINVAL;
++	}
++
++	if ((params->rsz_seq_hrv != ENABLE) && (params->rsz_seq_hrv != DISABLE)) {
++
++		dev_err(ipipe_dev,
++			"invalid value of horizontal reversal field\n");
++		return -EINVAL;
++	}
++
++	if ((params->rsz_seq_vrv != ENABLE) && (params->rsz_seq_vrv != DISABLE)) {
++
++		dev_err(ipipe_dev,
++			"invalid value of vertical reversal field\n");
++		return -EINVAL;
++	}
++
++	if ((params->rsz_seq_crv != ENABLE) && (params->rsz_seq_crv != DISABLE)) {
++
++		dev_err(ipipe_dev,
++			"invalid value of chroma sampling point field\n");
++		return -EINVAL;
++	}
++
++	if ((params->rsz_aal != ENABLE) && (params->rsz_aal != DISABLE)) {
++
++		dev_err(ipipe_dev,
++			"invalid value of anti aliasing filter field\n");
++		return -EINVAL;
++	}
++
++	if (params->rsz_en[0]) {
++		if ((params->rsz_rsc_param[0].rsz_h_typ != CUBIC)
++		    && (params->rsz_rsc_param[0].rsz_h_typ != LINEAR)) {
++
++			dev_err(ipipe_dev,
++				"invalid low pass filter type in RZA\n");
++			return -EINVAL;
++		}
++
++		if ((params->rsz_rsc_param[0].rsz_h_lse_sel != INTERNAL_VALUE)
++		    && (params->rsz_rsc_param[0].rsz_h_lse_sel !=
++			PROGRAMMED_VALUE)) {
++
++			dev_err(ipipe_dev,
++				"invalid intensity value of LPF in RZA\n");
++			return -EINVAL;
++		}
++
++		if ((params->rsz2rgb[0].rsz_rgb_typ != OUTPUT_16BIT) &&
++		    (params->rsz2rgb[0].rsz_rgb_typ != OUTPUT_32BIT)) {
++
++			dev_err(ipipe_dev, "invalid RGB output type in RZA\n");
++			return -EINVAL;
++		}
++
++		if ((params->rsz2rgb[0].rsz_rgb_msk0 != MASKLAST2)
++		    && (params->rsz2rgb[0].rsz_rgb_msk0 != NOMASK)) {
++
++			dev_err(ipipe_dev,
++				"invalid value of mask0 field in RZA\n");
++			return -EINVAL;
++		}
++
++		if ((params->rsz2rgb[0].rsz_rgb_msk1 != MASKLAST2)
++		    && (params->rsz2rgb[0].rsz_rgb_msk1 != NOMASK)) {
++
++			dev_err(ipipe_dev,
++				"invalid value of mask1 field in RZA\n");
++			return -EINVAL;
++		}
++		/*Check that mode selected by user in all modules should be same */
++		if (!(params->ipipeif_param.mode == params->ipipe_mode) &&
++		    (params->ipipeif_param.mode ==
++		     params->rsz_rsc_param[0].rsz_mode)
++		    && (params->ipipe_mode ==
++			params->rsz_rsc_param[0].rsz_mode)) {
++
++			dev_err(ipipe_dev, "mode does not match in RZA\n");
++			return -EINVAL;
++		}
++
++		if (params->rsz_rsc_param[0].rsz_o_hsz > MAX_SIZE_RSZ0) {
++
++			dev_err(ipipe_dev,
++				"invalid output horizontal size in RZA\n");
++			return -EINVAL;
++		}
++
++	}
++
++	if (params->rsz_en[1]) {
++		if ((params->rsz_rsc_param[1].rsz_h_typ != CUBIC)
++		    && (params->rsz_rsc_param[1].rsz_h_typ != LINEAR)) {
++
++			dev_err(ipipe_dev,
++				"invalid low pass filter type in RZB\n");
++			return -EINVAL;
++		}
++
++		if ((params->rsz_rsc_param[1].rsz_h_lse_sel != INTERNAL_VALUE)
++		    && (params->rsz_rsc_param[1].rsz_h_lse_sel !=
++			PROGRAMMED_VALUE)) {
++
++			dev_err(ipipe_dev,
++				"invalid intensity value of LPF in RZB\n");
++			return -EINVAL;
++		}
++
++		if ((params->rsz2rgb[1].rsz_rgb_typ != OUTPUT_16BIT) &&
++		    (params->rsz2rgb[1].rsz_rgb_typ != OUTPUT_32BIT)) {
++
++			dev_err(ipipe_dev, "invalid RGB output type in RZB\n");
++			return -EINVAL;
++		}
++
++		if ((params->rsz2rgb[1].rsz_rgb_msk0 != MASKLAST2)
++		    && (params->rsz2rgb[1].rsz_rgb_msk0 != NOMASK)) {
++
++			dev_err(ipipe_dev,
++				"invalid value of mask0 field in RZB\n");
++			return -EINVAL;
++		}
++
++		if ((params->rsz2rgb[1].rsz_rgb_msk1 != MASKLAST2)
++		    && (params->rsz2rgb[1].rsz_rgb_msk1 != NOMASK)) {
++
++			dev_err(ipipe_dev,
++				"invalid value of mask1 field in RZB\n");
++			return -EINVAL;
++		}
++		/*Check that mode selected by user in all modules should be same */
++		if (!(params->ipipeif_param.mode == params->ipipe_mode) &&
++		    (params->ipipeif_param.mode ==
++		     params->rsz_rsc_param[1].rsz_mode)
++		    && (params->ipipe_mode ==
++			params->rsz_rsc_param[1].rsz_mode)) {
++
++			dev_err(ipipe_dev, "mode does not match in RZB\n");
++			return -EINVAL;
++		}
++
++		if (params->rsz_rsc_param[1].rsz_o_hsz > MAX_SIZE_RSZ1) {
++
++			dev_err(ipipe_dev,
++				"invalid output horizontal size in RZB\n");
++			return -EINVAL;
++		}
++	}
++	/*both resizers can not be enabled simultaniously in one shot mode */
++
++	if ((params->ipipe_dpaths_fmt > YUV2YUV)
++	    || (params->ipipe_dpaths_fmt < RAW2YUV)) {
++
++		dev_err(ipipe_dev, "invalid data format\n");
++		return -EINVAL;
++	}
++
++	if (params->def_cor.dfc_en)
++		if (params->def_cor.dfc_siz > MAX_SIZE_DFC) {
++
++			dev_err(ipipe_dev, "DFC table size exceeds limit\n");
++			return -EINVAL;
++		}
++	return 0;
++}
++
++int ipipe(struct ipipe_device *device, struct ipipe_convert *arg)
++{
++	unsigned int utemp, utemp_h, utemp_l;
++	int resizer_no_0, resizer_no_1;
++
++	resizer_no_0 = device->params->rsz_en[0];
++	resizer_no_1 = device->params->rsz_en[1];
++
++	/*set ipipe clock */
++	regw_vpss(0x79, VPSS_CLK);	/*!FIXME */
++	if (device->params->ipipeif_param.source != 0) {
++		regw_if(((device->params->ipipeif_param.adofs) >> 5),
++			IPIPEIF_ADOFS);
++
++		if (arg->in_buff.index < 0) {
++			/*check if adress is 32 bit alligned */
++			if (arg->in_buff.offset % 32) {
++				dev_dbg(ipipe_dev,
++					"address offset not alligned\n");
++				return -EINVAL;
++			}
++			/*lower sixteen bit */
++			utemp = arg->in_buff.offset;
++			utemp_l = utemp >> 5;
++			regw_if(utemp_l, IPIPEIF_ADDRL);
++			/*upper next seven bit */
++			utemp_h = utemp >> 21;
++			regw_if(utemp_h, IPIPEIF_ADDRU);
++		} else if (arg->in_buff.index > 7) {
++			dev_dbg(ipipe_dev, "Invalid buffer index\n");
++			return -EINVAL;
++		} else {
++			/*lower sixteen bit */
++			utemp = device->in_buff[arg->in_buff.index]->offset;
++			utemp_l = utemp >> 5;
++			regw_if(utemp_l, IPIPEIF_ADDRL);
++			utemp_h = utemp >> 21;
++
++			regw_if(utemp_h, IPIPEIF_ADDRU);
++		}
++	}
++	if (resizer_no_0)
++		regw_ip(device->params->ext_mem_param[0].rsz_sdr_oft,
++			RSZ_EN_0 + RSZ_SDR_OFT);
++	regw_ip(device->params->rsz_en[0], RSZ_EN_0);
++	if (resizer_no_1)
++		regw_ip(device->params->ext_mem_param[1].rsz_sdr_oft,
++			RSZ_EN_1 + RSZ_SDR_OFT);
++	regw_ip(device->params->rsz_en[1], RSZ_EN_1);
++
++	if (arg->out_buff.index < 0) {
++		if (arg->out_buff.offset % 32)
++			return -EINVAL;
++		else {
++			/* CHECK this statems */
++			if (resizer_no_0 == 1 && resizer_no_1 == 1) {
++				printk
++				    ("If both the resizer enable then user can \
++					 not provide output address\n");
++				return -EINVAL;
++			}
++			if (resizer_no_0)
++				write_out_addr(0, arg->out_buff.offset);
++			if (resizer_no_1)
++				write_out_addr(1, arg->out_buff.offset);
++		}
++	} else if (arg->in_buff.index > 7) {
++		return -EINVAL;
++	} else {
++		if (resizer_no_0)
++			write_out_addr(0,
++				       device->out_buff[arg->out_buff.index]->
++				       offset);
++		if (resizer_no_1 && resizer_no_0)
++			write_out_addr(1,
++				       device->out_buff[arg->out_buff.index +
++							1]->offset);
++		if (resizer_no_1 && !resizer_no_0)
++			write_out_addr(1,
++				       device->out_buff[arg->out_buff.index]->
++				       offset);
++
++	}
++
++	regw_ip(0xff, IRQ_EN);
++	while (1) {
++		utemp = regr_ip(IPIPE_EN);
++		if (utemp == 0)
++			break;
++	}
++	regw_ip(1, IPIPE_EN);
++	while (1) {
++		utemp = regr_if(IPIPEIF_ENABLE);
++		if (utemp == 0)
++			break;
++	};
++
++	regw_if(1, IPIPEIF_ENABLE);
++	dev_dbg(ipipe_dev, "ipipe started\n");
++	wait_for_completion_interruptible(&device->wfc);
++	return 0;
++
++}
++int ipipe_release(struct inode *inode, struct file *filp)
++{
++	/* get the configuratin from private_date member of file */
++	struct ipipe_params *config = filp->private_data;
++	struct ipipe_device *device = &ipipedevice;
++	/* call free_buffers to free memory allocated to buffers */
++	if (atomic_dec_and_test(&reference_count)) {
++		free_buffers(device);
++		/* change the device status to available */
++		device->opened = 0;
++	}
++
++	/* free the memory allocated to configuration */
++	if (config)
++		kfree(config);
++
++	/* Assign null to private_data member of file and params
++	   member of device */
++	filp->private_data = device->params = NULL;
++
++	return 0;
++}
++
++int ipipe_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++	/* get the address of global object of ipipe_device structure */
++	struct ipipe_device *device = &ipipedevice;
++	int i, flag = 0, shift;
++	/* get the page offset */
++	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
++	shift = PAGE_SHIFT;
++	for (i = 0; i < device->in_numbuffers; i++) {
++		if (device->in_buff[i]->offset == offset) {
++			flag = 1;
++			break;
++		}
++	}
++
++	/* page offset passed in mmap should one from output buffers */
++	if (flag == 0) {
++		for (i = 0; i < device->out_numbuffers; i++) {
++			if (device->out_buff[i]->offset == offset) {
++				flag = 1;
++				break;
++			}
++		}
++	}
++	/* map buffers address space from kernel space to user space */
++	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
++			    vma->vm_end - vma->vm_start, vma->vm_page_prot))
++		return -EAGAIN;
++
++	return 0;
++}
++int ipipe_ioctl(struct inode *inode, struct file *file,
++		unsigned int cmd, unsigned long arg)
++{
++	struct ipipe_params params_t;
++	/* struct ipipe_reg_dump reg_addr; */
++	int ret = 0;
++	/* get the address of global object of ipipe_device structure */
++	struct ipipe_device *device = &ipipedevice;
++	struct ipipe_params *params = &params_t;
++	struct ipipe_convert addr_struct;
++	/* struct ipipe_cropsize *crop_struct = NULL; */
++	/* Before decoding check for correctness of cmd */
++	dev_dbg(ipipe_dev, "ipipe ioctl\n");
++	if (_IOC_TYPE(cmd) != IPIPE_IOC_BASE) {
++		dev_dbg(ipipe_dev, "Bad command Value \n");
++		return -1;
++	}
++	if (_IOC_NR(cmd) > IPIPE_IOC_MAXNR) {
++		dev_dbg(ipipe_dev, "Bad command Value\n");
++		return -1;
++	}
++
++	/* Verify accesses       */
++	if (_IOC_DIR(cmd) & _IOC_READ)
++		ret = !access_ok(VERIFY_WRITE, (void *)arg, _IOC_SIZE(cmd));
++	else if (_IOC_DIR(cmd) & _IOC_WRITE)
++		ret = !access_ok(VERIFY_READ, (void *)arg, _IOC_SIZE(cmd));
++	if (ret) {
++		dev_err(ipipe_dev, "access denied\n");
++		return -1;	/*error in access */
++	}
++	/* switch according value of cmd */
++	switch (cmd) {
++
++	case IPIPE_QUERYBUF:
++		/* call query buffer which will return buffer address */
++		down_interruptible(&(device->sem));
++		if ((ret =
++		     query_buffer(device, (struct ipipe_buffer *)arg)) != 0) {
++			up(&(device->sem));
++			return ret;
++		}
++		up(&(device->sem));
++		break;
++	case IPIPE_REQBUF:
++		/* call request buffer to allocate buffers */
++		down_interruptible(&(device->sem));
++		if ((ret =
++		     request_buffer(device,
++				    (struct ipipe_reqbufs *)arg)) != 0) {
++			up(&(device->sem));
++			return ret;
++		}
++
++		up(&(device->sem));
++		break;
++	case IPIPE_SET_PARAM:
++		/*set the parametres */
++
++		down_interruptible(&(device->sem));
++		/*default parameters */
++		if ((void *)arg == NULL) {
++			params = &param_def;
++			dev_dbg(ipipe_dev, "NULL parameters.\n");
++		} else {
++			/* copy the parameters to the configuration */
++			if (copy_from_user
++			    (params, (struct ipipe_params *)arg,
++			     sizeof(struct ipipe_params))) {
++				/* if it fails return error */
++				up(&(device->sem));
++				return -EFAULT;
++			}
++		}
++
++		/* test for register write OK */
++		if ((ret = validate_params(params)) != 0) {
++			dev_dbg(ipipe_dev, "Error in validate \n");
++			up(&(device->sem));
++			return ret;
++		}
++		dev_dbg(ipipe_dev, "Pass validation.\n");
++
++		/* copy the values to device params */
++		if (device->params)
++			memcpy(device->params, params,
++			       sizeof(struct ipipe_params));
++		else {
++			up(&(device->sem));
++			dev_dbg(ipipe_dev,
++				"invalid device parameter buffer.\n");
++			return -EINVAL;
++		}
++		if ((ret = ipipe_hw_setup(device->params)) != 0) {
++			dev_dbg(ipipe_dev, "Error in hardware set up\n");
++			up(&(device->sem));
++			return ret;
++		}
++		up(&(device->sem));
++		break;
++
++	case IPIPE_GET_PARAM:
++
++		down_interruptible(&(device->sem));
++		/* copy the parameters from the configuration */
++		if (copy_to_user((struct ipipe_params *)arg, (device->params),
++				 sizeof(struct ipipe_params))) {
++			/* if copying fails return error */
++
++			ret = -EFAULT;
++		}
++		up(&(device->sem));
++		break;
++
++	case IPIPE_START:
++
++		down_interruptible(&(device->sem));
++		dev_dbg(ipipe_dev, "ipipe startioctl\n");
++		/* copy the parameters to the configuration */
++		if (copy_from_user
++		    (&addr_struct, (struct ipipe_convert *)arg,
++		     sizeof(struct ipipe_convert)))
++			/* if it fails return error */
++		{
++			up(&(device->sem));
++			return -EFAULT;
++		}
++		/*ret = ipipe_hw_setup(device->params);*/
++		if ((ret = ipipe(device, &addr_struct)) != 0) {
++			up(&(device->sem));
++			return ret;
++		}
++		up(&(device->sem));
++
++		break;
++	default:
++		ret = -EINVAL;
++	}
++
++	return ret;
++
++}
++static void ipipe_platform_release(struct device *device)
++{
++	/* This is called when the reference count goes to zero */
++}
++
++static int ipipe_probe(struct device *device)
++{
++	ipipe_dev = device;
++	return 0;
++}
++
++static int ipipe_remove(struct device *device)
++{
++	return 0;
++}
++
++/* global variable of type file_operations containing function
++pointers of file operations */
++static struct file_operations ipipe_fops = {
++	.owner = THIS_MODULE,
++	.open = ipipe_open,
++	.release = ipipe_release,
++	.mmap = ipipe_mmap,
++	.ioctl = ipipe_ioctl,
++};
++
++/* global variable of type cdev to register driver to the kernel */
++static struct cdev cdev;
++
++/* global variable which keeps major and minor number of the driver in it */
++static dev_t dev;
++
++static struct device_driver ipipe_driver = {
++	.name = "dm355_ipipe",
++	.bus = &platform_bus_type,
++	.probe = ipipe_probe,
++	.remove = ipipe_remove,
++};
++static struct platform_device ipipe_pt_device = {
++	.name = "dm355_ipipe",
++	.id = 2,
++	.dev = {
++		.release = ipipe_platform_release,
++		}
++};
++int __init ipipe_init(void)
++{
++	int result;
++
++	/* Register the driver in the kernel */
++	/* dynmically get the major number for the driver using
++	   alloc_chrdev_region function */
++	result = alloc_chrdev_region(&dev, 0, 1, DRIVERNAME);
++
++	/* if it fails return error */
++	if (result < 0) {
++		dev_dbg(ipipe_dev, "DM355IPIPE: Module intialization \
++                failed. could not register character device\n");
++		return -ENODEV;
++	}
++	printk(KERN_INFO "ipipe major#: %d, minor# %d\n", MAJOR(dev),
++	       MINOR(dev));
++
++	/* initialize cdev with file operations */
++	cdev_init(&cdev, &ipipe_fops);
++
++	cdev.owner = THIS_MODULE;
++	cdev.ops = &ipipe_fops;
++
++	/* add cdev to the kernel */
++	result = cdev_add(&cdev, dev, 1);
++
++	if (result) {
++		unregister_chrdev_region(dev, 1);
++		dev_dbg(ipipe_dev, "DM355 IPIPE: Error adding \
++		DM355 IPIPE .. error no:%d\n", result);
++		return -EINVAL;
++	}
++
++	/* register driver as a platform driver */
++	if (driver_register(&ipipe_driver) != 0) {
++		unregister_chrdev_region(dev, 1);
++		cdev_del(&cdev);
++		return -EINVAL;
++	}
++
++	/* Register the drive as a platform device */
++	if (platform_device_register(&ipipe_pt_device) != 0) {
++		driver_unregister(&ipipe_driver);
++		unregister_chrdev_region(dev, 1);
++		cdev_del(&cdev);
++		return -EINVAL;
++	}
++
++	ipipe_class = class_create(THIS_MODULE, "dm355_ipipe");
++	if (!ipipe_class) {
++		printk("ipipe_init: error in creating device class\n");
++		driver_unregister(&ipipe_driver);
++		platform_device_unregister(&ipipe_pt_device);
++		unregister_chrdev_region(dev, 1);
++		unregister_chrdev(MAJOR(dev), DRIVERNAME);
++		cdev_del(&cdev);
++		return -EINVAL;
++	}
++
++	class_device_create(ipipe_class, NULL, dev, NULL, "dm355_ipipe");
++
++	/* Set up the Interrupt handler for PRVINT interrupt */
++	/*request irq 8(sdr) intt */
++	result = request_irq(IRQ_DM355_IPIPE_SDR, ipipe_isr, SA_INTERRUPT,
++			     "dm355_ipipe", (void *)&ipipedevice);
++
++	if (result < 0) {
++		dev_dbg(ipipe_dev, "ipipe_init:cannot get irq\n");
++
++		unregister_chrdev_region(dev, 1);
++		class_device_destroy(ipipe_class, dev);
++		class_destroy(ipipe_class);
++		driver_unregister(&ipipe_driver);
++		platform_device_unregister(&ipipe_pt_device);
++		cdev_del(&cdev);
++		return -EINVAL;
++	}
++
++	ipipedevice.opened = 0;
++	printk(KERN_INFO "ipipe driver registered\n");
++
++	return 0;
++}
++
++void __exit ipipe_cleanup(void)
++{
++	/* remove major number allocated to this driver */
++	unregister_chrdev_region(dev, 1);
++
++	/* Remove platform driver */
++	driver_unregister(&ipipe_driver);
++
++	class_device_destroy(ipipe_class, dev);
++
++	class_destroy(ipipe_class);
++
++	platform_device_unregister(&ipipe_pt_device);
++
++	/* disable interrupt */
++	free_irq(IRQ_DM355_IPIPE_SDR, &ipipedevice);
++	cdev_del(&cdev);
++
++	/* unregistering the driver from the kernel */
++	unregister_chrdev(MAJOR(dev), DRIVERNAME);
++}
++
++module_init(ipipe_init);
++module_exit(ipipe_cleanup);
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/media/video/davinci/dm355_ipipe_hw.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/dm355_ipipe_hw.c
+@@ -0,0 +1,725 @@
++/*
++ *
++ *
++ * Copyright (C) 2005 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_ipipe_hw.c file */
++
++#include <linux/errno.h>
++#include <linux/delay.h>
++#include <asm-arm/arch-davinci/dm355_ipipe_hw.h>
++#include <asm-arm/arch-davinci/dm355_ipipe.h>
++
++#include <linux/device.h>
++#ifdef __KERNEL__
++
++extern struct device *ipipe_dev;
++
++/* ipipe_hw_setup:It is used for Hardware Setup */
++int ipipe_hw_setup(struct ipipe_params *config)
++{
++	u32 utemp = 0;
++	u32 data_format;
++	ipipeif_decimation decimation_en;
++	ipipeif_input_source input_source = config->ipipeif_param.source;
++	if (!config)
++		return -EINVAL;
++
++	/*Hardware set up of IPIPEIF Module */
++	/*Combine all the fields to make CFG register of IPIPEIF */
++	utemp = config->ipipeif_param.mode << 0;
++	utemp |= config->ipipeif_param.decimation << 1;
++	utemp |= config->ipipeif_param.source << 2;
++	utemp |= config->ipipeif_param.clk_div << 4;
++	utemp |= config->ipipeif_param.avg_filter << 7;
++	utemp |= config->ipipeif_param.pack_mode << 8;
++	utemp |= config->ipipeif_param.ialaw << 9;
++	utemp |= config->ipipeif_param.clock_select << 10;
++	utemp |= config->ipipeif_param.data_shift << 11;
++	regw_if(utemp, IPIPEIF_GFG);
++	switch (input_source) {
++	case CCDC:
++		regw_if(config->ipipeif_param.gain, IPIPEIF_GAIN);
++
++		break;
++
++	case SDRAM_RAW:
++
++	case CCDC_DARKFM:
++		regw_if(config->ipipeif_param.gain, IPIPEIF_GAIN);
++
++	case SDRAM_YUV:
++		regw_if(config->ipipeif_param.glob_hor_size, IPIPEIF_PPLN);
++		regw_if(config->ipipeif_param.glob_ver_size, IPIPEIF_LPFR);
++		regw_if(config->ipipeif_param.hnum, IPIPEIF_HNUM);
++		regw_if(config->ipipeif_param.vnum, IPIPEIF_VNUM);
++#if 0
++		/* Following Register are part of buffer management (ipipe) */
++		regw_if(config->ipipeif_param.addru, IPIPEIF_ADDRU);
++		regw_if(config->ipipeif_param.addrl, IPIPEIF_ADDRL);
++		regw_if(config->ipipeif_param.adofs, IPIPEIF_ADOFS);
++#endif
++		utemp = regr_vpss(VPSS_PCR);
++		RESETBIT(utemp, 4);
++		RESETBIT(utemp, 5);
++		regw_vpss(utemp, VPSS_PCR);
++
++		break;
++
++	}
++	/*check if decimation is enable or not */
++	decimation_en = config->ipipeif_param.decimation;
++	if (decimation_en) {
++		regw_if(config->ipipeif_param.rsz, IPIPEIF_RSZ);
++		/* Enable Aneraging filter PRATIK */
++	}
++
++	/*Hardware set up of IPIPE Module */
++	/*set GCL_ARM reg before writting to ipipe registers */
++	regw_ip(1, GCL_ARM);
++	/*enable the clock wb,cfa,dfc,d2f,pre modules */
++	regw_ip(0x06, GCL_CCD);
++	data_format =
++	    (config->ipipe_dpaths_fmt | (config->ipipe_dpaths_bypass) << 2);
++
++	utemp = regr_vpss(VPSS_PCR);
++	RESETBIT(utemp, 6);
++	regw_vpss(utemp, VPSS_PCR);
++	/*enable ipipe mode to either one shot or continuous */
++	utemp = regr_ip(IPIPE_MODE);
++	RESETBIT(utemp, 0); /*first reset mode bit and then set it by
++			      config->ipipe_mode */
++	utemp |= config->ipipe_mode;
++	regw_ip(utemp, IPIPE_MODE);
++	regw_ip(data_format, IPIPE_DPATHS);
++	/*set size */
++	regw_ip(config->ipipe_vst, IPIPE_VST);
++	regw_ip(config->ipipe_hst, IPIPE_HST);
++	regw_ip(config->ipipe_vsz, IPIPE_VSZ);
++	regw_ip(config->ipipe_hsz, IPIPE_HSZ);
++	switch (data_format) {
++	case RAW2YUV:
++
++		/*Combine all the fields to make COLPAT register of IPIPE */
++		utemp = (config->ipipe_colpat_elep << 0);
++		utemp |= (config->ipipe_colpat_elop << 2);
++		utemp |= (config->ipipe_colpat_olep << 4);
++		utemp |= (config->ipipe_colpat_olop << 6);
++
++		regw_ip(utemp, IPIPE_COLPAT);
++		/* set_dfc_regs(&(config->def_cor)); */ /*defect correction */
++		set_d2f_regs(&(config->prog_nf));	/*noise filter */
++		set_pre_regs(&(config->prefilter));	/*prefilter */
++		/*histogram configuration may come here */
++		set_wb_regs(&(config->wb));
++		/*diff data_format value needs diff regs to be
++		  configured so passing the value of data_format */
++		set_rgb_2_yuv_regs(config->ipipe_dpaths_fmt,
++				   &(config->rgb2yuv));
++
++		set_rgb_to_rgb_regs(&(config->rgb2rgb));	/*set RGB_*
++								   and GMM reg */
++		/*boundary scan calc configuration may come here */
++
++		set_ee_regs(&(config->edge_enhancer));
++		set_fcs_regs(&(config->false_color_suppresion));
++		set_rsz_regs(config);	/*set RSZ_SEQ registers */
++		set_aal_regs(config);	/*set RSZ_AAL registers */
++		/*set the registers of either RSZ0 or RSZ1 */
++		set_rsz_structs(config);
++
++		break;
++
++	case RAW2RAW:
++
++		/* set_dfc_regs(&(config->def_cor)); */       /*defect correction */
++		set_d2f_regs(&(config->prog_nf));	/*noise filter */
++		set_pre_regs(&(config->prefilter));	/*prefilter */
++		set_wb_regs(&(config->wb));	/* .................CHECK */
++		/*diff format value needs diff regs to be configured */
++		/*set_rgb_2_yuv_regs(config->ipipe_dpaths_fmt,
++		   &(config->rgb2yuv)); */
++		set_aal_regs(config);	/*set RSZ_AAL registers */
++		/*set the registers of RSZ0 and RSZ1 */
++		set_rsz_structs(config);	/*...................CHECK */
++		default_for_raw2raw(config);
++		break;
++
++	case RAW2BOX:
++		printk(KERN_INFO "boxcar mode is not supported by driver\n");
++
++		break;
++
++	case YUV2YUV:
++		set_ee_regs(&(config->edge_enhancer));
++		set_fcs_regs(&(config->false_color_suppresion));
++		set_rsz_regs(config);	/*set RSZ_SEQ registers */
++		set_aal_regs(config);	/*set RSZ_AAL registers */
++		/*set the registers of either RSZ0 or RSZ1 */
++		set_rsz_structs(config);
++		break;
++
++	case RAW2RAW_BYPASS:
++		/*set_dfc_regs(&(config->def_cor)); */      /*defect correction */
++		set_d2f_regs(&(config->prog_nf));	/*noise filter */
++		set_pre_regs(&(config->prefilter));	/*prefilter */
++		set_wb_regs(&(config->wb));
++		/*diff data_format  value needs diff regs to be configured
++		   so passing the value of data_format */
++		set_rgb_2_yuv_regs(config->ipipe_dpaths_fmt,
++				   &(config->rgb2yuv));
++		default_for_raw2raw(config);
++		default_for_bypass(config);
++		set_aal_regs(config);	/*set RSZ_AAL registers */
++		/*set the registers of either RSZ0 or RSZ1 */
++		set_rsz_structs(config);
++		break;
++
++	}
++	return 0;
++
++}
++
++/*default configuratins for RAW2RAW mode*/
++int default_for_raw2raw(struct ipipe_params *parameter)
++{
++	u32 utemp;
++	u32 bright = 0;
++	u32 contrast = 16;
++
++	int seq_tmm = 0;
++	utemp = regr_vpss(VPSS_MEMCTL);
++	RESETBIT(utemp, 1);
++	RESETBIT(utemp, 0);
++	SETBIT(utemp, 2);
++	regw_vpss(utemp, VPSS_MEMCTL);
++
++	regw_ip(1, GCL_SDR);
++
++	/*set this to 0 for dafault config */
++	utemp =
++	    (parameter->rsz_seq_seq << 0) | (seq_tmm << 1) | (parameter->
++							      rsz_seq_hrv << 2)
++	    | (parameter->rsz_seq_vrv << 3) | (parameter->rsz_seq_crv << 4);
++	regw_ip(utemp, RSZ_SEQ);
++	/*set this to 0 for dafault config */
++	regw_ip(0, FCS_EN);
++	/*set this to 0 for dafault config */
++	regw_ip(0, YEE_EN);
++	/*set default brightness and contrast */
++	utemp = ((contrast << 0) | (bright << 8));
++	regw_ip(utemp, YUV_ADJ);
++
++	/*set default luminance */
++	regw_ip(0, YUV_Y_MIN);
++	regw_ip(255, YUV_Y_MAX);
++
++	/*set default chrominance */
++	regw_ip(0, YUV_C_MIN);
++	regw_ip(255, YUV_C_MAX);
++	/*default config for resizer 1  registers */
++	regw_ip(1, RSZ_EN_0);
++	regw_ip(0, RSZ_EN_0 + RSZ_I_HST);
++	regw_ip(0, RSZ_EN_0 + RSZ_I_VST);
++	regw_ip(0, RSZ_EN_0 + RSZ_O_HST);
++	regw_ip(0, RSZ_EN_0 + RSZ_V_PHS);
++	regw_ip(256, RSZ_EN_0 + RSZ_V_DIF);
++	regw_ip(256, RSZ_EN_0 + RSZ_H_DIF);
++	regw_ip(0, RSZ_EN_0 + RSZ_H_PHS);
++	regw_ip(0, RSZ_EN_0 + RSZ_H_TYP);
++	regw_ip(0, RSZ_EN_0 + RSZ_H_LSE);
++	regw_ip(0, RSZ_EN_0 + RSZ_H_LPF);
++	regw_ip(0, RSZ_EN_0 + RSZ_RGB_EN);
++	/*disable resizer 0 in default mode */
++	regw_ip(0, RSZ_EN_1);
++/*
++for debugging
++*/
++	return 0;
++}
++
++/*default configuratins for RAW2RAW_bypass mode*/
++int default_for_bypass(struct ipipe_params *parameter)
++{
++	/*disable noise filter in default config */
++	regw_ip(0, D2F_EN);
++	/*disable defect coorection in default config */
++	regw_ip(0, DFC_EN);
++	/*disable prefilter filter in default config */
++	regw_ip(0, PRE_EN);
++	/*set default config for white balance */
++	regw_ip(256, WB2_DGN);
++	regw_ip(128, WB2_WG_R);
++	regw_ip(128, WB2_WG_GR);
++	regw_ip(128, WB2_WG_GB);
++	regw_ip(128, WB2_WG_B);
++	return 0;
++}
++
++/*IPIPE Register write function definition */
++int set_dfc_regs(struct ipipe_def_cor *dfc)
++{
++	u32 utemp;
++	unsigned int horizontal_pos[MAX_SIZE_DFC];
++	unsigned int vertical_pos_method[MAX_SIZE_DFC];
++	unsigned int count;
++	regw_ip(dfc->dfc_en, DFC_EN);	/*writting to enable register */
++
++	if (1 == dfc->dfc_en) {
++		regw_ip(dfc->dfc_sel, DFC_SEL);
++		regw_ip(DEF_COR_START_ADDR, DFC_ADR);
++		regw_ip(dfc->dfc_siz, DFC_SIZE);
++		utemp = regr_vpss(VPSS_MEMCTL);
++		RESETBIT(utemp, 0);
++		regw_vpss(utemp, VPSS_MEMCTL);
++		/*set the auto increment,write only,dfc mode in RAM_MODE */
++		regw_ip(0x0034, RAM_MODE);
++		regw_ip(0x00, RAM_ADR);
++		regw_ip(dfc->dfc_adr, DFC_ADR);
++		/*regw_ip(0x00,DFC_ADR);*/
++		if (dfc->dfc_table != NULL) {
++			for (count = 0; count < dfc->dfc_siz; count++) {
++				horizontal_pos[count] =
++				    dfc->dfc_table[count] & 0x00000FFF;
++				vertical_pos_method[count] =
++				    dfc->dfc_table[count] & 0x07FFF000;
++			}
++
++			/*write first twelve bit */
++			count = 0;
++
++			while (count < dfc->dfc_siz) {
++				regw_ip(horizontal_pos[count], RAM_WDT);
++				printk(KERN_INFO "###RAM_WDT[%d] = %x\n", count,
++				       regr_ip(RAM_WDT));
++				/*write next fifteen bit */
++				regw_ip(vertical_pos_method[count], RAM_WDT);
++				printk(KERN_INFO "RAM_WDT[%d] = %x\n", count,
++				       regr_ip(RAM_WDT));
++
++				count++;
++			}
++
++		} else {
++
++		}
++
++	}
++	return 0;
++
++}
++
++int set_d2f_regs(struct ipipe_prog_nf *noise_filter)
++{
++	u32 utemp;
++	int count = 0;
++	regw_ip(noise_filter->noise_fil_en, D2F_EN);
++	if (1 == noise_filter->noise_fil_en) {
++		/*Combine all the fields to make D2F_CFG register of IPIPE */
++		utemp =
++		    (noise_filter->d2f_cfg_spr << 0) | (noise_filter->
++							d2f_cfg_shf << 2) |
++		    (noise_filter->type << 4);
++		regw_ip(utemp, D2F_CFG);
++		if (noise_filter->d2f_str != NULL) {
++			count = 0;
++			while (count < 32) {
++				regw_ip(noise_filter->d2f_str[count],
++					D2F_STR + count * 4);
++				count++;
++			}
++		} else {
++		}
++		if (noise_filter->d2f_thr != NULL) {
++			count = 0;
++			while (count < 32) {
++				regw_ip(noise_filter->d2f_thr[count],
++					DFC_THR + count * 4);
++				count++;
++			}
++		} else {
++		}
++	}
++	return 0;
++}
++
++int set_pre_regs(struct ipipe_prefilter *pre_filter)
++{
++
++	u32 utemp;
++	regw_ip(pre_filter->pre_en, PRE_EN);
++	if (1 == pre_filter->pre_en) {
++		/*Combine all the fields to make PRE_EN register of IPIPE */
++		utemp = ((pre_filter->sel_0 << 0) | (pre_filter->sel_1 << 1) |
++			 (pre_filter->typ_adaptive << 2) | (pre_filter->
++							    typ_adaptive_dotred)
++			 << 3);
++		regw_ip(utemp, PRE_TYP);
++		regw_ip(pre_filter->pre_shf, PRE_SHF);
++		regw_ip(pre_filter->pre_gain, PRE_GAIN);
++		regw_ip(pre_filter->pre_thr_g, PRE_THR_G);
++		regw_ip(pre_filter->pre_thr_b, PRE_THR_B);
++		regw_ip(pre_filter->pre_thr_1, PRE_THR_1);
++	}
++	return 0;
++
++}
++int set_wb_regs(struct ipipe_wb *white_balance)
++{
++	regw_ip(white_balance->wb2_dgn, WB2_DGN);
++	regw_ip(white_balance->wb2_wg_r, WB2_WG_R);
++	regw_ip(white_balance->wb2_wg_gr, WB2_WG_GR);
++	regw_ip(white_balance->wb2_wg_gb, WB2_WG_GB);
++	regw_ip(white_balance->wb2_wg_b, WB2_WG_B);
++	return 0;
++}
++
++int set_rgb_2_yuv_regs(int data_format, struct ipipe_rgb2yuv *y_cr_cb)
++{
++	u32 utemp;
++	if (data_format < 2) {
++		/*combine fields of YUV_ADJ to set brightness and contrast */
++		utemp =
++		    ((y_cr_cb->yuv_adj_ctr << 0) | (y_cr_cb->yuv_adj_brt << 8));
++		regw_ip(utemp, YUV_ADJ);
++		regw_ip(y_cr_cb->yuv_y_min, YUV_Y_MIN);
++		regw_ip(y_cr_cb->yuv_y_max, YUV_Y_MAX);
++		regw_ip(y_cr_cb->yuv_c_min, YUV_C_MIN);
++		regw_ip(y_cr_cb->yuv_c_max, YUV_C_MAX);
++
++	}
++	if (data_format == 0) {
++
++		regw_ip(y_cr_cb->yuv_mul_ry, YUV_MUL_RY);
++		regw_ip(y_cr_cb->yuv_mul_gy, YUV_MUL_GY);
++		regw_ip(y_cr_cb->yuv_mul_by, YUV_MUL_BY);
++		regw_ip(y_cr_cb->yuv_mul_rcb, YUV_MUL_RCB);
++		regw_ip(y_cr_cb->yuv_mul_gcb, YUV_MUL_GCB);
++		regw_ip(y_cr_cb->yuv_mul_bcb, YUV_MUL_BCB);
++		regw_ip(y_cr_cb->yuv_mul_rcr, YUV_MUL_RCR);
++		regw_ip(y_cr_cb->yuv_mul_gcr, YUV_MUL_GCR);
++		regw_ip(y_cr_cb->yuv_mul_bcr, YUV_MUL_BCR);
++		regw_ip(y_cr_cb->yuv_oft_y, YUV_OFT_Y);
++		regw_ip(y_cr_cb->yuv_oft_cb, YUV_OFT_CB);
++		regw_ip(y_cr_cb->yuv_oft_cr, YUV_OFT_CR);
++		/*Combine all the fields to make YUV_PHS register of IPIPE */
++		utemp =
++		    ((y_cr_cb->yuv_phs_position << 0) | (y_cr_cb->
++							 yuv_phs_lpf << 1));
++		regw_ip(utemp, YUV_PHS);
++
++	}
++	return 0;
++}
++int set_rgb_to_rgb_regs(struct ipipe_rgb2rgb *rgb)
++{
++	u32 utemp;
++	int count, table_size = 0;
++
++	regw_ip(rgb->rgb_mul_rr, RGB_MUL_RR);
++	regw_ip(rgb->rgb_mul_gr, RGB_MUL_GR);
++	regw_ip(rgb->rgb_mul_br, RGB_MUL_BR);
++	regw_ip(rgb->rgb_mul_rg, RGB_MUL_RG);
++	regw_ip(rgb->rgb_mul_gg, RGB_MUL_GG);
++	regw_ip(rgb->rgb_mul_bg, RGB_MUL_BG);
++	regw_ip(rgb->rgb_mul_rb, RGB_MUL_RB);
++	regw_ip(rgb->rgb_mul_gb, RGB_MUL_GB);
++	regw_ip(rgb->rgb_mul_bb, RGB_MUL_BB);
++	regw_ip(rgb->rgb_oft_or, RGB_MUL_OR);
++	regw_ip(rgb->rgb_oft_og, RGB_MUL_OG);
++	regw_ip(rgb->rgb_oft_ob, RGB_MUL_OB);
++
++	utemp =
++	    ((rgb->gmm_cfg_bypr << 0) | (rgb->gmm_cfg_bypg << 1) | (rgb->
++								    gmm_cfg_bypb
++								    << 2)
++	     | (rgb->gmm_cfg_tbl << 4) | (rgb->gmm_cfg_siz << 5));
++
++	regw_ip(utemp, GMM_CFG);
++	/*testing -- for register write */
++	utemp = regr_ip(GMM_CFG);
++
++	if (rgb->gmm_cfg_siz == IPIPE_128) {
++		table_size = 128 * 2;
++	} else if (rgb->gmm_cfg_siz == IPIPE_256) {
++		table_size = 256 * 2;
++	} else if (rgb->gmm_cfg_siz == IPIPE_512) {
++		table_size = 512 * 2;
++	}
++	if (!(rgb->gmm_cfg_bypr)) {
++		if (rgb->gmm_tbl_r != NULL) {
++			/*set the auto increment,write only, gamma
++			  red mode in RAM_MODE */
++			regw_ip(0x0035, RAM_MODE);
++			/*set the starting address of gamma table */
++			regw_ip(0x00, RAM_ADR);
++
++			for (count = 0; count < table_size; count++)
++				regw_ip(rgb->gmm_tbl_r[count], RAM_WDT);
++		}
++	}
++	if (!(rgb->gmm_cfg_bypb)) {
++		if (rgb->gmm_tbl_b != NULL) {
++			/*set the auto increment,write only, gamma red mode
++			  in RAM_MODE */
++			regw_ip(0x0036, RAM_MODE);
++			/*set the starting address of gamma table */
++			regw_ip(0x00, RAM_ADR);
++			for (count = 0; count < table_size; count++)
++				regw_ip(rgb->gmm_tbl_b[count], RAM_WDT);
++		}
++	}
++	if (!(rgb->gmm_cfg_bypg)) {
++		if (rgb->gmm_tbl_g != NULL) {
++			/*set the auto increment,write only, gamma red
++			  mode in RAM_MODE */
++			regw_ip(0x0037, RAM_MODE);
++			/*set the starting address of gamma table */
++			regw_ip(0x00, RAM_ADR);
++			for (count = 0; count < table_size; count++)
++				regw_ip(rgb->gmm_tbl_g[count], RAM_WDT);
++		}
++	}
++	/*set the auto increment,write only, gamma red mode in RAM_MODE */
++	regw_ip(0x0038, RAM_MODE);
++	/*set the starting address of gamma table */
++	regw_ip(0x00, RAM_ADR);
++	if (rgb->gmm_tbl_all != NULL) {
++		printk(KERN_INFO "gamma table not null\n");
++		for (count = 0; count < table_size; count++)
++			regw_ip(rgb->gmm_tbl_all[count], RAM_WDT);
++	} else {
++	}
++	regw_ip(0x00, RAM_MODE);
++	return 0;
++}
++
++int set_ee_regs(struct ipipe_edge_enhancer *edge_enhance)
++{
++	unsigned int count;
++	regw_ip(edge_enhance->yee_en, YEE_EN);
++	if (1 == edge_enhance->yee_en) {
++		regw_ip(edge_enhance->yee_emf, YEE_EMF);
++		regw_ip(edge_enhance->yee_shf, YEE_SHF);
++		regw_ip(edge_enhance->yee_mul_00, YEE_MUL_00);
++		regw_ip(edge_enhance->yee_mul_01, YEE_MUL_01);
++		regw_ip(edge_enhance->yee_mul_02, YEE_MUL_02);
++		regw_ip(edge_enhance->yee_mul_10, YEE_MUL_10);
++		regw_ip(edge_enhance->yee_mul_11, YEE_MUL_11);
++		regw_ip(edge_enhance->yee_mul_12, YEE_MUL_12);
++		regw_ip(edge_enhance->yee_mul_20, YEE_MUL_20);
++		regw_ip(edge_enhance->yee_mul_21, YEE_MUL_21);
++		regw_ip(edge_enhance->yee_mul_22, YEE_MUL_22);
++		/*set the auto increment,write only,ee mode in RAM_MODE */
++		regw_ip(0x0039, RAM_MODE);
++		regw_ip(-512 /*0x1FF */ , RAM_ADR);
++		if (edge_enhance->ee_table != NULL) {
++			for (count = 0; count < MAX_SIZE_EEC; count++)
++				regw_ip(edge_enhance->ee_table[count], RAM_WDT);
++
++			regw_ip(0x0, RAM_MODE);
++			regw_ip(0x0019, RAM_MODE);
++			regw_ip(-512, RAM_ADR);
++			for (count = 0; count < MAX_SIZE_EEC; count++)
++				regw_ip(0xFF, RAM_WDT);
++		}
++	}
++	return 0;
++}
++
++int set_fcs_regs(struct ipipe_false_color_suppresion *color_supress)
++{
++	regw_ip(color_supress->fcs_en, FCS_EN);
++	if (1 == color_supress->fcs_en) {
++		regw_ip(color_supress->fcs_typ_typ, FCS_TYP);
++		regw_ip(color_supress->fcs_shf_y, FCS_SHF_Y);
++		regw_ip(color_supress->fcs_shf_c, FCS_SHF_C);
++		regw_ip(color_supress->fcs_thr, FCS_THR);
++		regw_ip(color_supress->fcs_sgn, FCS_SGN);
++		regw_ip(color_supress->fcs_lth, FCS_LTH);
++	}
++	return 0;
++}
++
++int set_rsz_regs(struct ipipe_params *param_resize)
++{
++	u32 utemp;
++	/*Combine all the fields to make RSZ_SEQ register of IPIPE */
++	utemp =
++	    (param_resize->rsz_seq_seq << 0) | (param_resize->
++						rsz_seq_tmm << 1) |
++	    (param_resize->rsz_seq_hrv << 2)
++	    | (param_resize->rsz_seq_vrv << 3) | (param_resize->
++						  rsz_seq_crv << 4);
++	regw_ip(utemp, RSZ_SEQ);
++
++	return 0;
++}
++
++int set_aal_regs(struct ipipe_params *param_resize)
++{
++	regw_ip(param_resize->rsz_aal, RSZ_AAL);
++	return 0;
++}
++
++int set_rsz_structs(struct ipipe_params *params)
++{				/*set the registers of either RSZ0 or RSZ1 */
++	u32 utemp;
++	u32 rsz_seq, rsz_tmm;
++	utemp = regr_vpss(VPSS_MEMCTL);
++	RESETBIT(utemp, 1);
++	RESETBIT(utemp, 0);
++	SETBIT(utemp, 2);
++	regw_vpss(utemp, VPSS_MEMCTL);
++	regw_ip(params->rsz_en[0], RSZ_EN_0);
++	if (params->rsz_en[0]) {
++		/*testing--- for register write */
++		utemp = regr_ip(RSZ_EN_0);
++		/*enable RSZ clock */
++		regw_ip(1, GCL_SDR);
++		/*setting rescale parameters */
++		regw_ip(params->rsz_rsc_param[0].rsz_mode, RSZ_EN_0 + RSZ_MODE);
++		regw_ip(params->rsz_rsc_param[0].rsz_i_vst,
++			RSZ_EN_0 + RSZ_I_VST);
++		regw_ip(params->rsz_rsc_param[0].rsz_i_hst,
++			RSZ_EN_0 + RSZ_I_HST);
++		regw_ip(params->rsz_rsc_param[0].rsz_o_vsz,
++			RSZ_EN_0 + RSZ_O_VSZ);
++		regw_ip(params->rsz_rsc_param[0].rsz_o_hsz,
++			RSZ_EN_0 + RSZ_O_HSZ);
++		regw_ip(params->rsz_rsc_param[0].rsz_o_hst,
++			RSZ_EN_0 + RSZ_O_HST);
++		regw_ip(params->rsz_rsc_param[0].rsz_v_phs,
++			RSZ_EN_0 + RSZ_V_PHS);
++		regw_ip(params->rsz_rsc_param[0].rsz_v_dif,
++			RSZ_EN_0 + RSZ_V_DIF);
++		regw_ip(params->rsz_rsc_param[0].rsz_h_phs,
++			RSZ_EN_0 + RSZ_H_PHS);
++		regw_ip(params->rsz_rsc_param[0].rsz_h_dif,
++			RSZ_EN_0 + RSZ_H_DIF);
++		regw_ip(params->rsz_rsc_param[0].rsz_h_typ,
++			RSZ_EN_0 + RSZ_H_TYP);
++		regw_ip(params->rsz_rsc_param[0].rsz_h_lse_sel,
++			RSZ_EN_0 + RSZ_H_LSE);
++		regw_ip(params->rsz_rsc_param[0].rsz_h_lpf,
++			RSZ_EN_0 + RSZ_H_LPF);
++
++		/*seting rgb conversion parameters */
++		regw_ip(params->rsz2rgb[0].rsz_rgb_en, RSZ_EN_0 + RSZ_RGB_EN);
++		regw_ip(params->rsz2rgb[0].rsz_rgb_en, RSZ_EN_0 + RSZ_RGB_EN);
++		utemp =
++		    ((params->rsz2rgb[0].rsz_rgb_typ << 0) | (params->
++							      rsz2rgb[0].
++							      rsz_rgb_msk0 << 1)
++		     | (params->rsz2rgb[0].rsz_rgb_msk1) << 2);
++		regw_ip(utemp, RSZ_RGB_TYP);
++		regw_ip(params->rsz2rgb[0].rsz_rgb_alpha_val,
++			RSZ_EN_0 + RSZ_RGB_BLD);
++
++		/*setting external memory parameters */
++		regw_ip(params->ext_mem_param[0].rsz_sdr_oft,
++			RSZ_EN_0 + RSZ_SDR_OFT);
++		regw_ip(params->ext_mem_param[0].rsz_sdr_ptr_s,
++			RSZ_EN_0 + RSZ_SDR_PTR_S);
++		regw_ip(params->ext_mem_param[0].rsz_sdr_ptr_e,
++			RSZ_EN_0 + RSZ_SDR_PTR_E);
++	}
++
++	regw_ip(params->rsz_en[1], RSZ_EN_1);
++	if (params->rsz_en[1]) {
++		/*testing---- for register write */
++		utemp = regr_ip(RSZ_EN_1);
++
++		/*enable RSZ clock */
++		regw_ip(1, GCL_SDR);
++		/*setting rescale parameters */
++		regw_ip(params->rsz_rsc_param[1].rsz_mode, RSZ_EN_1 + RSZ_MODE);
++		regw_ip(params->rsz_rsc_param[1].rsz_i_vst,
++			RSZ_EN_1 + RSZ_I_VST);
++		/*regw_ip(rez_rescale_para->rsz_i_vsz,
++		   RSZ_EN_0 + RSZ_I_VSZ); */
++		regw_ip(params->rsz_rsc_param[1].rsz_i_hst,
++			RSZ_EN_1 + RSZ_I_HST);
++		regw_ip(params->rsz_rsc_param[1].rsz_o_vsz,
++			RSZ_EN_1 + RSZ_O_VSZ);
++		regw_ip(params->rsz_rsc_param[1].rsz_o_hsz,
++			RSZ_EN_1 + RSZ_O_HSZ);
++		regw_ip(params->rsz_rsc_param[1].rsz_o_hst,
++			RSZ_EN_1 + RSZ_O_HST);
++		regw_ip(params->rsz_rsc_param[1].rsz_v_phs,
++			RSZ_EN_1 + RSZ_V_PHS);
++		regw_ip(params->rsz_rsc_param[1].rsz_v_dif,
++			RSZ_EN_1 + RSZ_V_DIF);
++		regw_ip(params->rsz_rsc_param[1].rsz_h_phs,
++			RSZ_EN_1 + RSZ_H_PHS);
++		regw_ip(params->rsz_rsc_param[1].rsz_h_dif,
++			RSZ_EN_1 + RSZ_H_DIF);
++		regw_ip(params->rsz_rsc_param[1].rsz_h_typ,
++			RSZ_EN_1 + RSZ_H_TYP);
++		regw_ip(params->rsz_rsc_param[1].rsz_h_lse_sel,
++			RSZ_EN_1 + RSZ_H_LSE);
++		regw_ip(params->rsz_rsc_param[1].rsz_h_lpf,
++			RSZ_EN_1 + RSZ_H_LPF);
++
++		/*seting rgb conversion parameters */
++		regw_ip(params->rsz2rgb[1].rsz_rgb_en, RSZ_EN_1 + RSZ_RGB_EN);
++		regw_ip(params->rsz2rgb[1].rsz_rgb_en, RSZ_EN_1 + RSZ_RGB_EN);
++		utemp =
++		    ((params->rsz2rgb[1].rsz_rgb_typ << 0) | (params->
++							      rsz2rgb[1].
++							      rsz_rgb_msk0 << 1)
++		     | (params->rsz2rgb[1].rsz_rgb_msk1) << 2);
++		regw_ip(utemp, RSZ_RGB_TYP);
++		regw_ip(params->rsz2rgb[1].rsz_rgb_alpha_val,
++			RSZ_EN_1 + RSZ_RGB_BLD);
++
++		/*setting external memory parameters */
++		regw_ip(params->ext_mem_param[1].rsz_sdr_oft,
++			RSZ_EN_1 + RSZ_SDR_OFT);
++		regw_ip(params->ext_mem_param[1].rsz_sdr_ptr_s,
++			RSZ_EN_1 + RSZ_SDR_PTR_S);
++		regw_ip(params->ext_mem_param[1].rsz_sdr_ptr_e,
++			RSZ_EN_1 + RSZ_SDR_PTR_E);
++
++	} else {
++	}
++
++	if (!params->rsz_en[0] && !params->rsz_en[1]) {	/*resizer bypass mode */
++		rsz_tmm = 0;
++		rsz_seq = 0;
++		utemp =
++		    (params->rsz_seq_seq << 0) | (params->
++						  rsz_seq_tmm << 1) | (params->
++								       rsz_seq_hrv
++								       << 2)
++		    | (params->rsz_seq_vrv << 3) | (params->rsz_seq_crv << 4);
++		regw_ip(0, RSZ_AAL);
++		regw_ip(0, RSZ_EN_0 + RSZ_O_HST);
++		regw_ip(0, RSZ_EN_0 + RSZ_V_PHS);
++		regw_ip(256, RSZ_EN_0 + RSZ_V_DIF);
++		regw_ip(256, RSZ_EN_0 + RSZ_H_DIF);
++		regw_ip(0, RSZ_EN_0 + RSZ_H_LSE);
++		regw_ip(0, RSZ_EN_0 + RSZ_H_PHS);
++		regw_ip(0, RSZ_EN_1);
++		/*disable resizer clock, necessary to bypass resizer */
++		regw_ip(0, GCL_SDR);
++
++	}
++	return 0;
++}
++
++#endif				/* End of #ifdef __KERNEL__ */
+Index: linux-2.6.18/drivers/media/video/davinci/ipipe_para.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/media/video/davinci/ipipe_para.h
+@@ -0,0 +1,228 @@
++#define  WIDTH_I 640
++#define  HEIGHT_I 480
++#define  WIDTH_O 640
++#define  HEIGHT_O 480
++
++struct ipipe_params param_def = {
++	.ipipeif_param = {
++			  /*IPPEIF config register */
++			  .data_shift = BITS9_0,
++			  .clock_select = SDRAM_CLK,
++
++			  .ialaw = ALAW_OFF,
++			  .pack_mode = SIXTEEN_BIT,
++			  .avg_filter = AVG_OFF,
++			  .clk_div = DIVIDE_SIXTH,
++			  .source = SDRAM_RAW,
++			  .decimation = DECIMATION_OFF,
++			  .mode = ONE_SHOT,
++
++			  .glob_hor_size = WIDTH_I + 8,	/*632,*/
++			  .glob_ver_size = HEIGHT_I + 10,	/*466,*/
++			  .hnum = WIDTH_I,	/* 624,*/
++			  .vnum = HEIGHT_I,	/* 456, */
++			  .adofs = WIDTH_I * 2,	/* 1248,  to make it
++						   32 alligned */
++			  .rsz = 16,	/* resize ratio = 16/rsz:
++					   valid range (16-112) */
++			  .gain = 0x200	/* (precision is U10Q9) */
++			  },
++	.ipipe_mode = ONE_SHOT,
++	/*input/output datapath register */
++	.ipipe_dpaths_fmt = RAW2YUV,
++	.ipipe_dpaths_bypass = RAW_MODE_OFF,	/*...check */
++
++	/*color pattern register */
++	.ipipe_colpat_olop = RED,
++	.ipipe_colpat_olep = GREEN_RED,
++	.ipipe_colpat_elop = GREEN_BLUE,
++	.ipipe_colpat_elep = BLUE,
++
++	/*horizontal/vertical start, horizontal/vertical size */
++	.ipipe_vst = 0,
++	.ipipe_vsz = HEIGHT_I - 1,	/*456 - 1,*/
++	.ipipe_hst = 0,		/*check*/
++	.ipipe_hsz = WIDTH_I - 1,	/*624 - 1,*/
++	/*interupt generation after lines */
++
++	.def_cor = {.dfc_en = DISABLE,
++		    .dfc_sel = 0,
++		    /*.dfc_adr = 0,*/
++		    .dfc_siz = 4,
++		    .dfc_table = NULL	/*(unsigned int*) yeeTable*/
++		    },
++	.prog_nf = {
++		    .noise_fil_en = DISABLE,
++		    .d2f_cfg_spr = 0,
++		    .d2f_cfg_shf = 0,
++		    .type = 0,
++		    .d2f_thr = NULL,	/*(unsigned int *)NoiseFilterTHR ,*/
++		    .d2f_str = NULL	/*(unsigned int *)NoiseFilterSTR */
++		    },
++	.prefilter = {
++		      .pre_en = ENABLE,
++		      .sel_0 = 1,	/*AVG2MEDPIX,*/
++		      .sel_1 = 1,
++		      .typ_adaptive = ENABLE,
++		      .typ_adaptive_dotred = DISABLE,
++		      .pre_shf = 9,
++		      .pre_gain = 128,
++		      .pre_thr_g = 500,
++		      .pre_thr_b = 4096,
++		      .pre_thr_1 = 800},
++	.wb = {
++	       .wb2_dgn = 0x200,	/*512,512,1023,256, */
++	       .wb2_wg_r = 0x40,	/*444,*/
++	       .wb2_wg_gr = 0x45,	/*256,*/
++	       .wb2_wg_gb = 0x60,	/*256,*/
++	       .wb2_wg_b = 0x45,	/*568,428*/
++	       },
++	.rgb2rgb = {
++		    .rgb_mul_rr = 0x1a1,	/*0x016c,*/
++		    .rgb_mul_gr = 0xf8a,	/*0x0FA4,*/
++		    .rgb_mul_br = 0xfd5,	/*0x0FF1,*/
++		    .rgb_mul_rg = 0xfa1,	/*0x0FD2,*/
++		    .rgb_mul_gg = 0x1c4,	/*0x013D,*/
++		    .rgb_mul_bg = 0xf9b,	/*0x0FF1,*/
++		    .rgb_mul_rb = 0xfbd,	/*0x0FD2,*/
++		    .rgb_mul_gb = 0xfb1,	/*0x0FA4,*/
++		    .rgb_mul_bb = 0x192,	/*0x018A,*/
++		    .rgb_oft_or = 0x0000,
++		    .rgb_oft_og = 0x0000,
++		    .rgb_oft_ob = 0x0000,
++		    .gmm_cfg_bypr = GC_BYPASS,
++		    .gmm_cfg_bypg = GC_BYPASS,
++		    .gmm_cfg_bypb = GC_BYPASS,
++		    .gmm_cfg_tbl = IPIPE_RAM,
++		    .gmm_cfg_siz = IPIPE_512,
++		    .gmm_tbl_r = NULL,
++		    .gmm_tbl_b = NULL,
++		    .gmm_tbl_g = NULL,
++		    .gmm_tbl_all = NULL	/*(unsigned int *)GammaTableall */
++		    },
++	.rgb2yuv = {
++		    /* RDRV_IPIPE__SAT_LOW */
++		    .yuv_adj_ctr = 0x10,
++		    .yuv_adj_brt = 0x00,
++
++		    .yuv_mul_ry = 0x004d,
++		    .yuv_mul_gy = 0x0096,
++		    .yuv_mul_by = 0x001d,
++		    .yuv_mul_rcb = 0x03d4,
++		    .yuv_mul_gcb = 0x03ac,
++		    .yuv_mul_bcb = 0x0080,
++		    .yuv_mul_rcr = 0x0080,
++		    .yuv_mul_gcr = 0x0395,
++		    .yuv_mul_bcr = 0x03eb,
++		    .yuv_oft_y = 0x00,
++		    .yuv_oft_cb = 0x80,
++		    .yuv_oft_cr = 0x80,
++		    .yuv_y_min = 0,
++		    .yuv_y_max = 0xFF,
++		    .yuv_c_min = 0,
++		    .yuv_c_max = 0xFF,
++		    .yuv_phs_lpf = DISABLE,
++		    .yuv_phs_position = 1,
++
++		    },
++	.edge_enhancer = {
++
++			  .yee_en = DISABLE,
++			  .yee_emf = ENABLE,
++			  .yee_shf = 4,	/* HPF Down Shift
++					   Value: valid range (0-15) */
++			  .yee_mul_00 = 48,
++			  .yee_mul_01 = 12,
++			  .yee_mul_02 = 1014,
++			  .yee_mul_10 = 12,
++			  .yee_mul_11 = 0,
++			  .yee_mul_12 = 1018,
++			  .yee_mul_20 = 1014,
++			  .yee_mul_21 = 1018,
++			  .yee_mul_22 = 1022,
++			  .ee_table = NULL	/*(unsigned int*) yeeTable*/
++			  },
++	.false_color_suppresion = {
++				   .fcs_en = ENABLE,	/* Uint8 csupEnable*/
++				   .fcs_typ_typ = 0,
++				   .fcs_shf_y = 0,
++				   .fcs_shf_c = 7,
++				   .fcs_thr = 235,
++				   .fcs_sgn = 0,
++				   .fcs_lth = 0},
++	.rsz_seq_seq = DISABLE,
++	.rsz_seq_tmm = DISABLE,	/* output confined mode (normal mode) */
++	.rsz_seq_hrv = DISABLE,
++	.rsz_seq_vrv = DISABLE,
++	.rsz_seq_crv = DISABLE,
++
++	.rsz_aal = DISABLE,
++
++	.rsz_rsc_param = {
++			  {
++			   .rsz_mode = ONE_SHOT,
++			   .rsz_i_vst = 0,
++			   .rsz_i_vsz = 0,
++			   .rsz_i_hst = 0,
++			   .rsz_o_vsz = HEIGHT_O - 1,
++			   .rsz_o_hsz = WIDTH_O - 1,
++			   .rsz_o_hst = 0,
++			   .rsz_v_phs = 0,
++			   /*unsigned int rsz_v_phs_o;*/
++			   .rsz_v_dif = 243,
++			   /*unsigned int rsz_v_siz_o;*/
++			   .rsz_h_phs = 0,
++			   .rsz_h_dif = 243,
++			   .rsz_h_typ = CUBIC,
++			   .rsz_h_lse_sel = INTERNAL_VALUE,
++			   .rsz_h_lpf = 0},
++			  {
++			   ONE_SHOT,
++			   0,
++			   0,
++			   0,
++			   239,
++			   319,
++			   0,
++			   0,
++			   256,
++			   0,
++			   256,
++			   CUBIC,
++			   INTERNAL_VALUE,
++			   0}
++			  },
++	.rsz2rgb = {
++		    {
++		     .rsz_rgb_en = DISABLE,	/*....check*/
++		     /* .rsz_rgb_typ = 0,
++			.rsz_rgb_msk0 = 0,
++			.rsz_rgb_msk1 = 0,
++			.rsz_rgb_alpha_val = 0 */
++		     },
++		    {
++		     DISABLE,
++		     }
++		    },
++
++	.ext_mem_param = {
++			  {
++			   .rsz_sdr_bad_h = 0,
++			   .rsz_sdr_bad_l = 0,
++			   .rsz_sdr_sad_h = 0,
++			   .rsz_sdr_sad_l = 0,
++			   .rsz_sdr_oft = WIDTH_O * 2,
++			   .rsz_sdr_ptr_s = 0,
++			   .rsz_sdr_ptr_e = WIDTH_O},
++			  {
++			   0,
++			   0,
++			   0,
++			   0,
++			   WIDTH_O * 2,
++			   0,
++			   8191}
++			  },
++	.rsz_en[0] = ENABLE,
++	.rsz_en[1] = DISABLE
++};
+Index: linux-2.6.18/include/asm-arm/arch-davinci/dm355_aew.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/dm355_aew.h
+@@ -0,0 +1,156 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* dm355_aew.h file */
++#ifndef DM355_AEW_DRIVER_H
++#define DM355_AEW_DRIVER_H
++
++/* Include Files */
++#include <linux/ioctl.h>
++
++#ifdef __KERNEL__
++#include <asm/semaphore.h>	/* For sempaphores */
++#include <asm/fcntl.h>
++#endif				/* end of #ifdef __KERNEL__ */
++
++/* Driver Range Constants*/
++#define AEW_WINDOW_VERTICAL_COUNT_MIN       1
++#define AEW_WINDOW_VERTICAL_COUNT_MAX       128
++#define AEW_WINDOW_HORIZONTAL_COUNT_MIN     2
++#define AEW_WINDOW_HORIZONTAL_COUNT_MAX     36
++#define AEW_WINDOW_SIZE                     18
++
++#define AEW_WIDTH_MIN                       8
++#define AEW_WIDTH_MAX                      256
++
++#define AEW_AVELMT_MAX                      1023
++
++#define AEW_HZ_LINEINCR_MIN                 2
++#define AEW_HZ_LINEINCR_MAX                 32
++
++
++#define AEW_VT_LINEINCR_MIN                 2
++#define AEW_VT_LINEINCR_MAX                 32
++
++#define AEW_HEIGHT_MIN                      2
++#define AEW_HEIGHT_MAX                      256
++
++#define AEW_HZSTART_MIN                      0
++#define AEW_HZSTART_MAX                      4095
++
++#define AEW_VTSTART_MIN                      0
++#define AEW_VTSTART_MAX                      4095
++
++#define AEW_BLKWINHEIGHT_MIN                2
++#define AEW_BLKWINHEIGHT_MAX                256
++
++#define AEW_BLKWINVTSTART_MIN               0
++#define AEW_BLKWINVTSTART_MAX               4095
++
++
++#ifdef __KERNEL__
++
++/* Device Constants*/
++#define AEW_NR_DEVS                         1
++#define DEVICE_NAME                         "dm355_aew"
++#define AEW_MAJOR_NUMBER                    0
++#define AEW_IOC_MAXNR                       4
++#define AEW_TIMEOUT                         (300 * HZ/1000)
++#endif
++
++
++/* List of ioctls */
++#pragma pack(1)
++#define AEW_MAGIC_NO    'e'
++#define AEW_S_PARAM     _IOWR(AEW_MAGIC_NO,1,struct aew_configuration *)
++#define AEW_G_PARAM     _IOWR(AEW_MAGIC_NO,2,struct aew_configuration *)
++#define AEW_ENABLE      _IO(AEW_MAGIC_NO,3)
++#define AEW_DISABLE     _IO(AEW_MAGIC_NO,4)
++#pragma  pack()
++
++/*Enum for device usage*/
++typedef enum {
++	AEW_NOT_IN_USE = 0,	/* Device is not in use */
++	AEW_IN_USE = 1		/* Device in use */
++} aew_In_use;
++
++/*Enum for Enable/Disable specific feature*/
++typedef enum {
++	H3A_AEW_ENABLE = 1,
++	H3A_AEW_DISABLE = 0
++} aew_alaw_enable;
++
++typedef enum {
++	H3A_AEW_CONFIG_NOT_DONE,
++	H3A_AEW_CONFIG
++} aew_config_flag;
++
++
++/* Contains the information regarding Window Structure in AEW Engine*/
++struct aew_window {
++	unsigned int width;	/* Width of the window */
++	unsigned int height;	/* Height of the window */
++	unsigned int hz_start;	/* Horizontal Start of the window */
++	unsigned int vt_start;	/* Vertical Start of the window */
++	unsigned int hz_cnt;	/* Horizontal Count */
++	unsigned int vt_cnt;	/* Vertical Count */
++	unsigned int hz_line_incr;	/* Horizontal Line Increment */
++	unsigned int vt_line_incr;	/* Vertical Line Increment */
++};
++
++/* Contains the information regarding the AEW Black Window Structure*/
++struct aew_black_window {
++	unsigned int height;	/* Height of the Black Window */
++	unsigned int vt_start;	/* Vertical Start of the black Window */
++};
++
++typedef enum _aew_input_src {
++	AEW_CCDC = 0,
++	AEW_SDRAM = 1
++} aew_input_src_t;
++/* Contains configuration required for setup of AEW engine*/
++struct aew_configuration {
++	aew_alaw_enable alaw_enable;	/* A-law status */
++	int saturation_limit;	/* Saturation Limit */
++	struct aew_window window_config;	/* Window for AEW Engine */
++	struct aew_black_window blackwindow_config;	/* Black Window */
++};
++#ifdef __KERNEL__
++/* Contains information about device structure of AEW*/
++struct aew_device {
++	aew_In_use in_use;	/* Driver usage flag */
++	struct aew_configuration *config;	/* Device configuration */
++	void *buff_old;		/* Contains latest statistics */
++	void *buff_curr;	/* Buffer in which HW will */
++	/*fill the statistics */
++	/*or HW is already filling */
++	/*statistics */
++	void *buff_app;		/* Buffer which will be passed */
++	/*to user on read call */
++	int buffer_filled;	/* Flag indicates statistics */
++	/*are available */
++	unsigned int size_window;	/* Window size in bytes */
++	wait_queue_head_t aew_wait_queue;	/*Wait queue for the driver */
++	struct semaphore read_blocked;	/* Semaphore for driver */
++	aew_config_flag aew_config;	/*Flag indicates Engine is configured */
++};
++
++int aew_hardware_setup(void);
++int aew_validate_parameters(void);
++#endif				/* End of #ifdef __KERNEL__ */
++
++#endif				/*End of DM355_AEW_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/dm355_aew_hw.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/dm355_aew_hw.h
+@@ -0,0 +1,136 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* dm355_aew_hw.h file */
++
++
++#ifndef DM355_AEW_DRIVER_HW_H
++#define DM355_AEW_DRIVER_HW_H
++
++/* Include Files */
++#include <asm/io.h>
++#include <asm/arch/hardware.h>
++
++#ifdef __KERNEL__
++
++/* Register Offsets */
++#define AEWPID          0x0000000	/*Peripheral Revision */
++					    /*and Class Information */
++#define AEWPCR          0x00000004	/*Peripheral Control Register */
++#define AEWWIN1         0x0000004c	/*Configuration for AE/AWB Windows */
++#define AEWINSTART      0x00000050	/*Start position for AE/AWB Windows */
++#define AEWINBLK        0x00000054	/*Start position and */
++					    /*height for black linr */
++					/*of AE/AWB Windows */
++#define AEWSUBWIN       0x00000058	/*Configuration for subsampled data */
++					/* in AE/AWB windows */
++#define AEWBUFST        0x0000005c	/*SDRAM/DDRAM Start address */
++					    /*for AEW Engine */
++
++#define AEW_RSDR_ADDR	0x00000060	/*SDRAM/DDRAM Read Address */
++#define AEW_RSDR_OFFSET	0x00000064	/*SDRAM/DDRAM Line Offset */
++#define AEW_SDR_FRSIZE	0x00000068	/*Frame Size for SDRAM read data */
++/* PID fields */
++#define AEW_TID             (0xFF<<16)
++#define AEW_CID             (0xFF<<8)
++#define AEW_PREV            0xFF
++
++/* PCR FIELDS */
++#define AVE2LMT             	(0x3ff<<22)	/*Saturation Limit */
++#define AEW_SDR_FETCH_ENABLE	(1<<21)
++#define AEW_INP_WIDTH		(1<<20)
++#define AEW_INP_SRC		(1<<19)
++#define AEW_ALAW_EN         	(1<<17)	/*Alaw Enable/Disable Bit */
++#define AEW_BUSYAF          	(1<<15)	/* Busy Bit for AF */
++#define AEW_BUSYAEWB        	(1<<18)	/*Busy bit for AEW */
++#define AEW_EN              	(1<<16)	/*AEW Engine Enable/Disable bit */
++
++/* AEWWIN1 fields */
++#define WINH                	(0x7F<<24)	/*Window Height */
++#define WINW                	(0x7f<<13)	/*Window Width */
++#define WINVC               	(0x7f<<6)	/*Window vertical Count */
++#define WINHC               	0x3f	/*Window Horizontal Count */
++
++/* AEWWINSTART fields */
++#define WINSV               	(0xfff<<16)	/*Window Vertical Start */
++#define WINSH               	0xfff	/*Window Horizontal start */
++
++/* AEWWINBLK fields */
++#define BLKWINSV            	(0xfff<<16)	/*Black Window Vertical Start */
++#define BLKWINH             	0x7f	/* Black Window height */
++
++/* AEWSUBWIN fields */
++#define AEWINCV             	(0xf<<8)	/*Vertical Lime Increment */
++#define AEWINCH             	0xf	/*Horizontal Line Increment */
++
++/* BIT POSITIONS */
++#define AEW_AVE2LMT_SHIFT		22
++
++#define AEW_WINH_SHIFT			24
++#define AEW_WINW_SHIFT              	13
++#define AEW_VT_COUNT_SHIFT		6
++#define AEW_VT_START_SHIFT		16
++#define AEW_LINE_INCR_SHIFT		8
++#define AEW_BLKWIN_VT_START_SHIFT   	16
++#define AEW_EN_SHIFT                	16
++#define AEW_BUSYAEWB_SHIFT          	18
++#define AEW_INP_SRC_SHIFT               19
++
++//#define AEW_INTSEL			IO_ADDRESS(0x1c70810)
++
++
++#define AEW_SET_VAL(x)       	    	(((x)/2)-1)
++#define AEW_NOT_EVEN		        1
++#define AEW_CHECK_EVEN(x)	        ((x)%2)
++
++
++#define AEW_CCDC			0
++#define AEW_INTSTATBASE			(IO_ADDRESS(0x01C7080C))
++#define AEW_EVNTSELADDR			(IO_ADDRESS(0x01C70814))
++
++
++//#define AEW_SELINT(val)			outl(val,AEW_INTSEL)
++//#define AEW_EVNTSEL(val)		outl(val,AEW_EVNTSELADDR)
++//#define AEW_GETINT			inl(AEW_INTSEL)
++//#define AEW_INTMASK			(0xF << 16)
++#define AEW_GETINTSTAT			inl(AEW_INTSTATBASE)
++#define AEW_SETGAMMAWD			outl(0x00000010,IO_ADDRESS(0x01C70680))
++#define	AEW_CLKCTRL_ADDR		(IO_ADDRESS(0x01C70004))
++#define AEW_GETCLKCTRL			inl(AEW_CLKCTRL_ADDR)
++#define AEW_SETCLKCTRL(val)		outl(val,AEW_CLKCTRL_ADDR)
++
++#define AEW_IOBASE_VADDR 		(IO_ADDRESS(0x01c70080))	/*Base Addr */
++
++#define regw(val,reg)               	outl(val,(reg+AEW_IOBASE_VADDR))
++#define regr(reg)                   	inl(reg+AEW_IOBASE_VADDR)
++
++#define AEW_GETEVNT			inl(AEW_EVNTSELADDR)
++
++
++
++#define AEW_GET_PCR                 	inl(AEW_IOBASE_VADDR + AEWPCR);
++
++#define isbusy()			(regr(AEWPCR) & 0x40000)
++
++/* Function Declaration */
++int aew_register_setup(struct aew_device *);
++void aew_engine_setup(int);
++void aew_set_address(unsigned long);
++
++#endif				/*end of #ifdef __KERNEL__ */
++
++#endif				/*end of #ifdef __DAVINCI_AEW_HW_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/dm355_af.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/dm355_af.h
+@@ -0,0 +1,182 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* dm355_af.h file */
++#ifndef AF_DM355_DRIVER_H
++#define AF_DM355_DRIVER_H
++
++/* Kernel Header files */
++#include <linux/ioctl.h>
++
++#ifdef __KERNEL__
++#include <linux/kernel.h>	/* printk  */
++#include <linux/wait.h>		/* Wait queue */
++#include <asm/semaphore.h>	/* Semphores */
++#include <asm/io.h>
++#endif				/*End of __KERNEL_ */
++
++#ifdef __KERNEL__
++/* Device Constants */
++#define AF_MAJOR_NUMBER                 0
++#define DEVICE_NAME                     "dm355_af"
++#define AF_NR_DEVS                      1
++#define AF_TIMEOUT                      (300*HZ)/1000
++#endif				/*enf of #ifdef __KERNEL__ */
++
++/* Range Constants */
++
++#define AF_PAXEL_HORIZONTAL_COUNT_MIN       1
++#define AF_PAXEL_HORIZONTAL_COUNT_MAX       36
++
++#define AF_PAXEL_VERTICAL_COUNT_MIN         1
++#define AF_PAXEL_VERTICAL_COUNT_MAX         128
++
++#define AF_PAXEL_SIZE                       48
++
++#define AF_WIDTH_MIN                        8
++#define AF_WIDTH_MAX                        256
++
++#define AF_LINE_INCR_MIN                    2
++#define AF_LINE_INCR_MAX                    32
++
++#define AF_HEIGHT_MIN                       2
++#define AF_HEIGHT_MAX                       256
++
++#define AF_HZSTART_MIN                      2
++#define AF_HZSTART_MAX                      4094
++
++#define AF_VTSTART_MIN                      0
++#define AF_VTSTART_MAX                      4095
++
++#define AF_MEDTH_MAX                        255
++
++#define AF_IIRSH_MAX                        4094
++#define AF_COEF_MIN                         0xFFFFF800
++#define AF_COEF_MAX                         0x000007FF
++
++
++//#define IRQ_H3AINT  3
++#define AF_NUMBER_OF_COEF                   11
++
++
++/* list of ioctls */
++#pragma pack(1)
++#define  AF_IOC_MAXNR       5
++#define  AF_MAGIC_NO        'a'
++#define  AF_S_PARAM         _IOWR(AF_MAGIC_NO,1,struct af_configuration *)
++#define  AF_G_PARAM         _IOWR(AF_MAGIC_NO,2,struct af_configuration *)
++#define  AF_ENABLE          _IO(AF_MAGIC_NO,3)
++#define  AF_DISABLE         _IO(AF_MAGIC_NO,4)
++#pragma  pack()
++
++/* enum used for status of specific feature */
++typedef enum {
++	H3A_AF_DISABLE = 0,
++	H3A_AF_ENABLE = 1
++} af_alaw_enable, af_hmf_enable;
++typedef enum {
++	H3A_AF_CONFIG_NOT_DONE,
++	H3A_AF_CONFIG
++} af_config_flag;
++
++struct af_reg_dump {
++	unsigned int addr;
++	unsigned int val;
++};
++
++/* enum used for keep track of whether hardware is used */
++typedef enum {
++	AF_NOT_IN_USE = 0,
++	AF_IN_USE = 1
++} af_In_use;
++
++typedef enum {
++	ACCUMULATOR_SUMMED = 0,
++	ACCUMULATOR_PEAK = 1
++} af_mode;
++
++/* Red, Green, and blue pixel location in the AF windows */
++typedef enum {
++	GR_GB_BAYER = 0,	/* GR and GB as Bayer pattern */
++	RG_GB_BAYER = 1,	/* RG and GB as Bayer pattern */
++	GR_BG_BAYER = 2,	/* GR and BG as Bayer pattern */
++	RG_BG_BAYER = 3,	/* RG and BG as Bayer pattern */
++	GG_RB_CUSTOM = 4,	/* GG and RB as custom pattern */
++	RB_GG_CUSTOM = 5	/* RB and GG as custom pattern */
++} rgbpos;
++
++/* Contains the information regarding the Horizontal Median Filter */
++struct af_hmf {
++	af_hmf_enable enable;	/* Status of Horizontal Median Filter */
++	unsigned int threshold;	/* Threshhold Value for */
++	/*Horizontal Median Filter */
++};
++
++/* Contains the information regarding the IIR Filters */
++struct af_iir {
++	unsigned int hz_start_pos;	/* IIR Start Register Value */
++	int coeff_set0[AF_NUMBER_OF_COEF];	/* IIR Filter Coefficient for Set 0 */
++	int coeff_set1[AF_NUMBER_OF_COEF];	/* IIR Filter Coefficient for Set 1 */
++};
++
++/* Contains the information regarding the Paxels Structure in AF Engine */
++struct af_paxel {
++	unsigned int width;	/* Width of the Paxel */
++	unsigned int height;	/* Height of the Paxel */
++	unsigned int hz_start;	/* Horizontal Start Position */
++	unsigned int vt_start;	/* Vertical Start Position */
++	unsigned int hz_cnt;	/* Horizontal Count */
++	unsigned int vt_cnt;	/* vertical Count */
++	unsigned int line_incr;	/* Line Increment */
++};
++
++
++/* Contains the parameters required for hardware set up of AF Engine */
++struct af_configuration {
++	af_alaw_enable alaw_enable;	/*ALAW status */
++	struct af_hmf hmf_config;	/*HMF configurations */
++	rgbpos rgb_pos;		/*RGB Positions */
++	struct af_iir iir_config;	/*IIR filter configurations */
++	struct af_paxel paxel_config;	/*Paxel parameters */
++	af_mode mode;		/*Accumulator mode */
++
++};
++
++#ifdef __KERNEL__
++/* Structure for device of AF Engine */
++struct af_device {
++	af_In_use in_use;	/*Driver usage counter */
++	struct af_configuration *config;	/*Device configuration structure */
++	void *buff_old;		/*Contains the latest statistics */
++	void *buff_curr;	/*Buffer in which HW will */
++	/*fill the statistics */
++	/*or HW is already filling statistics */
++	void *buff_app;		/*Buffer which will be passed to */
++	/* user space on read call */
++	unsigned int buff_size;	/* Size of image buffer */
++	int buffer_filled;	/*Flag indicates */
++	/*statistics are available */
++	int size_paxel;		/*Paxel size in bytes */
++	wait_queue_head_t af_wait_queue;	/*Wait queue for driver */
++	struct semaphore read_blocked;	/* Semaphore for driver */
++	af_config_flag af_config;	/*Flag indicates Engine is configured */
++
++};
++
++#endif				/* __KERNEL__ */
++
++#endif				/* AF_DM355_DRIVER_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/dm355_af_hw.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/dm355_af_hw.h
+@@ -0,0 +1,164 @@
++/* *
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* dm355_af.h file */
++
++#ifndef DM355_AF_DRIVER_HW_H
++#define DM355_AF_DRIVER_HW_H
++
++/* Include driver header file */
++#include "dm355_af.h"
++
++#ifdef __KERNEL__
++
++/* Register Offsets */
++#define AFPID               0x0	/*Peripheral Revision */
++					/*and Class Information */
++#define AFPCR               0x00000004	/*Peripheral Control Register */
++#define AFPAX1              0x00000008	/*Setup for the Paxel Configuration */
++#define AFPAX2              0x0000000c	/*Setup for the Paxel Configuration */
++#define AFPAXSTART          0x00000010	/*Start Position for AF Engine Paxels */
++#define AFIIRSH             0x00000014	/*Start Position for IIRSH */
++#define AFBUFST             0x00000018	/*SDRAM/DDRAM Start address */
++#define AFCOEF010           0x0000001c	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF032           0x00000020	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF054           0x00000024	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF076           0x00000028	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF098           0x0000002c	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF0010          0x00000030	/*IIR filter coefficient data
++					   for SET 0 */
++#define AFCOEF110           0x00000034	/*IIR filter coefficient data
++					   for SET 1 */
++#define AFCOEF132           0x00000038	/*IIR filter coefficient
++					   data for SET 1 */
++#define AFCOEF154           0x0000003c	/*IIR filter coefficient data
++					   for SET 1 */
++#define AFCOEF176           0x00000040	/*IIR filter coefficient data
++					   for SET 1 */
++#define AFCOEF198           0x00000044	/*IIR filter coefficient data
++					   for SET 1 */
++#define AFCOEF1010          0x00000048	/*IIR filter coefficient data
++					   for SET 1 */
++#define AF_RSDR_ADDR	0x00000060	/*SDRAM/DDRAM Read Address */
++#define AF_RSDR_OFFSET	0x00000064	/*SDRAM/DDRAM Line Offset */
++#define AF_SDR_FRSIZE	0x00000068	/*Frame Size for SDRAM read data */
++
++#define AFCOEF_OFFSET	0x00000004	/* COEFFICIENT BASE ADDRESS */
++//#define AF_INTSEL	IO_ADDRESS(0x1c70810)
++
++#define AF_SET_VAL(x)       	(((x)/2)-1)
++#define AF_NOT_EVEN		        1
++#define AF_CHECK_EVEN(x)	    ((x)%2)
++/* Register Fields */
++/*
++ *    PID fields
++ */
++#define AF_TID                          (0xFF<<16)
++#define AF_CID                          (0xFF<<8)
++#define AF_PREV                         0xFF
++
++/*
++ *    PCR fields
++ */
++#define AVE2LMT                         (0x3FF<<22)
++#define AF_INP_SRC			(1<<19)
++#define AF_BUSYAEWB                     (1<<18)
++#define AEW_ALAW_EN                     (1<<17)
++#define AEW_EN                          (1<<16)
++#define AF_BUSYAF                       (1<<15)
++#define FVMODE                          (1<<14)
++#define RGBPOS                          (0x7<<11)
++#define MED_TH                          (0xFF<<3)
++#define AF_MED_EN                       (1<<2)
++#define AF_ALAW_EN                      (1<<1)
++#define AF_EN                           (1<<0)
++
++#define AF_SETGAMMAWD			outl(0x00000010,IO_ADDRESS(0x01C70680))
++
++/*
++ * AFPAX1 fields
++ */
++#define PAXW                            (0x7F<<16)
++#define PAXH                            0x7F
++
++#define AF_CCDC				0
++/*
++ * AFPAX2 fields
++ */
++#define  AFINCV                         (0xF<<13)
++#define  PAXVC                          (0x7F<<6)
++#define  PAXHC                          0x3F
++
++/*
++ * AFPAXSTART fields
++ */
++#define  PAXSH                          (0xFFF<<16)
++#define  PAXSV                          0xFFF
++
++/*
++ * COEFFICIENT MASK
++ */
++
++#define COEF_MASK0                      0xFFF
++#define COEF_MASK1                      (0xFFF<<16)
++
++
++/* SDRAM Frame Size */
++#define AF_SDR_FRSIZE_HSIZE             0xFFF
++#define AF_SDR_FRSIZE_VSIZE		(0xFFF<<16)
++#define AF_SDR_FRSIZE_BITSEL		(0x7<<28)
++
++/* BIT SHIFTS */
++#define AF_RGBPOS_SHIFT                 11
++#define AF_MED_TH_SHIFT                 3
++#define AF_PAXW_SHIFT                   16
++#define AF_LINE_INCR_SHIFT              13
++#define AF_VT_COUNT_SHIFT               6
++#define AF_HZ_START_SHIFT               16
++#define AF_COEF_SHIFT                   16
++#define AF_INP_SRC_SHIFT                19
++#define AF_GETFRAME_SIZE 		(inl(IO_ADDRESS(0x01C70910)))
++#define AF_GETINIT_XY 			(inl(IO_ADDRESS(0x01C70910)))
++#define AF_INTSTATBASE			(IO_ADDRESS(0x01C7080C))
++#define AF_EVNTSELADDR			(IO_ADDRESS(0x01C70814))
++#define	AF_CLKCTRL_ADDR			(IO_ADDRESS(0x01C70004))
++#define AF_GETCLKCTRL			inl(AF_CLKCTRL_ADDR)
++#define AF_SETCLKCTRL(val)		outl(val,AF_CLKCTRL_ADDR)
++
++/* Macros for register read and write */
++#define AF_IOBASE_VADDR                 IO_ADDRESS(0x01c70080)
++#define regr(reg)                       inl((reg)+AF_IOBASE_VADDR)
++#define regw(val,reg)                   outl(val,(reg)+AF_IOBASE_VADDR)
++#define AF_GET_PCR                      inl(AF_IOBASE_VADDR + AFPCR)
++//#define AF_SELINT(val)			outl(val,AF_INTSEL)
++//#define AFSETINT(val)			outl(val,AF_INTSEL)
++//#define AF_EVNTSEL(val)			outl(val,AF_EVNTSELADDR)
++//#define AF_GETINT			inl(AF_INTSEL)
++//#define AF_GETEVNT			inl(AF_EVNTSELADDR)
++//#define AF_INTMASK			(0xF << 16)
++#define AF_GETINTSTAT			inl(AF_INTSTATBASE)
++/* Function declaration */
++int af_register_setup(struct af_device *);
++void af_engine_setup(int);
++void af_set_address(unsigned long);
++#endif				/*enf of #ifdef __KERNEL__  */
++#endif
+Index: linux-2.6.18/include/asm-arm/arch-davinci/dm355_ipipe.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/dm355_ipipe.h
+@@ -0,0 +1,553 @@
++/*
++ *
++ *
++ * Copyright (C) 2005 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* dm355_ipipe.h file */
++
++
++#ifndef DM355_IPIPE_H
++#define DM355_IPIPE_H
++
++#include <linux/ioctl.h>
++
++#ifdef __KERNEL__
++
++/* include linux specific header files */
++#include <linux/completion.h>
++#include <linux/interrupt.h>
++#include <asm/semaphore.h>
++
++#endif	/* End of #ifdef __KERNEL__ */
++
++
++#define MAX_SIZE_DFC			1024
++#define MAX_SIZE_EEC			1024
++#define MAX_SIZE_GAMMA			512
++
++#define MAX_SIZE_RAW_BY_PASS		4096
++#define MAX_SIZE			1344
++#define MAX_SIZE_RSZ0			1344
++#define MAX_SIZE_RSZ1			640
++
++#define WB_GAIN_MAX     4
++#define RGB_MAX         3
++
++#define MAX_BUFFER      8
++#define SET_LOW_ADD    	0x0000FFFF
++#define SET_HIGH_ADD	0xFFFF0000
++
++#define IPIPE_BUF_IN     0	/* input buffer */
++#define IPIPE_BUF_OUT    1	/* output buffer */
++
++#define IPIPE_INWIDTH_8BIT   0	/* pixel width of 8 bitS */
++#define IPIPE_INWIDTH_10BIT  1	/* pixel width of 10 bits */
++
++/*
++ * list of enums
++ */
++typedef enum copy_method {
++	FROMTOP    = 0,
++	FROMBOTTON = 1
++}copy_method_t;
++
++typedef enum sampling_type {
++	BOX = 0,
++	DIAMOND = 1
++}sampling_type_t;
++
++typedef enum pre_filter_type {
++        AVG4PIX = 0,
++        AVG2MEDPIX = 1
++}pre_filter_type_t;
++
++typedef enum enable_disable {
++	DISABLE =  0,
++	ENABLE =   1
++}enable_disable_t;
++
++typedef enum gamma_cor {
++        GC_ENABLE = 0,
++        GC_BYPASS = 1
++}gamma_cor_t;
++
++typedef enum gamma_tbl {
++        IPIPE_RAM = 0,
++        IPIPE_ROM = 1
++}gamma_tbl_t;
++
++typedef enum gamma_siz {
++        IPIPE_128  = 0,
++        IPIPE_256  = 1,
++        IPIPE_RESV = 2,
++        IPIPE_512  = 3
++}gamma_siz_t;
++
++
++typedef enum _ipipe_dpaths_fmt {
++	RAW2YUV = 0,
++	RAW2RAW = 1,
++	RAW2BOX = 2,
++	YUV2YUV = 3,
++	RAW2RAW_BYPASS = 4
++}ipipe_dpaths_fmt_t;
++
++typedef enum _ipipe_dpaths_bypass {
++        RAW_MODE_OFF = 0,
++        RAW_MODE_ON  = 1
++}ipipe_dpaths_bypass_t;
++
++typedef enum _ipipe_colpat {
++	RED = 0,
++	GREEN_RED  = 1,
++	GREEN_BLUE = 2,
++	BLUE = 3
++}ipipe_colpat_t;
++
++typedef enum fcs_typ {
++        Y          = 0,
++        HPF_HORZ   = 1,
++	HPF_VERT   = 2,
++	HPF_2D     = 3,
++	HPF_2D_YEE = 4
++}fcs_typ_t;
++
++/* Resizer */
++typedef enum rsz_h_typ {
++	CUBIC =  0,
++	LINEAR = 1
++}rsz_h_typ_t;
++
++typedef enum rsz_h_lse {
++	INTERNAL_VALUE   = 0,
++	PROGRAMMED_VALUE = 1
++}rsz_h_lse_t;
++
++typedef enum _ipipe_rsz_rgb_typ {
++        OUTPUT_32BIT = 0,
++        OUTPUT_16BIT = 1,
++}ipipe_rsz_rgb_typ_t;
++
++typedef enum _ipipe_rsz_rgb_msk {
++        NOMASK = 0,
++        MASKLAST2 = 1,
++}ipipe_rsz_rgb_msk_t;
++
++typedef enum _data_shift{
++        BITS15_2	   = 0,
++        BITS14_1	   = 1,
++	BITS13_0	   = 2,
++	BITS12_0	   = 3,
++	BITS11_0	   = 4,
++	BITS10_0	   = 5,
++	BITS9_0	   	   = 6
++}ipipeif_data_shift;
++
++typedef enum _clk_sel{
++	PIXCEL_CLK	= 0,
++	SDRAM_CLK	= 1
++}ipipeif_clock;
++
++typedef enum _ialaw {
++	ALAW_OFF	= 0,
++	ALAW_ON		= 1
++}ipipeif_ialaw;
++
++typedef enum  _pack_mode {
++	SIXTEEN_BIT	= 0,
++	EIGHT_BIT	= 1
++}ipipeif_pack_mode;
++
++typedef enum   _avg_filter{
++	AVG_OFF		= 0,
++	AVG_ON		= 1
++}ipipeif_avg_filter;
++
++typedef enum _clk_div {
++	DIVIDE_HALF		= 0,
++	DIVIDE_THIRD		= 1,
++	DIVIDE_FOURTH		= 2,
++	DIVIDE_FIFTH		= 3,
++	DIVIDE_SIXTH		= 4,
++	DIVIDE_EIGHTH		= 5,
++	DIVIDE_SIXTEENTH	= 6,
++	DIVIDE_THIRTY		= 7
++
++}ipipeif_clkdiv;
++
++typedef enum   _data_selection{
++	CCDC		= 0,
++	SDRAM_RAW	= 1,
++	CCDC_DARKFM	= 2,
++	SDRAM_YUV	= 3
++}ipipeif_input_source;
++
++typedef enum   _decimation {
++	DECIMATION_OFF	= 0,
++	DECIMATION_ON	= 1
++}ipipeif_decimation;
++
++typedef enum  _mode {
++	CONTINUOUS	= 0,
++	ONE_SHOT	= 1
++}operation_mode;
++
++typedef enum _RSZ{
++	ONE		= 16,
++	ONE_HALF	= 32,
++	ONE_THIRD	= 48,
++	ONE_FOURTH	= 64,
++	ONE_FIFTH	= 80,
++	ONE_SIXTH	= 96,
++	ONE_SEVENTH	= 112
++
++}ipipeif_rsz_ratio;
++
++
++
++/*struct ipipe_cropsize {
++	int hcrop;
++        int vcrop;
++};
++*/
++/* Defect Correction */
++struct ipipe_def_cor {
++	enable_disable_t dfc_en;
++	copy_method_t dfc_sel;
++
++        unsigned int dfc_siz;
++	unsigned int dfc_adr;
++	unsigned int *dfc_table;
++};
++/*
++ * list of structures
++ */
++/* structure for request buffer */
++
++struct ipipe_reqbufs {
++        int buf_type;   /* type of frame buffer */
++        unsigned int size;       /* size of the frame buffer to be allocated */
++        int count;      /* number of frame buffer to be allocated */
++};
++/* structure buffer */
++struct ipipe_buffer {
++        int index;      /* index number, 0 -> N-1 */
++        int buf_type;   /* buffer type, input or output */
++        unsigned int offset;     /* address of the buffer used in the mmap()
++                           system call */
++        unsigned int size;       /* size of the buffer */
++};
++
++
++/* Programmable Noise Filter */
++struct ipipe_prog_nf {
++	enable_disable_t noise_fil_en;
++        unsigned int d2f_cfg_spr;
++	unsigned int d2f_cfg_shf;
++	sampling_type_t type;
++        unsigned int *d2f_thr;
++        unsigned int *d2f_str;
++};
++
++/* Prefilter */
++struct ipipe_prefilter {
++	enable_disable_t pre_en;
++	pre_filter_type_t sel_0;
++	pre_filter_type_t sel_1;
++
++	enable_disable_t typ_adaptive;
++	enable_disable_t typ_adaptive_dotred;
++	unsigned int pre_shf;
++	unsigned int pre_gain;
++	unsigned int pre_thr_g;
++	unsigned int pre_thr_b;
++	unsigned int pre_thr_1;
++};
++
++/* White Balance */
++struct ipipe_wb {
++	unsigned int wb2_dgn;
++	unsigned int wb2_wg_r;
++	unsigned int wb2_wg_gr;
++	unsigned int wb2_wg_gb;
++	unsigned int wb2_wg_b;
++};
++
++/* RGB to RGB conversion (include GAMMA correction) */
++struct ipipe_rgb2rgb {
++	unsigned int rgb_mul_rr;
++	unsigned int rgb_mul_gr;
++	unsigned int rgb_mul_br;
++        unsigned int rgb_mul_rg;
++        unsigned int rgb_mul_gg;
++        unsigned int rgb_mul_bg;
++	unsigned int rgb_mul_rb;
++	unsigned int rgb_mul_gb;
++	unsigned int rgb_mul_bb;
++	unsigned int rgb_oft_or;
++	unsigned int rgb_oft_og;
++	unsigned int rgb_oft_ob;
++	gamma_cor_t gmm_cfg_bypr;
++	gamma_cor_t gmm_cfg_bypg;
++	gamma_cor_t gmm_cfg_bypb;
++	gamma_tbl_t gmm_cfg_tbl;
++	gamma_siz_t gmm_cfg_siz;
++	/*
++	unsigned int gmm_tbl_r[1024];
++	unsigned int gmm_tbl_b[1024];
++	unsigned int gmm_tbl_g[1024];
++	unsigned int gmm_tbl_all[1024];
++	*/
++	unsigned int *gmm_tbl_r;
++	unsigned int *gmm_tbl_b;
++	unsigned int *gmm_tbl_g;
++	unsigned int *gmm_tbl_all;
++};
++
++typedef enum yuv_phs_pos {
++	COSITING =  0,
++	CENTERING = 1
++}yuv_phs_pos_t;
++
++/* RGB to YUV(YCbCr) conversion */
++struct ipipe_rgb2yuv {
++	unsigned int yuv_adj_ctr;
++	unsigned int yuv_adj_brt;
++
++	unsigned int yuv_mul_ry;
++	unsigned int yuv_mul_gy;
++	unsigned int yuv_mul_by;
++	unsigned int yuv_mul_rcb;
++	unsigned int yuv_mul_gcb;
++	unsigned int yuv_mul_bcb;
++	unsigned int yuv_mul_rcr;
++	unsigned int yuv_mul_gcr;
++	unsigned int yuv_mul_bcr;
++	unsigned int yuv_oft_y;
++	unsigned int yuv_oft_cb;
++	unsigned int yuv_oft_cr;
++	unsigned int yuv_y_min;
++	unsigned int yuv_y_max;
++	unsigned int yuv_c_min;
++	unsigned int yuv_c_max;
++	enable_disable_t yuv_phs_lpf;
++	yuv_phs_pos_t yuv_phs_position;
++};
++
++/* Edge Enhancer */
++struct ipipe_edge_enhancer {
++	enable_disable_t yee_en;
++	enable_disable_t yee_emf;
++	unsigned int yee_shf;
++	unsigned int yee_mul_00;
++	unsigned int yee_mul_01;
++	unsigned int yee_mul_02;
++	unsigned int yee_mul_10;
++	unsigned int yee_mul_11;
++	unsigned int yee_mul_12;
++	unsigned int yee_mul_20;
++	unsigned int yee_mul_21;
++	unsigned int yee_mul_22;
++	unsigned int *ee_table;
++};
++
++/* False Color Suppression */
++struct ipipe_false_color_suppresion {
++	enable_disable_t fcs_en;
++	fcs_typ_t fcs_typ_typ;
++	unsigned int fcs_shf_y;
++	unsigned int fcs_shf_c;
++	unsigned int fcs_thr;
++	unsigned int fcs_sgn;
++	unsigned int fcs_lth;
++};
++
++/* Resizer Rescale Parameters*/
++struct ipipe_resizer_rescale_param {
++	unsigned int rsz_mode;
++	unsigned int rsz_i_vst;
++	unsigned int rsz_i_vsz;
++	unsigned int rsz_i_hst;
++	unsigned int rsz_o_vsz;
++	unsigned int rsz_o_hsz;
++        unsigned int rsz_o_hst;
++	unsigned int rsz_v_phs;
++        //unsigned int rsz_v_phs_o;
++	unsigned int rsz_v_dif;
++	//unsigned int rsz_v_siz_o;
++	unsigned int rsz_h_phs;
++	unsigned int rsz_h_dif;
++	rsz_h_typ_t rsz_h_typ;
++	rsz_h_lse_t rsz_h_lse_sel;
++	unsigned int rsz_h_lpf;
++};
++
++/* Resizer RGB Conversion Parameters */
++struct ipipe_resize2rgb {
++	enable_disable_t rsz_rgb_en;
++	ipipe_rsz_rgb_typ_t rsz_rgb_typ;
++	ipipe_rsz_rgb_msk_t rsz_rgb_msk0;
++	ipipe_rsz_rgb_msk_t rsz_rgb_msk1;
++//	unsigned int rsz_rgb_bld;
++	unsigned int rsz_rgb_alpha_val;
++};
++
++/* Resizer External Memory Parameters */
++struct ipipe_ext_mem_param {
++	unsigned int rsz_sdr_bad_h;
++	unsigned int rsz_sdr_bad_l;
++	unsigned int rsz_sdr_sad_h;
++	unsigned int rsz_sdr_sad_l;
++	unsigned int rsz_sdr_oft;
++	unsigned int rsz_sdr_ptr_s;
++	unsigned int rsz_sdr_ptr_e;
++};
++/*ipipeif structures*/
++struct ipipeif {
++	/*IPPEIF config register*/
++	ipipeif_data_shift data_shift;
++	ipipeif_clock clock_select;
++
++	ipipeif_ialaw ialaw;
++	ipipeif_pack_mode pack_mode;
++	ipipeif_avg_filter avg_filter;
++	ipipeif_clkdiv clk_div;
++	ipipeif_input_source source;
++	ipipeif_decimation decimation;
++	operation_mode mode;
++
++	unsigned int glob_hor_size;
++	unsigned int glob_ver_size;
++	unsigned int hnum;
++	unsigned int vnum;
++	unsigned int adofs;
++	ipipeif_rsz_ratio rsz;
++	unsigned int gain;
++};
++/* structure for all configurations */
++struct ipipe_params {
++	struct ipipeif ipipeif_param;
++
++	operation_mode ipipe_mode;
++	/*input/output datapath register*/
++	ipipe_dpaths_fmt_t ipipe_dpaths_fmt;
++	ipipe_dpaths_bypass_t ipipe_dpaths_bypass;
++
++	/*color pattern register*/
++	ipipe_colpat_t ipipe_colpat_elep;
++        ipipe_colpat_t ipipe_colpat_elop;
++        ipipe_colpat_t ipipe_colpat_olep;
++        ipipe_colpat_t ipipe_colpat_olop;
++
++	/*horizontal/vertical start, horizontal/vertical size*/
++	unsigned int ipipe_vst;
++	unsigned int ipipe_vsz;
++	unsigned int ipipe_hst;
++	unsigned int ipipe_hsz;
++	/*interupt generation after lines*/
++
++	struct ipipe_def_cor def_cor;
++	struct ipipe_prog_nf prog_nf;
++	struct ipipe_prefilter prefilter;
++	struct ipipe_wb wb;
++	struct ipipe_rgb2rgb rgb2rgb;
++	struct ipipe_rgb2yuv rgb2yuv;
++ 	struct ipipe_edge_enhancer edge_enhancer;
++	struct ipipe_false_color_suppresion false_color_suppresion;
++
++	enable_disable_t rsz_seq_seq;
++	enable_disable_t rsz_seq_tmm;
++	enable_disable_t rsz_seq_hrv;
++	enable_disable_t rsz_seq_vrv;
++	enable_disable_t rsz_seq_crv;
++
++	enable_disable_t rsz_aal;
++
++	struct ipipe_resizer_rescale_param rsz_rsc_param[2];
++	struct ipipe_resize2rgb rsz2rgb[2];
++	struct ipipe_ext_mem_param ext_mem_param[2];
++
++	enable_disable_t rsz_en[2];
++};
++struct ipipe_convert {
++        struct ipipe_buffer in_buff;
++        struct ipipe_buffer out_buff;
++};
++#ifdef __KERNEL__
++/* device structure keeps track of global information */
++struct ipipe_device {
++        struct ipipe_params *params;
++        unsigned char opened;		/* state of the device */
++        unsigned char in_numbuffers;	/* number of input buffers */
++        unsigned char out_numbuffers;	/* number of output buffers */
++        struct ipipe_buffer *in_buff[MAX_BUFFER];  /*pointer to input buffers*/
++        struct ipipe_buffer *out_buff[MAX_BUFFER]; /*pointer to output buffers */
++        struct completion wfc;/*used to wait for frame precessing to be completed*/
++        struct semaphore sem;
++};
++
++int ipipe_hw_setup(struct ipipe_params *config);
++int default_for_raw2raw(struct ipipe_params* parameter);
++int default_for_bypass(struct ipipe_params* parameter);
++int set_dfc_regs(struct ipipe_def_cor *dfc);
++int set_d2f_regs( struct ipipe_prog_nf *noise_filter);
++int set_pre_regs(struct ipipe_prefilter *pre_amplifier);
++int set_wb_regs(struct ipipe_wb *white_balance);
++int set_rgb_2_yuv_regs(int data_format,struct ipipe_rgb2yuv *y_cr_cb);
++int set_rgb_to_rgb_regs(struct ipipe_rgb2rgb *rgb);
++int set_ee_regs(struct ipipe_edge_enhancer *edge_enhance);
++int set_fcs_regs(struct ipipe_false_color_suppresion *color_supress);
++int set_rsz_regs(struct ipipe_params *param_resize);
++int set_aal_regs(struct ipipe_params *param_resize);
++int set_rsz_structs(struct ipipe_params *params );
++int write_out_addr(int resize_no,unsigned int address);
++
++int ipipe(struct ipipe_device *device, struct ipipe_convert *);
++int request_buffer(struct ipipe_device*, struct ipipe_reqbufs*);
++int query_buffer(struct ipipe_device*, struct ipipe_buffer*);
++irqreturn_t ipipe_isr(int, void*, struct pt_regs*);
++int free_buffers(struct ipipe_device*);
++int validate_params(struct ipipe_params*);
++#endif	/* End of #ifdef __KERNEL__ */
++/* ioctls definition */
++#define IPIPE_IOC_BASE   	'P'
++#define IPIPE_REQBUF     	_IOW(IPIPE_IOC_BASE, 1, struct ipipe_reqbufs)
++#define IPIPE_QUERYBUF   	_IOR(IPIPE_IOC_BASE, 2, struct ipipe_buffer)
++#define IPIPE_SET_PARAM  	_IOWR(IPIPE_IOC_BASE, 3, struct ipipe_params*)
++#define IPIPE_GET_PARAM  	_IOWR(IPIPE_IOC_BASE, 4, struct ipipe_params*)
++#define IPIPE_START	    	_IOWR(IPIPE_IOC_BASE,5, char)
++/*
++*/
++#define IPIPE_IOC_MAXNR 5
++/* End of ioctls */
++
++#ifdef __KERNEL__
++struct vm_struct_area;
++struct inode;
++struct file;
++/* function definition for character driver interface functions */
++int ipipe_init(void);
++void ipipe_cleanup(void);
++int ipipe_open(struct inode *inode, struct file *);
++int ipipe_release(struct inode *inode, struct file *);
++int ipipe_ioctl(struct inode *inode, struct file *, unsigned int,
++		    unsigned long);
++int ipipe_mmap(struct file *, struct vm_area_struct *);
++
++#endif	/* End of #ifdef __KERNEL__ */
++
++#endif	/* End of DM355_IPIPE_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/dm355_ipipe_hw.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/dm355_ipipe_hw.h
+@@ -0,0 +1,324 @@
++/*
++ *
++ *
++ * Copyright (C) 2005 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++/* davinci_previewer_hw.h file */
++
++#ifndef DAVINCI_IPIPE_HW_H
++#define DAVINCI_IPIPE_HW_H
++
++#ifdef __KERNEL__
++
++#include <linux/kernel.h>       /* printk() */
++#include <asm/io.h>             /* For IO_ADDRESS */
++
++#define IPIPE_IOBASE_VADDR      IO_ADDRESS(0x01C71000)
++#define IPIPEIF_IOBASE_VADDR    IO_ADDRESS(0x01C70100)
++#define VPSS_BL_BASE		IO_ADDRESS(0x01C70000)
++
++
++
++
++/* Register read/write */
++#define regw_ip(val, reg)    outl(val, (reg)+IPIPE_IOBASE_VADDR)
++#define regr_ip(reg)         inl((reg)+IPIPE_IOBASE_VADDR)
++#define regw_if(val, reg)    outl(val, (reg)+ IPIPEIF_IOBASE_VADDR)
++#define regr_if(reg)         inl((reg)+ IPIPEIF_IOBASE_VADDR)
++#define regw_vpss(val,reg)	outl(val, (reg)+ VPSS_BL_BASE)
++#define regr_vpss(reg)		inl((reg)+ VPSS_BL_BASE)
++
++
++
++/* -- */
++/* macro for bit set and clear */
++#define SETBIT(reg, bit)   (reg = ((reg) | ((0x00000001)<<(bit))))
++#define RESETBIT(reg, bit) (reg = ((reg) & (~(0x00000001<<(bit)))))
++/* -to set vpss reg for ipipe- */
++#define VPSS_PCR		0x0804
++#define VPSS_MEMCTL		0x0818
++#define VPSS_CLK   		0x0004
++
++
++
++#define SDR_ENABLE		2/*int number for IRQ_EN*/
++/* Internal RAM table addresses for defect correction */
++#define DEF_COR_START_ADDR	0x0000
++#define DEF_COR_END_ADDR	0x07FF
++#define DEF_COR_SIZE		1024
++
++/* Internal RAM table addresses for gamma correction */
++#define GAMMA_START_ADDR      0x0000
++#define GAMMA_END_ADDR        0x03FF
++
++/*Internal RAM table addresses for edge enhancement correction*/
++#define EDGE_ENHANCE_START_ADDR		0x0200
++#define EDGE_ENHANCE_END_ADDR		0x01FF
++/* -- */
++
++
++
++/* IPIPE Register Offsets from the base address */
++
++#define IPIPE_EN 		0x0000
++#define IPIPE_MODE 		0x0004
++#define IPIPE_DPATHS 		0x0008
++#define IPIPE_COLPAT		0x000C
++#define IPIPE_VST		0x0010
++#define IPIPE_VSZ 		0x0014
++#define IPIPE_HST		0x0018
++#define IPIPE_HSZ 		0x001C
++/*gated clock enable*/
++#define GCL_ARM			0x0024
++#define GCL_CCD 		0x0028
++#define GCL_SDR			0x002C
++/* Internal Memory Access */
++#define RAM_MODE		0x0030
++#define RAM_ADR			0x0034
++#define RAM_WDT			0x0038
++#define RAM_RDT			0x003C
++/* Interrupts */
++#define IRQ_EN			0x0040
++#define IRQ_RZA			0x0044
++#define IRQ_RZB			0x0048
++/* Defect Correction */
++#define DFC_EN			0x004C
++#define DFC_SEL			0x0050
++#define DFC_ADR			0x0054
++#define DFC_SIZE		0x0058
++/* Programmable Noise Filter */
++#define D2F_EN			0x005C
++#define D2F_CFG			0x0060
++#define DFC_THR			0x0064
++#define D2F_STR			0x00E4
++/* PreFilter */
++#define PRE_EN			0x0164
++#define PRE_TYP			0x0168
++#define PRE_SHF			0x016C
++#define PRE_GAIN		0x0170
++#define PRE_THR_G		0x0174
++#define PRE_THR_B		0x0178
++#define PRE_THR_1		0x017C
++/* White Balance */
++#define WB2_DGN			0x0180
++#define WB2_WG_R		0x0184
++#define WB2_WG_GR		0x0188
++#define WB2_WG_GB		0x018C
++#define WB2_WG_B		0x0190
++
++/* RGB to RGB conversion (include GAMMA correction) */
++#define RGB_MUL_RR		0x01F4
++
++/* Defect Correction */
++#define DFC_EN                  0x004C
++#define DFC_SEL                 0x0050
++#define DFC_ADR                 0x0054
++#define DFC_SIZ                 0x0058
++/* Programmable Noise Filter */
++#define D2F_EN                  0x005C
++#define D2F_CFG                 0x0060
++#define DFC_THR                 0x0064
++#define D2F_STR                 0x00E4
++/* PreFilter */
++#define PRE_EN                  0x0164
++#define PRE_TYP                 0x0168
++#define PRE_SHF                 0x016C
++#define PRE_GAIN                0x0170
++#define PRE_THR_G               0x0174
++#define PRE_THR_B               0x0178
++#define PRE_THR_1               0x017C
++/* White Balance */
++#define WB2_DGN                 0x0180
++#define WB2_WG_R                0x0184
++#define WB2_WG_GR               0x0188
++#define WB2_WG_GB               0x018C
++#define WB2_WG_B                0x0190
++
++/* RGB to RGB conversion (include GAMMA correction) */
++#define RGB_MUL_RR              0x01F4
++#define RGB_MUL_GR              0x01F8
++#define RGB_MUL_BR              0x01FC
++#define RGB_MUL_RG		0x0200
++#define RGB_MUL_GG		0x0204
++#define RGB_MUL_BG		0x0208
++#define RGB_MUL_RB		0x020C
++
++#define RGB_MUL_GB		0x0210
++#define RGB_MUL_BB		0x0214
++#define RGB_MUL_OR		0x0218
++#define RGB_MUL_OG		0x021C
++#define RGB_MUL_OB		0x0220
++#define GMM_CFG			0x0224
++
++/* RGB to YUV(YCbCr) conversion */
++#define YUV_ADJ 		0x0228
++#define YUV_MUL_RY 		0x022C
++#define YUV_MUL_GY 		0x0230
++#define YUV_MUL_BY 		0x0234
++#define YUV_MUL_RCB 		0x0238
++#define YUV_MUL_GCB 		0x023C
++#define YUV_MUL_BCB 		0x0240
++#define YUV_MUL_RCR 		0x0244
++#define YUV_MUL_GCR 		0x0248
++#define YUV_MUL_BCR 		0x024C
++#define YUV_OFT_Y 		0x0250
++#define YUV_OFT_CB 		0x0254
++#define YUV_OFT_CR 		0x0258
++#define YUV_Y_MIN 		0x025C
++#define YUV_Y_MAX 		0x0260
++#define YUV_C_MIN 		0x0264
++#define YUV_C_MAX 		0x0268
++#define YUV_PHS 		0x026C
++
++/* Edge Enhancer */
++#define YEE_EN			0x0270
++#define YEE_EMF			0x0274
++#define YEE_SHF			0x0278
++#define YEE_MUL_00		0x027C
++#define YEE_MUL_01		0x0280
++#define YEE_MUL_02		0x0284
++#define YEE_MUL_10		0x0288
++#define YEE_MUL_11		0x028C
++#define YEE_MUL_12		0x0290
++#define YEE_MUL_20		0x0294
++#define YEE_MUL_21		0x0298
++#define YEE_MUL_22		0x029C
++
++/* False Color Suppression */
++#define FCS_EN			0x02A0
++#define FCS_TYP			0x02A4
++#define FCS_SHF_Y		0x02A8
++#define FCS_SHF_C		0x02AC
++#define FCS_THR 		0x02B0
++#define FCS_SGN			0x02B4
++#define FCS_LTH			0x02B8
++
++/* Resizer */
++#define RSZ_SEQ                 0x02BC
++#define RSZ_AAL                 0x02C0
++
++/* Resizer Rescale Parameters */
++#define RSZ_EN_0	        0x02C4
++#define RSZ_EN_1             	0x0334
++/*offset of the registers to be added with base register of either RSZ0 or RSZ1*/
++#define RSZ_MODE	        0x4
++#define RSZ_I_VST               0x8
++#define RSZ_I_VSZ               0xC
++#define RSZ_I_HST               0x10
++#define RSZ_O_VSZ               0x14
++#define RSZ_O_HST               0x18
++#define RSZ_O_HSZ		0x1C
++#define RSZ_V_PHS               0x20
++#define RSZ_V_PHS_O	        0x24
++#define RSZ_V_DIF               0x28
++#define RSZ_V_SIZ_O             0x2C
++#define RSZ_H_PHS               0x30
++#define RSZ_H_DIF               0x34
++#define RSZ_H_TYP               0x38
++#define RSZ_H_LSE               0x3C
++#define RSZ_H_LPF             	0x40
++
++/* Resizer RGB Conversion Parameters */
++#define RSZ_RGB_EN              0x44
++#define RSZ_RGB_TYP             0x48
++#define RSZ_RGB_BLD             0x4C
++
++/* Resizer External Memory Parameters */
++#define RSZ_SDR_BAD_H           0x50
++#define RSZ_SDR_BAD_L           0x54
++#define RSZ_SDR_SAD_H           0x58
++#define RSZ_SDR_SAD_L           0x5C
++#define RSZ_SDR_OFT             0x60
++#define RSZ_SDR_PTR_S           0x64
++#define RSZ_SDR_PTR_E           0x68
++#define RSZ_SDR_PTR_O           0x6C
++
++
++/* Macro for resizer */
++#define IPIPE_RESIZER_0(i)  (IPIPE_IOBASE_VADDR + RSZ_EN_0 + i)
++#define IPIPE_RESIZER_1(i)  (IPIPE_IOBASE_VADDR + RSZ_EN_1 + i)
++/* --*/
++
++/* Masking fields */
++#define IPIPE_MODE_WRT 		(1 << 1)
++#define IPIPE_DPATHS_FMT	(3 << 0)
++#define IPIPE_DPATHS_BYPASS	(1 << 2)
++#define IPIPE_COLPAT_ELEP	(3 << 0)
++#define IPIPE_COLPAT_ELOP	(3 << 2)
++#define IPIPE_COLPAT_OLEP	(3 << 4)
++#define IPIPE_COLPAT_OLOP	(3 << 6)
++#define IPIPE_D2F_CFG_SPR	(3 << 0)
++#define IPIPE_D2F_CFG_SHF       (3 << 2)
++#define IPIPE_D2F_CFG_TYP       (1 << 4)
++#define IPIPE_PRE_TYP_SEL1	(1 << 1)
++#define IPIPE_PRE_TYP_EN0       (1 << 2)
++#define IPIPE_PRE_TYP_EN1       (1 << 3)
++#define IPIPE_GMM_CFG_BYPG      (1 << 1)
++#define IPIPE_GMM_CFG_BYPB      (1 << 2)
++#define IPIPE_GMM_CFG_TBL       (1 << 4)
++#define IPIPE_GMM_CFG_SIZ       (3 << 5)
++#define IPIPE_YUV_ADJ_CTR	(0Xff << 0)
++#define IPIPE_YUV_ADJ_BRT       (0Xff << 8)
++#define IPIPE_YUV_PHS_LPF	(1 << 1)
++#define IPIPE_RSZ_SEQ_TMM	(1 << 1)
++#define IPIPE_RSZ_SEQ_HRV       (1 << 2)
++#define IPIPE_RSZ_SEQ_VRV       (1 << 3)
++#define IPIPE_RSZ_SEQ_CRV       (1 << 3)
++#define IPIPE_RSZ_RGB_TYP_MSK0  (1 << 1)
++#define IPIPE_RSZ_RGB_TYP_MSK1  (1 << 2)
++
++/* BIT FIELDS */
++
++#define IPIPE_DPATHS_BYPASS_SHIFT	 2
++#define IPIPE_COLPAT_ELOP_SHIFT		 2
++#define IPIPE_COLPAT_OLEP_SHIFT		 4
++#define IPIPE_COLPAT_OLOP_SHIFT		 6
++#define IPIPE_D2F_CFG_SHF_SHIFT          2
++#define IPIPE_D2F_CFG_TYP_SHIFT          4
++#define IPIPE_PRE_TYP_SEL1_SHIFT         1
++#define IPIPE_PRE_TYP_EN0_SHIFT          2
++#define IPIPE_PRE_TYP_EN1_SHIFT          3
++#define IPIPE_GMM_CFG_BYPG_SHIFT         1
++#define IPIPE_GMM_CFG_BYPB_SHIFT         2
++#define IPIPE_GMM_CFG_TBL_SHIFT          4
++#define IPIPE_GMM_CFG_SIZ_SHIFT          5
++#define IPIPE_YUV_ADJ_BRT_SHIFT          8
++#define IPIPE_YUV_PHS_LPF_SHIFT          1
++#define IPIPE_RSZ_SEQ_TMM_SHIFT          1
++#define IPIPE_RSZ_SEQ_HRV_SHIFT          2
++#define IPIPE_RSZ_SEQ_VRV_SHIFT          3
++#define IPIPE_RSZ_SEQ_CRV_SHIFT          3
++#define IPIPE_RSZ_RGB_TYP_MSK0_SHIFT     1
++#define IPIPE_RSZ_RGB_TYP_MSK1_SHIFT     2
++
++
++
++/* IPIPEIF Register Offsets from the base address */
++#define IPIPEIF_ENABLE 	0x00
++#define IPIPEIF_GFG 	0x04
++#define IPIPEIF_PPLN	0x08
++#define IPIPEIF_LPFR	0x0C
++#define IPIPEIF_HNUM 	0x10
++#define IPIPEIF_VNUM    0x14
++#define IPIPEIF_ADDRU   0x18
++#define IPIPEIF_ADDRL   0x1C
++#define IPIPEIF_ADOFS   0x20
++#define IPIPEIF_RSZ   	0x24
++#define IPIPEIF_GAIN   0x28
++
++#endif /* End of #ifdef __KERNEL__ */
++#endif  /* End of #ifdef DAVINCI_IPIPE_HW_H */
+Index: linux-2.6.18/mvl_patches/pro50-1585.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1585.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1585);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

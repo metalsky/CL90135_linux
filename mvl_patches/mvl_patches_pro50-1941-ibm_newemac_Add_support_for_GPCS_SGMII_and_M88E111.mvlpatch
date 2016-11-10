@@ -1,0 +1,603 @@
+#! /usr/bin/env bash
+# Patch: -ibm_newemac_Add_support_for_GPCS_SGMII_and_M88E111
+# Date: Wed Nov  5 15:02:05 2008
+# MR: 30725
+# Source: Linus' git tree
+# Type: Enhancement
+# Disposition: merged from git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+# Signed-off-by: Valentine Barshak <vbarshak@ru.mvista.com>
+# Adjustments:
+#     minor adjustments to make it appy with no fuzz.
+# 
+# From 9e3cb29497561c846d0e7efc445731764d93c749 Mon Sep 17 00:00:00 2001
+# From: Victor Gallardo <vgallardo@amcc.com>
+# Date: Wed, 1 Oct 2008 23:37:57 -0700
+# Subject: [PATCH] ibm_newemac: Add support for GPCS, SGMII and M88E1112 PHY
+# 
+# Add support for the phy types found on the Arches and other
+# PowerPC 460 based boards.
+# 
+# Follows  v2.6.27-rc5 (Linux 2.6.27-rc5)
+# Precedes v2.6.28-rc1 (Linux 2.6.28-rc1)
+# 
+# Signed-off-by: Victor Gallardo <vgallardo@amcc.com>
+# Acked-by: Benjamin Herrenschmidt <benh@kernel.crashing.org>
+# Acked-by: Jeff Garzik <jeff@garzik.org>
+# Signed-off-by: Josh Boyer <jwboyer@linux.vnet.ibm.com>
+
+PATCHNUM=1941
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 30725
+Source: Linus' git tree
+Type: Enhancement
+Disposition: merged from git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+Signed-off-by: Valentine Barshak <vbarshak@ru.mvista.com>
+Adjustments:
+    minor adjustments to make it appy with no fuzz.
+
+From 9e3cb29497561c846d0e7efc445731764d93c749 Mon Sep 17 00:00:00 2001
+From: Victor Gallardo <vgallardo@amcc.com>
+Date: Wed, 1 Oct 2008 23:37:57 -0700
+Subject: [PATCH] ibm_newemac: Add support for GPCS, SGMII and M88E1112 PHY
+
+Add support for the phy types found on the Arches and other
+PowerPC 460 based boards.
+
+Follows  v2.6.27-rc5 (Linux 2.6.27-rc5)
+Precedes v2.6.28-rc1 (Linux 2.6.28-rc1)
+
+Signed-off-by: Victor Gallardo <vgallardo@amcc.com>
+Acked-by: Benjamin Herrenschmidt <benh@kernel.crashing.org>
+Acked-by: Jeff Garzik <jeff@garzik.org>
+Signed-off-by: Josh Boyer <jwboyer@linux.vnet.ibm.com>
+Index: linux-2.6.18/include/asm-powerpc/dcr-regs.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-powerpc/dcr-regs.h
++++ linux-2.6.18/include/asm-powerpc/dcr-regs.h
+@@ -75,6 +75,10 @@
+ #define ICINTSTAT_ICTX1 0x20000000
+ #define ICINTSTAT_ICTX	0x60000000
+ 
++/* SDRs (460EX/460GT) */
++#define SDR0_ETH_CFG		0x4103
++#define SDR0_ETH_CFG_ECS	0x00000100	/* EMAC int clk source */
++
+ /*
+  * All those DCR register addresses are offsets from the base address
+  * for the SRAM0 controller (e.g. 0x20 on 440GX). The base address is
+Index: linux-2.6.18/drivers/net/ibm_newemac/core.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/ibm_newemac/core.c
++++ linux-2.6.18/drivers/net/ibm_newemac/core.c
+@@ -129,6 +129,7 @@ static inline void emac_report_timeout_e
+ 					     const char *error)
+ {
+ 	if (emac_has_feature(dev, EMAC_FTR_440GX_PHY_CLK_FIX |
++				  EMAC_FTR_460EX_PHY_CLK_FIX |
+ 				  EMAC_FTR_440EP_PHY_CLK_FIX))
+ 		DBG(dev, "%s" NL, error);
+ 	else if (net_ratelimit())
+@@ -200,13 +201,15 @@ static inline int emac_phy_supports_gige
+ {
+ 	return  phy_mode == PHY_MODE_GMII ||
+ 		phy_mode == PHY_MODE_RGMII ||
++		phy_mode == PHY_MODE_SGMII ||
+ 		phy_mode == PHY_MODE_TBI ||
+ 		phy_mode == PHY_MODE_RTBI;
+ }
+ 
+ static inline int emac_phy_gpcs(int phy_mode)
+ {
+-	return  phy_mode == PHY_MODE_TBI ||
++	return  phy_mode == PHY_MODE_SGMII ||
++		phy_mode == PHY_MODE_TBI ||
+ 		phy_mode == PHY_MODE_RTBI;
+ }
+ 
+@@ -346,10 +349,24 @@ static int emac_reset(struct emac_instan
+ 		emac_tx_disable(dev);
+ 	}
+ 
++#ifdef CONFIG_PPC_DCR_NATIVE
++	/* Enable internal clock source */
++	if (emac_has_feature(dev, EMAC_FTR_460EX_PHY_CLK_FIX))
++		dcri_clrset(SDR0, SDR0_ETH_CFG,
++			    0, SDR0_ETH_CFG_ECS << dev->cell_index);
++#endif
++
+ 	out_be32(&p->mr0, EMAC_MR0_SRST);
+ 	while ((in_be32(&p->mr0) & EMAC_MR0_SRST) && n)
+ 		--n;
+ 
++#ifdef CONFIG_PPC_DCR_NATIVE
++	 /* Enable external clock source */
++	if (emac_has_feature(dev, EMAC_FTR_460EX_PHY_CLK_FIX))
++		dcri_clrset(SDR0, SDR0_ETH_CFG,
++			    SDR0_ETH_CFG_ECS << dev->cell_index, 0);
++#endif
++
+ 	if (n) {
+ 		dev->reset_failed = 0;
+ 		return 0;
+@@ -542,8 +559,9 @@ static int emac_configure(struct emac_in
+ 	switch (dev->phy.speed) {
+ 	case SPEED_1000:
+ 		if (emac_phy_gpcs(dev->phy.mode)) {
+-			mr1 |= EMAC_MR1_MF_1000GPCS |
+-				EMAC_MR1_MF_IPPA(dev->phy.address);
++			mr1 |= EMAC_MR1_MF_1000GPCS | EMAC_MR1_MF_IPPA(
++				(dev->phy.gpcs_address != 0xffffffff) ?
++				 dev->phy.gpcs_address : dev->phy.address);
+ 
+ 			/* Put some arbitrary OUI, Manuf & Rev IDs so we can
+ 			 * identify this GPCS PHY later.
+@@ -655,8 +673,12 @@ static int emac_configure(struct emac_in
+ 	out_be32(&p->iser,  r);
+ 
+ 	/* We need to take GPCS PHY out of isolate mode after EMAC reset */
+-	if (emac_phy_gpcs(dev->phy.mode))
+-		emac_mii_reset_phy(&dev->phy);
++	if (emac_phy_gpcs(dev->phy.mode)) {
++		if (dev->phy.gpcs_address != 0xffffffff)
++			emac_mii_reset_gpcs(&dev->phy);
++		else
++			emac_mii_reset_phy(&dev->phy);
++	}
+ 
+ 	return 0;
+ }
+@@ -861,7 +883,9 @@ static int emac_mdio_read(struct net_dev
+ 	struct emac_instance *dev = ndev->priv;
+ 	int res;
+ 
+-	res = __emac_mdio_read(dev->mdio_instance ? dev->mdio_instance : dev,
++	res = __emac_mdio_read((dev->mdio_instance &&
++				dev->phy.gpcs_address != id) ?
++				dev->mdio_instance : dev,
+ 			       (u8) id, (u8) reg);
+ 	return res;
+ }
+@@ -870,7 +894,9 @@ static void emac_mdio_write(struct net_d
+ {
+ 	struct emac_instance *dev = ndev->priv;
+ 
+-	__emac_mdio_write(dev->mdio_instance ? dev->mdio_instance : dev,
++	__emac_mdio_write((dev->mdio_instance &&
++			   dev->phy.gpcs_address != id) ?
++			   dev->mdio_instance : dev,
+ 			  (u8) id, (u8) reg, (u16) val);
+ }
+ 
+@@ -2360,7 +2386,11 @@ static int __devinit emac_init_phy(struc
+ 		 * XXX I probably should move these settings to the dev tree
+ 		 */
+ 		dev->phy.address = -1;
+-		dev->phy.features = SUPPORTED_100baseT_Full | SUPPORTED_MII;
++		dev->phy.features = SUPPORTED_MII;
++		if (emac_phy_supports_gige(dev->phy_mode))
++			dev->phy.features |= SUPPORTED_1000baseT_Full;
++		else
++			dev->phy.features |= SUPPORTED_100baseT_Full;
+ 		dev->phy.pause = 1;
+ 
+ 		return 0;
+@@ -2399,7 +2429,9 @@ static int __devinit emac_init_phy(struc
+ 		 * Note that the busy_phy_map is currently global
+ 		 * while it should probably be per-ASIC...
+ 		 */
+-		dev->phy.address = dev->cell_index;
++		dev->phy.gpcs_address = dev->gpcs_address;
++		if (dev->phy.gpcs_address == 0xffffffff)
++			dev->phy.address = dev->cell_index;
+ 	}
+ 
+ 	emac_configure(dev);
+@@ -2509,6 +2541,8 @@ static int __devinit emac_init_config(st
+ 		dev->phy_address = 0xffffffff;
+ 	if (emac_read_uint_prop(np, "phy-map", &dev->phy_map, 0))
+ 		dev->phy_map = 0xffffffff;
++	if (emac_read_uint_prop(np, "gpcs-address", &dev->gpcs_address, 0))
++		dev->gpcs_address = 0xffffffff;
+ 	if (emac_read_uint_prop(np->parent, "clock-frequency", &dev->opb_bus_freq, 1))
+ 		return -ENXIO;
+ 	if (emac_read_uint_prop(np, "tah-device", &dev->tah_ph, 0))
+@@ -2552,6 +2586,9 @@ static int __devinit emac_init_config(st
+ 	/* Check EMAC version */
+ 	if (of_device_is_compatible(np, "ibm,emac4sync")) {
+ 		dev->features |= (EMAC_FTR_EMAC4 | EMAC_FTR_EMAC4SYNC);
++		if (of_device_is_compatible(np, "ibm,emac-460ex") ||
++		    of_device_is_compatible(np, "ibm,emac-460gt"))
++			dev->features |= EMAC_FTR_460EX_PHY_CLK_FIX;
+ 	} else if (of_device_is_compatible(np, "ibm,emac4")) {
+ 		dev->features |= EMAC_FTR_EMAC4;
+ 		if (of_device_is_compatible(np, "ibm,emac-440gx"))
+@@ -2818,6 +2855,9 @@ static int __devinit emac_probe(struct o
+ 	       ndev->dev_addr[0], ndev->dev_addr[1], ndev->dev_addr[2],
+ 	       ndev->dev_addr[3], ndev->dev_addr[4], ndev->dev_addr[5]);
+ 
++	if (dev->phy_mode == PHY_MODE_SGMII)
++		printk(KERN_NOTICE "%s: in SGMII mode\n", ndev->name);
++
+ 	if (dev->phy.address >= 0)
+ 		printk("%s: found %s PHY (0x%02x)\n", ndev->name,
+ 		       dev->phy.def->name, dev->phy.address);
+Index: linux-2.6.18/drivers/net/ibm_newemac/core.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/ibm_newemac/core.h
++++ linux-2.6.18/drivers/net/ibm_newemac/core.h
+@@ -190,6 +190,9 @@ struct emac_instance {
+ 	struct work_struct		link_work;
+ 	int				link_polling;
+ 
++	/* GPCS PHY infos */
++	u32				gpcs_address;
++
+ 	/* Shared MDIO if any */
+ 	u32				mdio_ph;
+ 	struct of_device		*mdio_dev;
+@@ -317,6 +320,10 @@ struct emac_instance {
+  * The 405EX and 460EX contain the EMAC4SYNC core
+  */
+ #define EMAC_FTR_EMAC4SYNC		0x00000200
++/*
++ * Set if we need phy clock workaround for 460ex or 460gt
++ */
++#define EMAC_FTR_460EX_PHY_CLK_FIX	0x00000400
+ 
+ 
+ /* Right now, we don't quite handle the always/possible masks on the
+@@ -344,6 +351,7 @@ enum {
+ #ifdef CONFIG_IBM_NEW_EMAC_NO_FLOW_CTRL
+ 	    EMAC_FTR_NO_FLOW_CONTROL_40x |
+ #endif
++	EMAC_FTR_460EX_PHY_CLK_FIX |
+ 	EMAC_FTR_440EP_PHY_CLK_FIX,
+ };
+ 
+Index: linux-2.6.18/drivers/net/ibm_newemac/phy.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/ibm_newemac/phy.c
++++ linux-2.6.18/drivers/net/ibm_newemac/phy.c
+@@ -38,6 +38,16 @@ static inline void phy_write(struct mii_
+ 	phy->mdio_write(phy->dev, phy->address, reg, val);
+ }
+ 
++static inline int gpcs_phy_read(struct mii_phy *phy, int reg)
++{
++	return phy->mdio_read(phy->dev, phy->gpcs_address, reg);
++}
++
++static inline void gpcs_phy_write(struct mii_phy *phy, int reg, int val)
++{
++	phy->mdio_write(phy->dev, phy->gpcs_address, reg, val);
++}
++
+ int emac_mii_reset_phy(struct mii_phy *phy)
+ {
+ 	int val;
+@@ -62,6 +72,37 @@ int emac_mii_reset_phy(struct mii_phy *p
+ 	return limit <= 0;
+ }
+ 
++int emac_mii_reset_gpcs(struct mii_phy *phy)
++{
++	int val;
++	int limit = 10000;
++
++	val = gpcs_phy_read(phy, MII_BMCR);
++	val &= ~(BMCR_ISOLATE | BMCR_ANENABLE);
++	val |= BMCR_RESET;
++	gpcs_phy_write(phy, MII_BMCR, val);
++
++	udelay(300);
++
++	while (limit--) {
++		val = gpcs_phy_read(phy, MII_BMCR);
++		if (val >= 0 && (val & BMCR_RESET) == 0)
++			break;
++		udelay(10);
++	}
++	if ((val & BMCR_ISOLATE) && limit > 0)
++		gpcs_phy_write(phy, MII_BMCR, val & ~BMCR_ISOLATE);
++
++	if (limit > 0 && phy->mode == PHY_MODE_SGMII) {
++		/* Configure GPCS interface to recommended setting for SGMII */
++		gpcs_phy_write(phy, 0x04, 0x8120); /* AsymPause, FDX */
++		gpcs_phy_write(phy, 0x07, 0x2801); /* msg_pg, toggle */
++		gpcs_phy_write(phy, 0x00, 0x0140); /* 1Gbps, FDX     */
++	}
++
++	return limit <= 0;
++}
++
+ static int genmii_setup_aneg(struct mii_phy *phy, u32 advertise)
+ {
+ 	int ctl, adv;
+@@ -332,6 +373,33 @@ static int m88e1111_init(struct mii_phy 
+ 	return  0;
+ }
+ 
++static int m88e1112_init(struct mii_phy *phy)
++{
++	/*
++	 * Marvell 88E1112 PHY needs to have the SGMII MAC
++	 * interace (page 2) properly configured to
++	 * communicate with the 460EX/GT GPCS interface.
++	 */
++
++	u16 reg_short;
++
++	pr_debug("%s: Marvell 88E1112 Ethernet\n", __func__);
++
++	/* Set access to Page 2 */
++	phy_write(phy, 0x16, 0x0002);
++
++	phy_write(phy, 0x00, 0x0040); /* 1Gbps */
++	reg_short = (u16)(phy_read(phy, 0x1a));
++	reg_short |= 0x8000; /* bypass Auto-Negotiation */
++	phy_write(phy, 0x1a, reg_short);
++	emac_mii_reset_phy(phy); /* reset MAC interface */
++
++	/* Reset access to Page 0 */
++	phy_write(phy, 0x16, 0x0000);
++
++	return  0;
++}
++
+ static int et1011c_init(struct mii_phy *phy)
+ {
+ 	u16 reg_short;
+@@ -384,11 +452,27 @@ static struct mii_phy_def m88e1111_phy_d
+ 	.ops		= &m88e1111_phy_ops,
+ };
+ 
++static struct mii_phy_ops m88e1112_phy_ops = {
++	.init		= m88e1112_init,
++	.setup_aneg	= genmii_setup_aneg,
++	.setup_forced	= genmii_setup_forced,
++	.poll_link	= genmii_poll_link,
++	.read_link	= genmii_read_link
++};
++
++static struct mii_phy_def m88e1112_phy_def = {
++	.phy_id		= 0x01410C90,
++	.phy_id_mask	= 0x0ffffff0,
++	.name		= "Marvell 88E1112 Ethernet",
++	.ops		= &m88e1112_phy_ops,
++};
++
+ static struct mii_phy_def *mii_phy_table[] = {
+ 	&et1011c_phy_def,
+ 	&cis8201_phy_def,
+ 	&bcm5248_phy_def,
+ 	&m88e1111_phy_def,
++	&m88e1112_phy_def,
+ 	&genmii_phy_def,
+ 	NULL
+ };
+Index: linux-2.6.18/drivers/net/ibm_newemac/phy.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/ibm_newemac/phy.h
++++ linux-2.6.18/drivers/net/ibm_newemac/phy.h
+@@ -57,6 +57,7 @@ struct mii_phy {
+ 				   or determined automaticaly */
+ 	int address;		/* PHY address */
+ 	int mode;		/* PHY mode */
++	int gpcs_address;	/* GPCS PHY address */
+ 
+ 	/* 1: autoneg enabled, 0: disabled */
+ 	int autoneg;
+@@ -81,5 +82,6 @@ struct mii_phy {
+  */
+ int emac_mii_phy_probe(struct mii_phy *phy, int address);
+ int emac_mii_reset_phy(struct mii_phy *phy);
++int emac_mii_reset_gpcs(struct mii_phy *phy);
+ 
+ #endif /* __IBM_NEWEMAC_PHY_H */
+Index: linux-2.6.18/mvl_patches/pro50-1941.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1941.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1941);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

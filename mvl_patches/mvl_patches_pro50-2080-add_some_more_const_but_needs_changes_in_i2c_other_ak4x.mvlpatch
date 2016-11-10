@@ -1,0 +1,493 @@
+#! /usr/bin/env bash
+# Patch: -add_some_more_const_but_needs_changes_in_i2c_other_ak4x
+# Date: Thu Feb 19 14:59:06 2009
+# Source: kernel.org
+# MR: 28687
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+# 
+# [ALSA] Add some more 'const', but needs changes in i2c/other/ak4*
+# 
+# Make data passed to ak4xxx_create 'const'.
+# Signed-of-by: Philipp Matthias Hahn <pmhahn@pmhahn.de>
+# 
+# Signed-off-by: Takashi Iwai <tiwai@suse.de>
+# Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+# 
+# commit 517400cbc75d0604bc34c1866dff7e55ca1be2b4
+# tree 43719d9a94cb0abb327bde3da78802b0ad8d8657
+# parent 32b47da03541f97e40f1af5488ef88250459f388
+# author Takashi Iwai <tiwai@suse.de> Mon, 29 Jan 2007 15:27:56 +0100
+# committer Jaroslav Kysela <perex@suse.cz> Fri, 09 Feb 2007 09:03:17 +0100
+# 
+#  include/sound/ak4114.h        |    2 +-
+#  include/sound/ak4117.h        |    2 +-
+#  include/sound/ak4xxx-adda.h   |    4 ++--
+#  sound/i2c/other/ak4114.c      |    2 +-
+#  sound/i2c/other/ak4117.c      |    2 +-
+#  sound/i2c/other/ak4xxx-adda.c |   15 ++++++++-------
+#  sound/pci/ice1712/juli.c      |    4 ++--
+#  sound/pci/ice1712/revo.c      |   14 +++++++-------
+#  8 files changed, 23 insertions(+), 22 deletions(-)
+# 
+
+PATCHNUM=2080
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 28687
+Type: Enhancement
+Disposition: local
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+
+[ALSA] Add some more 'const', but needs changes in i2c/other/ak4*
+
+Make data passed to ak4xxx_create 'const'.
+Signed-of-by: Philipp Matthias Hahn <pmhahn@pmhahn.de>
+
+Signed-off-by: Takashi Iwai <tiwai@suse.de>
+Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+
+commit 517400cbc75d0604bc34c1866dff7e55ca1be2b4
+tree 43719d9a94cb0abb327bde3da78802b0ad8d8657
+parent 32b47da03541f97e40f1af5488ef88250459f388
+author Takashi Iwai <tiwai@suse.de> Mon, 29 Jan 2007 15:27:56 +0100
+committer Jaroslav Kysela <perex@suse.cz> Fri, 09 Feb 2007 09:03:17 +0100
+
+ include/sound/ak4114.h        |    2 +-
+ include/sound/ak4117.h        |    2 +-
+ include/sound/ak4xxx-adda.h   |    4 ++--
+ mvl_patches/pro50-2080.c      |   16 ++++++++++++++++
+ sound/i2c/other/ak4114.c      |    2 +-
+ sound/i2c/other/ak4117.c      |    2 +-
+ sound/i2c/other/ak4xxx-adda.c |   15 ++++++++-------
+ sound/pci/ice1712/juli.c      |    4 ++--
+ sound/pci/ice1712/revo.c      |   14 +++++++-------
+ 9 files changed, 39 insertions(+), 22 deletions(-)
+
+diff --git a/include/sound/ak4114.h b/include/sound/ak4114.h
+index 85f49d4..c149d3b 100644
+Index: linux-2.6.18/include/sound/ak4114.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/ak4114.h
++++ linux-2.6.18/include/sound/ak4114.h
+@@ -189,7 +189,7 @@ struct ak4114 {
+ 
+ int snd_ak4114_create(struct snd_card *card,
+ 		      ak4114_read_t *read, ak4114_write_t *write,
+-		      unsigned char pgm[7], unsigned char txcsb[5],
++		      const unsigned char pgm[7], const unsigned char txcsb[5],
+ 		      void *private_data, struct ak4114 **r_ak4114);
+ void snd_ak4114_reg_write(struct ak4114 *ak4114, unsigned char reg, unsigned char mask, unsigned char val);
+ void snd_ak4114_reinit(struct ak4114 *ak4114);
+Index: linux-2.6.18/include/sound/ak4117.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/ak4117.h
++++ linux-2.6.18/include/sound/ak4117.h
+@@ -178,7 +178,7 @@ struct ak4117 {
+ };
+ 
+ int snd_ak4117_create(struct snd_card *card, ak4117_read_t *read, ak4117_write_t *write,
+-		      unsigned char pgm[5], void *private_data, struct ak4117 **r_ak4117);
++		      const unsigned char pgm[5], void *private_data, struct ak4117 **r_ak4117);
+ void snd_ak4117_reg_write(struct ak4117 *ak4117, unsigned char reg, unsigned char mask, unsigned char val);
+ void snd_ak4117_reinit(struct ak4117 *ak4117);
+ int snd_ak4117_build(struct ak4117 *ak4117, struct snd_pcm_substream *capture_substream);
+Index: linux-2.6.18/include/sound/ak4xxx-adda.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/ak4xxx-adda.h
++++ linux-2.6.18/include/sound/ak4xxx-adda.h
+@@ -71,8 +71,8 @@ struct snd_akm4xxx {
+ 	} type;
+ 
+ 	/* (array) information of combined codecs */
+-	struct snd_akm4xxx_dac_channel *dac_info;
+-	struct snd_akm4xxx_adc_channel *adc_info;
++	const struct snd_akm4xxx_dac_channel *dac_info;
++	const struct snd_akm4xxx_adc_channel *adc_info;
+ 
+ 	struct snd_ak4xxx_ops ops;
+ };
+Index: linux-2.6.18/sound/i2c/other/ak4114.c
+===================================================================
+--- linux-2.6.18.orig/sound/i2c/other/ak4114.c
++++ linux-2.6.18/sound/i2c/other/ak4114.c
+@@ -82,7 +82,7 @@ static int snd_ak4114_dev_free(struct sn
+ 
+ int snd_ak4114_create(struct snd_card *card,
+ 		      ak4114_read_t *read, ak4114_write_t *write,
+-		      unsigned char pgm[7], unsigned char txcsb[5],
++		      const unsigned char pgm[7], const unsigned char txcsb[5],
+ 		      void *private_data, struct ak4114 **r_ak4114)
+ {
+ 	struct ak4114 *chip;
+Index: linux-2.6.18/sound/i2c/other/ak4117.c
+===================================================================
+--- linux-2.6.18.orig/sound/i2c/other/ak4117.c
++++ linux-2.6.18/sound/i2c/other/ak4117.c
+@@ -74,7 +74,7 @@ static int snd_ak4117_dev_free(struct sn
+ }
+ 
+ int snd_ak4117_create(struct snd_card *card, ak4117_read_t *read, ak4117_write_t *write,
+-		      unsigned char pgm[5], void *private_data, struct ak4117 **r_ak4117)
++		      const unsigned char pgm[5], void *private_data, struct ak4117 **r_ak4117)
+ {
+ 	struct ak4117 *chip;
+ 	int err = 0;
+Index: linux-2.6.18/sound/i2c/other/ak4xxx-adda.c
+===================================================================
+--- linux-2.6.18.orig/sound/i2c/other/ak4xxx-adda.c
++++ linux-2.6.18/sound/i2c/other/ak4xxx-adda.c
+@@ -140,7 +140,7 @@ EXPORT_SYMBOL(snd_akm4xxx_reset);
+  * Used for AK4524 input/ouput attenuation, AK4528, and
+  * AK5365 input attenuation
+  */
+-static unsigned char vol_cvt_datt[128] = {
++static const unsigned char vol_cvt_datt[128] = {
+ 	0x00, 0x01, 0x01, 0x02, 0x02, 0x03, 0x03, 0x04,
+ 	0x04, 0x04, 0x04, 0x05, 0x05, 0x05, 0x06, 0x06,
+ 	0x06, 0x07, 0x07, 0x08, 0x08, 0x08, 0x09, 0x0a,
+@@ -184,7 +184,7 @@ void snd_akm4xxx_init(struct snd_akm4xxx
+ 		0x07, 0x00, /* 7: DAC right muted */
+ 		0xff, 0xff
+ 	};
+-	static unsigned char inits_ak4528[] = {
++	static const unsigned char inits_ak4528[] = {
+ 		0x00, 0x07, /* 0: all power up */
+ 		0x01, 0x00, /* 1: ADC/DAC reset */
+ 		0x02, 0x60, /* 2: 24bit I2S */
+@@ -194,7 +194,7 @@ void snd_akm4xxx_init(struct snd_akm4xxx
+ 		0x05, 0x00, /* 5: ADC right muted */
+ 		0xff, 0xff
+ 	};
+-	static unsigned char inits_ak4529[] = {
++	static const unsigned char inits_ak4529[] = {
+ 		0x09, 0x01, /* 9: ATS=0, RSTN=1 */
+ 		0x0a, 0x3f, /* A: all power up, no zero/overflow detection */
+ 		0x00, 0x0c, /* 0: TDM=0, 24bit I2S, SMUTE=0 */
+@@ -210,7 +210,7 @@ void snd_akm4xxx_init(struct snd_akm4xxx
+ 		0x08, 0x55, /* 8: deemphasis all off */
+ 		0xff, 0xff
+ 	};
+-	static unsigned char inits_ak4355[] = {
++	static const unsigned char inits_ak4355[] = {
+ 		0x01, 0x02, /* 1: reset and soft-mute */
+ 		0x00, 0x06, /* 0: mode3(i2s), disable auto-clock detect,
+ 			     * disable DZF, sharp roll-off, RSTN#=0 */
+@@ -227,7 +227,7 @@ void snd_akm4xxx_init(struct snd_akm4xxx
+ 		0x01, 0x01, /* 1: un-reset, unmute */
+ 		0xff, 0xff
+ 	};
+-	static unsigned char inits_ak4358[] = {
++	static const unsigned char inits_ak4358[] = {
+ 		0x01, 0x02, /* 1: reset and soft-mute */
+ 		0x00, 0x06, /* 0: mode3(i2s), disable auto-clock detect,
+ 			     * disable DZF, sharp roll-off, RSTN#=0 */
+@@ -246,7 +246,7 @@ void snd_akm4xxx_init(struct snd_akm4xxx
+ 		0x01, 0x01, /* 1: un-reset, unmute */
+ 		0xff, 0xff
+ 	};
+-	static unsigned char inits_ak4381[] = {
++	static const unsigned char inits_ak4381[] = {
+ 		0x00, 0x0c, /* 0: mode3(i2s), disable auto-clock detect */
+ 		0x01, 0x02, /* 1: de-emphasis off, normal speed,
+ 			     * sharp roll-off, DZF off */
+@@ -259,7 +259,8 @@ void snd_akm4xxx_init(struct snd_akm4xxx
+ 	};
+ 
+ 	int chip, num_chips;
+-	unsigned char *ptr, reg, data, *inits;
++	const unsigned char *ptr, *inits;
++	unsigned char reg, data;
+ 
+ 	memset(ak->images, 0, sizeof(ak->images));
+ 	memset(ak->volumes, 0, sizeof(ak->volumes));
+Index: linux-2.6.18/sound/pci/ice1712/juli.c
+===================================================================
+--- linux-2.6.18.orig/sound/pci/ice1712/juli.c
++++ linux-2.6.18/sound/pci/ice1712/juli.c
+@@ -146,7 +146,7 @@ static int __devinit juli_add_controls(s
+  */
+ static int __devinit juli_init(struct snd_ice1712 *ice)
+ {
+-	static unsigned char ak4114_init_vals[] = {
++	static const unsigned char ak4114_init_vals[] = {
+ 		/* AK4117_REG_PWRDN */	AK4114_RST | AK4114_PWN | AK4114_OCKS0 | AK4114_OCKS1,
+ 		/* AK4114_REQ_FORMAT */	AK4114_DIF_I24I2S,
+ 		/* AK4114_REG_IO0 */	AK4114_TX1E,
+@@ -154,7 +154,7 @@ static int __devinit juli_init(struct sn
+ 		/* AK4114_REG_INT0_MASK */ 0,
+ 		/* AK4114_REG_INT1_MASK */ 0
+ 	};
+-	static unsigned char ak4114_init_txcsb[] = {
++	static const unsigned char ak4114_init_txcsb[] = {
+ 		0x41, 0x02, 0x2c, 0x00, 0x00
+ 	};
+ 	int err;
+Index: linux-2.6.18/sound/pci/ice1712/revo.c
+===================================================================
+--- linux-2.6.18.orig/sound/pci/ice1712/revo.c
++++ linux-2.6.18/sound/pci/ice1712/revo.c
+@@ -185,18 +185,18 @@ static int revo51_i2c_init(struct snd_ic
+ 
+ #define AK_DAC(xname,xch) { .name = xname, .num_channels = xch }
+ 
+-static struct snd_akm4xxx_dac_channel revo71_front[] = {
++static const struct snd_akm4xxx_dac_channel revo71_front[] = {
+ 	AK_DAC("PCM Playback Volume", 2)
+ };
+ 
+-static struct snd_akm4xxx_dac_channel revo71_surround[] = {
++static const struct snd_akm4xxx_dac_channel revo71_surround[] = {
+ 	AK_DAC("PCM Center Playback Volume", 1),
+ 	AK_DAC("PCM LFE Playback Volume", 1),
+ 	AK_DAC("PCM Side Playback Volume", 2),
+ 	AK_DAC("PCM Rear Playback Volume", 2),
+ };
+ 
+-static struct snd_akm4xxx_dac_channel revo51_dac[] = {
++static const struct snd_akm4xxx_dac_channel revo51_dac[] = {
+ 	AK_DAC("PCM Playback Volume", 2),
+ 	AK_DAC("PCM Center Playback Volume", 1),
+ 	AK_DAC("PCM LFE Playback Volume", 1),
+@@ -210,7 +210,7 @@ static const char *revo51_adc_input_name
+ 	NULL
+ };
+ 
+-static struct snd_akm4xxx_adc_channel revo51_adc[] = {
++static const struct snd_akm4xxx_adc_channel revo51_adc[] = {
+ 	{
+ 		.name = "PCM Capture Volume",
+ 		.switch_name = "PCM Capture Switch",
+@@ -219,7 +219,7 @@ static struct snd_akm4xxx_adc_channel re
+ 	},
+ };
+ 
+-static struct snd_akm4xxx akm_revo_front __devinitdata = {
++static const struct snd_akm4xxx akm_revo_front __devinitdata = {
+ 	.type = SND_AK4381,
+ 	.num_dacs = 2,
+ 	.ops = {
+@@ -320,11 +320,11 @@ static void ap192_set_rate_val(struct sn
+ #endif
+ }
+ 
+-static struct snd_akm4xxx_dac_channel ap192_dac[] = {
++static const struct snd_akm4xxx_dac_channel ap192_dac[] = {
+ 	AK_DAC("PCM Playback Volume", 2)
+ };
+ 
+-static struct snd_akm4xxx akm_ap192 __devinitdata = {
++static const struct snd_akm4xxx akm_ap192 __devinitdata = {
+ 	.type = SND_AK4358,
+ 	.num_dacs = 2,
+ 	.ops = {
+Index: linux-2.6.18/mvl_patches/pro50-2080.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2080.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2080);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

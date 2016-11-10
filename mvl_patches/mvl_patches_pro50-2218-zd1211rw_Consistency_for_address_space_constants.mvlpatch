@@ -1,0 +1,493 @@
+#! /usr/bin/env bash
+# Patch: -zd1211rw_Consistency_for_address_space_constants
+# Date: Thu Feb 19 15:08:52 2009
+# MR: 29923
+# From 5fd726741c49a612189f716229c90158de4b5f76 Mon Sep 17 00:00:00 2001
+# From: Daniel Drake <dsd@gentoo.org>
+# Date: Tue, 12 Dec 2006 01:25:52 +0000
+# Subject: [PATCH] [PATCH] zd1211rw: Consistency for address space constants
+# 
+# The zd1211rw address space has confused me once too many times. This
+# patch introduces the following naming notation:
+# 
+# Memory space is split into segments (cr, fw, eeprom) and segments may
+# contain components (e.g. boot code inside eeprom). These names are
+# arbitrary and only for the description below:
+# 
+# x_START: Absolute address of segment start
+# (previously these were named such as CR_BASE_OFFSET, but they weren't
+# really offsets unless you were considering them as an offset to 0)
+# 
+# x_LEN: Segment length
+# 
+# x_y_LEN: Length of component y of segment x
+# 
+# x_y_OFFSET: Relative address of component y into segment x. The absolute
+# address for this component is (x_START + x_y_OFFSET)
+# 
+# I also renamed EEPROM registers to EEPROM data. These 'registers' can't
+# be written to using standard I/O and really represent predefined data
+# from the vendor.
+# 
+# Signed-off-by: Daniel Drake <dsd@gentoo.org>
+# Signed-off-by: John W. Linville <linville@tuxdriver.com>
+# (cherry picked from commit ee30276774451d657407855d95d9393ee8bc0bac)
+# 
+
+PATCHNUM=2218
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From 5fd726741c49a612189f716229c90158de4b5f76 Mon Sep 17 00:00:00 2001
+From: Daniel Drake <dsd@gentoo.org>
+Date: Tue, 12 Dec 2006 01:25:52 +0000
+Subject: [PATCH] [PATCH] zd1211rw: Consistency for address space constants
+
+The zd1211rw address space has confused me once too many times. This
+patch introduces the following naming notation:
+
+Memory space is split into segments (cr, fw, eeprom) and segments may
+contain components (e.g. boot code inside eeprom). These names are
+arbitrary and only for the description below:
+
+x_START: Absolute address of segment start
+(previously these were named such as CR_BASE_OFFSET, but they weren't
+really offsets unless you were considering them as an offset to 0)
+
+x_LEN: Segment length
+
+x_y_LEN: Length of component y of segment x
+
+x_y_OFFSET: Relative address of component y into segment x. The absolute
+address for this component is (x_START + x_y_OFFSET)
+
+I also renamed EEPROM registers to EEPROM data. These 'registers' can't
+be written to using standard I/O and really represent predefined data
+from the vendor.
+
+Signed-off-by: Daniel Drake <dsd@gentoo.org>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+(cherry picked from commit ee30276774451d657407855d95d9393ee8bc0bac)
+
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_chip.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+@@ -594,49 +594,49 @@
+ /*
+  * Upper 16 bit contains the regulatory domain.
+  */
+-#define E2P_SUBID		E2P_REG(0x00)
+-#define E2P_POD			E2P_REG(0x02)
+-#define E2P_MAC_ADDR_P1		E2P_REG(0x04)
+-#define E2P_MAC_ADDR_P2		E2P_REG(0x06)
+-#define E2P_PWR_CAL_VALUE1	E2P_REG(0x08)
+-#define E2P_PWR_CAL_VALUE2	E2P_REG(0x0a)
+-#define E2P_PWR_CAL_VALUE3	E2P_REG(0x0c)
+-#define E2P_PWR_CAL_VALUE4      E2P_REG(0x0e)
+-#define E2P_PWR_INT_VALUE1	E2P_REG(0x10)
+-#define E2P_PWR_INT_VALUE2	E2P_REG(0x12)
+-#define E2P_PWR_INT_VALUE3	E2P_REG(0x14)
+-#define E2P_PWR_INT_VALUE4	E2P_REG(0x16)
++#define E2P_SUBID		E2P_DATA(0x00)
++#define E2P_POD			E2P_DATA(0x02)
++#define E2P_MAC_ADDR_P1		E2P_DATA(0x04)
++#define E2P_MAC_ADDR_P2		E2P_DATA(0x06)
++#define E2P_PWR_CAL_VALUE1	E2P_DATA(0x08)
++#define E2P_PWR_CAL_VALUE2	E2P_DATA(0x0a)
++#define E2P_PWR_CAL_VALUE3	E2P_DATA(0x0c)
++#define E2P_PWR_CAL_VALUE4      E2P_DATA(0x0e)
++#define E2P_PWR_INT_VALUE1	E2P_DATA(0x10)
++#define E2P_PWR_INT_VALUE2	E2P_DATA(0x12)
++#define E2P_PWR_INT_VALUE3	E2P_DATA(0x14)
++#define E2P_PWR_INT_VALUE4	E2P_DATA(0x16)
+ 
+ /* Contains a bit for each allowed channel. It gives for Europe (ETSI 0x30)
+  * also only 11 channels. */
+-#define E2P_ALLOWED_CHANNEL	E2P_REG(0x18)
++#define E2P_ALLOWED_CHANNEL	E2P_DATA(0x18)
+ 
+-#define E2P_PHY_REG		E2P_REG(0x1a)
+-#define E2P_DEVICE_VER		E2P_REG(0x20)
+-#define E2P_36M_CAL_VALUE1	E2P_REG(0x28)
+-#define E2P_36M_CAL_VALUE2      E2P_REG(0x2a)
+-#define E2P_36M_CAL_VALUE3      E2P_REG(0x2c)
+-#define E2P_36M_CAL_VALUE4	E2P_REG(0x2e)
+-#define E2P_11A_INT_VALUE1	E2P_REG(0x30)
+-#define E2P_11A_INT_VALUE2	E2P_REG(0x32)
+-#define E2P_11A_INT_VALUE3	E2P_REG(0x34)
+-#define E2P_11A_INT_VALUE4	E2P_REG(0x36)
+-#define E2P_48M_CAL_VALUE1	E2P_REG(0x38)
+-#define E2P_48M_CAL_VALUE2	E2P_REG(0x3a)
+-#define E2P_48M_CAL_VALUE3	E2P_REG(0x3c)
+-#define E2P_48M_CAL_VALUE4	E2P_REG(0x3e)
+-#define E2P_48M_INT_VALUE1	E2P_REG(0x40)
+-#define E2P_48M_INT_VALUE2	E2P_REG(0x42)
+-#define E2P_48M_INT_VALUE3	E2P_REG(0x44)
+-#define E2P_48M_INT_VALUE4	E2P_REG(0x46)
+-#define E2P_54M_CAL_VALUE1	E2P_REG(0x48)	/* ??? */
+-#define E2P_54M_CAL_VALUE2	E2P_REG(0x4a)
+-#define E2P_54M_CAL_VALUE3	E2P_REG(0x4c)
+-#define E2P_54M_CAL_VALUE4	E2P_REG(0x4e)
+-#define E2P_54M_INT_VALUE1	E2P_REG(0x50)
+-#define E2P_54M_INT_VALUE2	E2P_REG(0x52)
+-#define E2P_54M_INT_VALUE3	E2P_REG(0x54)
+-#define E2P_54M_INT_VALUE4	E2P_REG(0x56)
++#define E2P_PHY_REG		E2P_DATA(0x1a)
++#define E2P_DEVICE_VER		E2P_DATA(0x20)
++#define E2P_36M_CAL_VALUE1	E2P_DATA(0x28)
++#define E2P_36M_CAL_VALUE2      E2P_DATA(0x2a)
++#define E2P_36M_CAL_VALUE3      E2P_DATA(0x2c)
++#define E2P_36M_CAL_VALUE4	E2P_DATA(0x2e)
++#define E2P_11A_INT_VALUE1	E2P_DATA(0x30)
++#define E2P_11A_INT_VALUE2	E2P_DATA(0x32)
++#define E2P_11A_INT_VALUE3	E2P_DATA(0x34)
++#define E2P_11A_INT_VALUE4	E2P_DATA(0x36)
++#define E2P_48M_CAL_VALUE1	E2P_DATA(0x38)
++#define E2P_48M_CAL_VALUE2	E2P_DATA(0x3a)
++#define E2P_48M_CAL_VALUE3	E2P_DATA(0x3c)
++#define E2P_48M_CAL_VALUE4	E2P_DATA(0x3e)
++#define E2P_48M_INT_VALUE1	E2P_DATA(0x40)
++#define E2P_48M_INT_VALUE2	E2P_DATA(0x42)
++#define E2P_48M_INT_VALUE3	E2P_DATA(0x44)
++#define E2P_48M_INT_VALUE4	E2P_DATA(0x46)
++#define E2P_54M_CAL_VALUE1	E2P_DATA(0x48)	/* ??? */
++#define E2P_54M_CAL_VALUE2	E2P_DATA(0x4a)
++#define E2P_54M_CAL_VALUE3	E2P_DATA(0x4c)
++#define E2P_54M_CAL_VALUE4	E2P_DATA(0x4e)
++#define E2P_54M_INT_VALUE1	E2P_DATA(0x50)
++#define E2P_54M_INT_VALUE2	E2P_DATA(0x52)
++#define E2P_54M_INT_VALUE3	E2P_DATA(0x54)
++#define E2P_54M_INT_VALUE4	E2P_DATA(0x56)
+ 
+ /* All 16 bit values */
+ #define FW_FIRMWARE_VER         FW_REG(0)
+@@ -653,20 +653,33 @@
+ /* 0x2 - link led on? */
+ 
+ enum {
+-	CR_BASE_OFFSET			= 0x9000,
+-	FW_START_OFFSET			= 0xee00,
+-	FW_BASE_ADDR_OFFSET		= FW_START_OFFSET + 0x1d,
+-	EEPROM_START_OFFSET		= 0xf800,
+-	EEPROM_SIZE			= 0x800, /* words */
+-	LOAD_CODE_SIZE			= 0xe, /* words */
+-	LOAD_VECT_SIZE			= 0x10000 - 0xfff7, /* words */
+-	EEPROM_REGS_OFFSET		= LOAD_CODE_SIZE + LOAD_VECT_SIZE,
+-	EEPROM_REGS_SIZE		= 0x7e, /* words */
+-	E2P_BASE_OFFSET			= EEPROM_START_OFFSET +
+-		                          EEPROM_REGS_OFFSET,
+-};
++	/* CONTROL REGISTERS */
++	CR_START			= 0x9000,
++
++	/* FIRMWARE */
++	FW_START			= 0xee00,
+ 
+-#define FW_REG_TABLE_ADDR	USB_ADDR(FW_START_OFFSET + 0x1d)
++	/* The word at this offset contains the base address of the FW_REG
++	 * registers */
++	FW_REGS_ADDR_OFFSET		= 0x1d,
++
++
++	/* EEPROM */
++	E2P_START			= 0xf800,
++	E2P_LEN				= 0x800,
++
++	/* EEPROM layout */
++	E2P_LOAD_CODE_LEN		= 0xe,		/* base 0xf800 */
++	E2P_LOAD_VECT_LEN		= 0x9,		/* base 0xf80e */
++	/* E2P_DATA indexes into this */
++	E2P_DATA_LEN			= 0x7e,		/* base 0xf817 */
++	E2P_BOOT_CODE_LEN		= 0x760,	/* base 0xf895 */
++	E2P_INTR_VECT_LEN		= 0xb,		/* base 0xfff5 */
++
++	/* Some precomputed offsets into the EEPROM */
++	E2P_DATA_OFFSET			= E2P_LOAD_CODE_LEN + E2P_LOAD_VECT_LEN,
++	E2P_BOOT_CODE_OFFSET		= E2P_DATA_OFFSET + E2P_DATA_LEN,
++};
+ 
+ enum {
+ 	/* indices for ofdm_cal_values */
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_types.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_types.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_types.h
+@@ -55,7 +55,7 @@ enum {
+ #define ZD_NULL_ADDR    ((zd_addr_t)0)
+ #define USB_REG(offset)  ZD_ADDR(USB_BASE, offset)	/* word addressing */
+ #define CTL_REG(offset)  ZD_ADDR(CR_BASE, offset)	/* byte addressing */
+-#define E2P_REG(offset)  ZD_ADDR(E2P_BASE, offset)	/* word addressing */
++#define E2P_DATA(offset)  ZD_ADDR(E2P_BASE, offset)	/* word addressing */
+ #define FW_REG(offset)   ZD_ADDR(FW_BASE, offset)	/* word addressing */
+ 
+ static inline zd_addr_t zd_inc_word(zd_addr_t addr)
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_usb.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_usb.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_usb.c
+@@ -152,10 +152,10 @@ static u16 usb_addr(struct zd_usb *usb, 
+ 
+ 	switch (base) {
+ 	case CR_BASE:
+-		offset += CR_BASE_OFFSET;
++		offset += CR_START;
+ 		break;
+ 	case E2P_BASE:
+-		offset += E2P_BASE_OFFSET;
++		offset += E2P_START + E2P_DATA_OFFSET;
+ 		break;
+ 	case FW_BASE:
+ 		offset += usb->fw_base_offset;
+@@ -297,14 +297,13 @@ static int handle_version_mismatch(struc
+ 	if (r)
+ 		goto error;
+ 
+-	r = upload_code(udev, ur_fw->data, ur_fw->size, FW_START_OFFSET,
+-		REBOOT);
++	r = upload_code(udev, ur_fw->data, ur_fw->size, FW_START, REBOOT);
+ 	if (r)
+ 		goto error;
+ 
+-	offset = ((EEPROM_REGS_OFFSET + EEPROM_REGS_SIZE) * sizeof(u16));
++	offset = (E2P_BOOT_CODE_OFFSET * sizeof(u16));
+ 	r = upload_code(udev, ub_fw->data + offset, ub_fw->size - offset,
+-		E2P_BASE_OFFSET + EEPROM_REGS_SIZE, REBOOT);
++		E2P_START + E2P_BOOT_CODE_OFFSET, REBOOT);
+ 
+ 	/* At this point, the vendor driver downloads the whole firmware
+ 	 * image, hacks around with version IDs, and uploads it again,
+@@ -333,7 +332,7 @@ static int upload_firmware(struct usb_de
+ 	if (r)
+ 		goto error;
+ 
+-	fw_bcdDevice = get_word(ub_fw->data, EEPROM_REGS_OFFSET);
++	fw_bcdDevice = get_word(ub_fw->data, E2P_DATA_OFFSET);
+ 
+ 	if (fw_bcdDevice != bcdDevice) {
+ 		dev_info(&udev->dev,
+@@ -359,8 +358,7 @@ static int upload_firmware(struct usb_de
+ 	if (r)
+ 		goto error;
+ 
+-	r = upload_code(udev, uph_fw->data, uph_fw->size, FW_START_OFFSET,
+-		        REBOOT);
++	r = upload_code(udev, uph_fw->data, uph_fw->size, FW_START, REBOOT);
+ 	if (r) {
+ 		dev_err(&udev->dev,
+ 			"Could not upload firmware code uph. Error number %d\n",
+@@ -899,7 +897,7 @@ int zd_usb_init_hw(struct zd_usb *usb)
+ 
+ 	ZD_ASSERT(mutex_is_locked(&chip->mutex));
+ 	r = zd_ioread16_locked(chip, &usb->fw_base_offset,
+-		        USB_REG((u16)FW_BASE_ADDR_OFFSET));
++		        USB_REG(FW_START + FW_REGS_ADDR_OFFSET));
+ 	if (r)
+ 		return r;
+ 	dev_dbg_f(zd_usb_dev(usb), "fw_base_offset: %#06hx\n",
+Index: linux-2.6.18/mvl_patches/pro50-2218.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2218.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2218);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

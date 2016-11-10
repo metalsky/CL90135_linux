@@ -1,0 +1,4001 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_dma
+# Date: Fri Sep 19 13:59:54 2008
+# Source: MontaVista Software, Inc.
+# MR: 27505
+# Type: Enhancement
+# Disposition: merged from Pro 4.0 DaVinci.
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Update DaVinci DMA for multi-platform support.
+# 
+#  arch/arm/mach-davinci/dma.c             | 2638 +++++++++++++++++++++++++-------
+#  include/asm-arm/arch-davinci/edma.h     |  564 +++++-
+#  include/asm-arm/arch-davinci/hardware.h |   42 
+#  sound/soc/davinci/davinci-pcm.c         |    4 
+#  4 files changed, 2616 insertions(+), 632 deletions(-)
+# 
+
+PATCHNUM=1564
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 27505
+Type: Enhancement
+Disposition: merged from Pro 4.0 DaVinci.
+Signed-off-by: Steve Chen <schen@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Update DaVinci DMA for multi-platform support.
+
+ arch/arm/mach-davinci/dma.c             | 2638 +++++++++++++++++++++++++-------
+ include/asm-arm/arch-davinci/edma.h     |  564 +++++-
+ include/asm-arm/arch-davinci/hardware.h |   42 
+ mvl_patches/pro50-1564.c                |   16 
+ sound/soc/davinci/davinci-pcm.c         |    4 
+ 5 files changed, 2632 insertions(+), 632 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/dma.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/dma.c
++++ linux-2.6.18/arch/arm/mach-davinci/dma.c
+@@ -1,9 +1,8 @@
+ /*
+-
+  * TI DaVinci DMA Support
+  *
+  * Copyright (C) 2006 Texas Instruments.
+- * Copyright (c) 2007, MontaVista Software, Inc. <source@mvista.com>
++ * Copyright (c) 2007-2008, MontaVista Software, Inc. <source@mvista.com>
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -12,32 +11,278 @@
+  */
+ 
+ #include <linux/module.h>
++#include <linux/sched.h>
+ #include <linux/init.h>
+ #include <linux/kernel.h>
+ #include <linux/interrupt.h>
++#include <linux/spinlock.h>
++
+ #include <linux/io.h>
+ 
+-#include <asm/hardware.h>
+-#include <asm/dma.h>
++#include <asm/arch/hardware.h>
++#include <asm/arch/memory.h>
++#include <asm/arch/irqs.h>
++#include <asm/arch/edma.h>
++#include <asm/arch/cpu.h>
++
++struct edma_map {
++	int param1;
++	int param2;
++};
++
++static unsigned int *edma_channels_arm;
++static unsigned char *qdma_channels_arm;
++static unsigned int *param_entry_arm;
++static unsigned int *tcc_arm;
++static unsigned int *param_entry_reserved;
++unsigned int davinci_cpu_index;
++
++const unsigned int davinci_qdma_ch_map[] = {
++	EDMA_DM644X_NUM_PARAMENTRY,
++	EDMA_DM646X_NUM_PARAMENTRY,
++	EDMA_DM355_NUM_PARAMENTRY,
++};
++
++/* SoC specific EDMA3 hardware information, should be provided for a new SoC */
++
++/* DaVinci DM644x specific EDMA3 information */
++
++/*
++ * Each bit field of the elements below indicate the corresponding DMA channel
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int dm644x_edma_channels_arm[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	0xFFFFFFFFu,  0xFFFFFFFFu
++};
++
++/*
++ * Each bit field of the elements below indicate the corresponding QDMA channel
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned char dm644x_qdma_channels_arm[EDMA_NUM_QDMA_CHAN_DWRDS] = {
++	0x00000010u
++};
++
++/*
++ *  Each bit field of the elements below indicate corresponding PaRAM entry
++ *  availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int dm644x_param_entry_arm[] = {
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu
++};
++
++/*
++ *  Each bit field of the elements below indicate corresponding TCC
++ *  availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int dm644x_tcc_arm[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	0xFFFFFFFFu, 0xFFFFFFFFu
++};
++
++/*
++ *  Each bit field of the elements below indicate whether the corresponding
++ *  PaRAM entry is available for ANY DMA channel or not.
++ *   1- reserved, 0 - not
++ *   (First 64 PaRAM Sets are reserved for 64 DMA Channels)
++ */
++static unsigned int dm644x_param_entry_reserved[] = {
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0x0u, 0x0u
++};
++
++static struct edma_map dm644x_queue_priority_mapping[EDMA_DM644X_NUM_EVQUE] = {
++	/* {Event Queue No, Priority} */
++	{0, 0},
++	{1, 1}
++};
++
++static struct edma_map dm644x_queue_watermark_level[EDMA_DM644X_NUM_EVQUE] = {
++	/* {Event Queue No, Watermark Level} */
++	{0, 16},
++	{1, 16}
++};
++
++static struct edma_map dm644x_queue_tc_mapping[EDMA_DM644X_NUM_EVQUE] = {
++	/* {Event Queue No, TC no} */
++	{0, 0},
++	{1, 1}
++};
++
++/* DaVinci DM646x specific EDMA3 information */
++
++/*
++ * Each bit field of the elements below indicate the corresponding DMA channel
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int dm646x_edma_channels_arm[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	0x30FF1FF0u,  0x00C007FFu
++};
++
++/*
++ * Each bit field of the elements below indicate the corresponding QDMA channel
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned char dm646x_qdma_channels_arm[EDMA_NUM_QDMA_CHAN_DWRDS] = {
++	0x00000080
++};
++
++/*
++ *  Each bit field of the elements below indicate corresponding PaRAM entry
++ *  availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int dm646x_param_entry_arm[] = {
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
++	0x0u, 0x0u, 0x0u, 0x0u,
++	0x0u, 0x0u, 0x0u, 0x0u,
++	0x0u, 0x0u, 0x0u, 0x0u
++};
++
++/*
++ *  Each bit field of the elements below indicate corresponding TCC
++ *  availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int dm646x_tcc_arm[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	0x30FF1FF0u, 0x00C007FFu
++};
++
++/*
++ *  Each bit field of the elements below indicate whether the corresponding
++ *  PaRAM entry is available for ANY DMA channel or not.
++ *   1- reserved, 0 - not
++ *   (First 64 PaRAM Sets are reserved for 64 DMA Channels)
++ */
++static unsigned int dm646x_param_entry_reserved[] = {
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0x0u, 0x0u,
++	0x0u, 0x0u, 0x0u, 0x0u,
++	0x0u, 0x0u, 0x0u, 0x0u,
++	0x0u, 0x0u, 0x0u, 0x0u
++};
++
++static struct edma_map dm646x_queue_priority_mapping[EDMA_DM646X_NUM_EVQUE] = {
++	/* {Event Queue No, Priority} */
++	{0, 0},
++	{1, 1},
++	{2, 2},
++	{3, 3}
++};
++
++static struct edma_map dm646x_queue_watermark_level[EDMA_DM646X_NUM_EVQUE] = {
++	/* {Event Queue No, Watermark Level} */
++	{0, 16},
++	{1, 16},
++	{2, 16},
++	{3, 16}
++};
++
++static struct edma_map dm646x_queue_tc_mapping[EDMA_DM646X_NUM_EVQUE] = {
++	/* {Event Queue No, TC no} */
++	{0, 0},
++	{1, 1},
++	{2, 2},
++	{3, 3},
++};
++
++/* DaVinci DM355 specific EDMA3 information */
++
++/*
++ * Each bit field of the elements below indicate the corresponding DMA channel
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int dm355_edma_channels_arm[] = {
++	0xFFFFFFFFu,
++	0x00000000u,
++};
++
++/*
++ * Each bit field of the elements below indicate the corresponding QDMA channel
++ * availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned char dm355_qdma_channels_arm[EDMA_NUM_QDMA_CHAN_DWRDS] = {
++	0x000000FFu
++};
++
++/*
++ *  Each bit field of the elements below indicate corresponding PaRAM entry
++ *  availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int dm355_param_entry_arm[] = {
++	0xFFFFFFFFu, 0x00000000u, 0x00000000u, 0xFFFFFFC0u,
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
++};
+ 
+-#define DAVINCI_EDMA_DEBUG 0
+-#if DAVINCI_EDMA_DEBUG
+-#define DBG(x...) printk(KERN_DEBUG x)
+-#else
+-#define DBG(x...)
+-#endif
+-
+-static struct davinci_dma_lch {
+-	int dev_id;
+-	int in_use;
+-	int param_no;
+-	int tcc;
+-} dma_chan[EDMA_NUM_PARAMENTRY];
++/*
++ *  Each bit field of the elements below indicate corresponding TCC
++ *  availability on EDMA_MASTER_SHADOW_REGION side events
++ */
++static unsigned int dm355_tcc_arm[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	0xFFFFFFFFu, 0xFFFFFFFFu
++};
++
++/*
++ *  Each bit field of the elements below indicate whether the corresponding
++ *  PaRAM entry is available for ANY DMA channel or not.
++ *   1- reserved, 0 - not
++ *   (First 64 PaRAM Sets are reserved for 64 DMA Channels)
++ */
++static unsigned int dm355_param_entry_reserved[] = {
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0x0u, 0x0u,
++	0x0u, 0x0u, 0x0u, 0x0u,
++	0x0u, 0x0u, 0x0u, 0x0u,
++	0x0u, 0x0u, 0x0u, 0x0u
++};
++
++static struct edma_map dm355_queue_priority_mapping[] = {
++	/* {Event Queue No, Priority} */
++	{0, 0},
++	{1, 1},
++	{2, 1},
++	{3, 1},
++	{4, 1},
++	{5, 1},
++	{6, 1},
++	{7, 1},
++};
++
++static struct edma_map dm355_queue_watermark_level[] = {
++	/* {Event Queue No, Watermark Level} */
++	{0, 16},
++	{1, 16},
++	{2, 16},
++	{3, 16},
++	{4, 16},
++	{5, 16},
++	{6, 16},
++	{7, 16},
++};
++
++static struct edma_map dm355_queue_tc_mapping[] = {
++	/* {Event Queue No, TC no} */
++	{0, 0},
++	{1, 1},
++	{2, 2},
++	{3, 3},
++	{4, 4},
++	{5, 5},
++	{6, 6},
++	{7, 7},
++};
++
++static spinlock_t dma_chan_lock;
++
++/*
++ * Edma Driver Internal Data Structures
++ */
+ 
++/*
++ * Array to maintain the Callback details registered
++ * against a particular TCC. Used to call the callback
++ * functions linked to the particular channel.
++ */
+ static struct davinci_dma_lch_intr {
+ 	void (*callback) (int lch, u16 ch_status, void *data);
+ 	void *data;
+-} intr_data[EDMA_NUM_DMACH];
++} intr_data[EDMA_NUM_TCC];
+ 
+ #define dma_handle_cb(lch, status)	do { \
+ 	if (intr_data[lch].callback) \
+@@ -45,169 +290,664 @@ static struct davinci_dma_lch_intr {
+ } while (0)
+ 
+ /*
+- * Each bit field of the elements bellow indicate the corresponding
+- * (EDMA + QDMA) channel availability on arm side events
++ * Resources bound to a Logical Channel (DMA/QDMA/LINK)
++ *
++ * When a request for a channel is made, the resources PaRAM Set and TCC
++ * get bound to that channel. This information is needed internally by the
++ * driver when a request is made to free the channel (Since it is the
++ * responsibility of the driver to free up the channel-associated resources
++ * from the Resource Manager layer).
+  */
+-static unsigned int dma2arm_map[3] = {
+-	0xffffffff, 0xffffffff, 0x0
++struct edma3_ch_bound_res {
++	/* PaRAM Set number associated with the particular channel */
++	unsigned int param_id;
++	/* TCC associated with the particular channel */
++	unsigned int tcc;
+ };
+ 
++static struct edma3_ch_bound_res *dma_ch_bound_res;
++static int edma_max_logical_ch;
++static unsigned int davinci_edma_num_evtq;
++static unsigned int davinci_edma_chmap_exist;
++static unsigned int davinci_edma_num_tc;
++static unsigned int davinci_edma_num_param;
++static unsigned int *davinci_edmatc_base_addrs;
++static unsigned int *edma2event_map;
++
+ /*
+- * Each bit field of the elements bellow indicate corresponding PARAM entry
+- * availibility on arm side events
++ * Mapping of DMA channels to Hardware Events from
++ * various peripherals, which use EDMA for data transfer.
++ * All channels need not be mapped, some can be free also.
+  */
+-static unsigned int param2arm_map[] = {
+-	0xffffffff, 0xffffffff, 0x0000ffff, 0xffffffff,
++static unsigned int dm644x_dma_ch_hw_event_map[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	DM644X_DMACH2EVENT_MAP0,
++	DM644X_DMACH2EVENT_MAP1
+ };
+ 
+-static int evtqueue_tc_map[EDMA_NUM_EVQUE][2] = {
+-	/* {event queue no, TC no} */
+-	{0, 0},
+-	{1, 1},
++static unsigned int dm355_dma_ch_hw_event_map[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	DM355_DMACH2EVENT_MAP0,
++	DM355_DMACH2EVENT_MAP1
+ };
+ 
+-static int evtqueue_priority_map[EDMA_NUM_EVQUE][2] = {
+-	/* {event queue no, Priority} */
+-	{0, 0},
+-	{1, 1},
++static unsigned int dm646x_dma_ch_hw_event_map[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	DM646X_DMACH2EVENT_MAP0,
++	DM646X_DMACH2EVENT_MAP1
++};
++
++/*
++ *  Each bit field of the elements below indicate whether a DMA Channel
++ *  is free or in use
++ *  1 - free
++ *  0 - in use
++ */
++static unsigned int dma_ch_use_status[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	0xFFFFFFFFu,
++	0xFFFFFFFFu
++};
++
++/*
++ *  Each bit field of the elements below indicate whether a interrupt
++ *  is free or in use
++ *  1 - free
++ *  0 - in use
++ */
++static unsigned char qdma_ch_use_status[EDMA_NUM_QDMA_CHAN_DWRDS] = {
++	0xFFu
++};
++
++/*
++ *  Each bit field of the elements below indicate whether a PaRAM entry
++ *  is free or in use
++ *  1 - free
++ *  0 - in use
++ */
++static unsigned int param_entry_use_status[EDMA_MAX_PARAM_SET/32u] = {
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
++	0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu
++};
++
++/*
++ *  Each bit field of the elements below indicate whether a intrerrupt
++ *  is free or in use
++ *  1 - free
++ *  0 - in use
++ */
++static unsigned long tcc_use_status[EDMA_NUM_DMA_CHAN_DWRDS] = {
++	0xFFFFFFFFu,
++	0xFFFFFFFFu
++};
++
++
++
++/*
++ *  Global Array to store the mapping between DMA channels and Interrupt
++ *  channels i.e. TCCs.
++ *  DMA channel X can use any TCC Y. Transfer completion
++ *  interrupt will occur on the TCC Y (IPR/IPRH Register, bit Y), but error
++ *  interrupt will occur on DMA channel X (EMR/EMRH register, bit X). In that
++ *  scenario, this DMA channel <-> TCC mapping will be used to point to
++ *  the correct callback function.
++ */
++static unsigned int edma_dma_ch_tcc_mapping [EDMA_NUM_DMACH];
++
++
++/*
++ *  Global Array to store the mapping between QDMA channels and Interrupt
++ *  channels i.e. TCCs.
++ *  QDMA channel X can use any TCC Y. Transfer completion
++ *  interrupt will occur on the TCC Y (IPR/IPRH Register, bit Y), but error
++ *  interrupt will occur on QDMA channel X (QEMR register, bit X). In that
++ *  scenario, this QDMA channel <-> TCC mapping will be used to point to
++ *  the correct callback function.
++ */
++static unsigned int edma_qdma_ch_tcc_mapping [EDMA_NUM_QDMACH];
++
++
++/*
++ * The list of Interrupt Channels which get allocated while requesting the
++ * TCC. It will be used while checking the IPR/IPRH bits in the RM ISR.
++ */
++static unsigned int allocated_tccs[2u] = {0u, 0u};
++
++
++/* Array containing physical addresses of all the TCs present */
++u32 dm644x_edmatc_base_addrs[EDMA_MAX_TC] = {
++	(u32)DAVINCI_DMA_3PTC0_BASE,
++	(u32)DAVINCI_DMA_3PTC1_BASE,
++};
++u32 dm646x_edmatc_base_addrs[EDMA_MAX_TC] = {
++	(u32)DAVINCI_DMA_3PTC0_BASE,
++	(u32)DAVINCI_DMA_3PTC1_BASE,
++	(u32)DAVINCI_DM646X_DMA_3PTC2_BASE,
++	(u32)DAVINCI_DM646X_DMA_3PTC3_BASE,
++};
++u32 dm355_edmatc_base_addrs[EDMA_MAX_TC] = {
++	(u32)DAVINCI_DMA_3PTC0_BASE,
++	(u32)DAVINCI_DMA_3PTC1_BASE,
++};
++
++/*
++ * Variable which will be used internally for referring transfer controllers'
++ * error interrupts.
++ */
++unsigned int dm644x_tc_error_int[EDMA_MAX_TC] = {
++	IRQ_TCERRINT0, IRQ_TCERRINT,
++	0, 0, 0, 0, 0, 0,
++};
++unsigned int dm646x_tc_error_int[EDMA_MAX_TC] = {
++	IRQ_TCERRINT0, IRQ_TCERRINT,
++	IRQ_DM646X_TCERRINT2, IRQ_DM646X_TCERRINT3,
++	0, 0, 0, 0,
++};
++unsigned int dm355_tc_error_int[EDMA_MAX_TC] = {
++	IRQ_TCERRINT0, IRQ_TCERRINT,
++	0, 0, 0, 0, 0, 0,
++};
++
++static char tc_error_int_name[EDMA_MAX_TC][20];
++
++/*
++ * EDMA Driver Internal Functions
++ */
++
++/* EDMA3 TC0 Error Interrupt Handler ISR Routine */
++
++static irqreturn_t dma_tc0_err_handler(int irq, void *dev_id,
++					struct pt_regs *data);
++/* EDMA3 TC1 Error Interrupt Handler ISR Routine */
++static irqreturn_t dma_tc1_err_handler(int irq, void *dev_id,
++					struct pt_regs *data);
++/* EDMA3 TC2 Error Interrupt Handler ISR Routine */
++static irqreturn_t dma_tc2_err_handler(int irq, void *dev_id,
++					struct pt_regs *data);
++/* EDMA3 TC3 Error Interrupt Handler ISR Routine */
++static irqreturn_t dma_tc3_err_handler(int irq, void *dev_id,
++					struct pt_regs *data);
++/* EDMA3 TC4 Error Interrupt Handler ISR Routine */
++static irqreturn_t dma_tc4_err_handler(int irq, void *dev_id,
++					struct pt_regs *data);
++/* EDMA3 TC5 Error Interrupt Handler ISR Routine */
++static irqreturn_t dma_tc5_err_handler(int irq, void *dev_id,
++					struct pt_regs *data);
++/* EDMA3 TC6 Error Interrupt Handler ISR Routine */
++static irqreturn_t dma_tc6_err_handler(int irq, void *dev_id,
++					struct pt_regs *data);
++/*  EDMA3 TC7 Error Interrupt Handler ISR Routine */
++static irqreturn_t dma_tc7_err_handler(int irq, void *dev_id,
++					struct pt_regs *data);
++
++
++/*
++ * EDMA3 TC ISRs which need to be registered with the underlying OS by the user
++ * (Not all TC error ISRs need to be registered, register only for the
++ * available Transfer Controllers).
++ */
++irqreturn_t (*ptr_edmatc_isrs[EDMA_MAX_TC])(int irq, void *dev_id,
++		struct pt_regs *data) = {
++	&dma_tc0_err_handler,
++	&dma_tc1_err_handler,
++	&dma_tc2_err_handler,
++	&dma_tc3_err_handler,
++	&dma_tc4_err_handler,
++	&dma_tc5_err_handler,
++	&dma_tc6_err_handler,
++	&dma_tc7_err_handler,
+ };
+ 
+-static unsigned int qdma2param_map[8];
+-static unsigned int edma2event_map[EDMA_NUM_DMACH / 32];
+-static unsigned int dma_intr_reseved[EDMA_NUM_DMACH / 32];
+-static unsigned int param_entry_reserved[EDMA_NUM_PARAMENTRY / 32];
++/* Function registering different ISRs with the OS */
++static int register_dma_interrupts(void);
+ 
+-static void map_edmach2evt_queue(int lch, int eventq)
++static void map_dma_ch_evt_queue(unsigned int dma_ch, unsigned int evt_queue)
+ {
+-	u32 reg = EDMA_DMAQNUM(lch >> 3);
+-	int bit = (lch % 8) << 2;
++	CLEAR_REG_VAL(DMAQNUM_CLR_MASK(dma_ch), EDMA_DMAQNUM(dma_ch >> 3));
++	SET_REG_VAL(DMAQNUM_SET_MASK(dma_ch, evt_queue),
++		    EDMA_DMAQNUM(dma_ch >> 3));
++}
+ 
+-	CLEAR_REG_VAL(0x7 << bit, reg);
+-	SET_REG_VAL((eventq & 0x7) << bit, reg);
++static void map_qdma_ch_evt_queue(unsigned int qdma_ch, unsigned int evt_queue)
++{
++	/* Map QDMA channel to event queue */
++	CLEAR_REG_VAL(QDMAQNUM_CLR_MASK(qdma_ch), EDMA_QDMAQNUM);
++	SET_REG_VAL(QDMAQNUM_SET_MASK(qdma_ch, evt_queue), EDMA_QDMAQNUM);
+ }
+ 
+-static void map_qdmach2evt_queue(int lch, int eventq)
++static void map_dma_ch_param_set(unsigned int lch, unsigned int param_set)
+ {
+-	u32 reg = EDMA_QDMAQNUM;
+-	int bit = (lch - EDMA_NUM_DMACH) << 2;
+ 
+-	CLEAR_REG_VAL(0x7 << bit, reg);
+-	SET_REG_VAL((eventq & 0x7) << bit, reg);
++	if (davinci_edma_chmap_exist == 1)  {
++		/* Map PaRAM set number for specified lch */
++		CLEAR_REG_VAL(DMACH_PARAM_CLR_MASK, EDMA_DCHMAP(lch));
++		SET_REG_VAL(DMACH_PARAM_SET_MASK(param_set), EDMA_DCHMAP(lch));
++	}
+ }
+ 
+-static void map_qdmach2param(int lch, int param_no)
++static void map_qdma_ch_param_set(unsigned int qdma_ch, unsigned int param_set)
+ {
+-	u32 reg;
++	/* Map PaRAM Set Number for specified qdma_ch */
++	CLEAR_REG_VAL(QDMACH_PARAM_CLR_MASK, EDMA_QCHMAP(qdma_ch));
++	SET_REG_VAL(QDMACH_PARAM_SET_MASK(param_set), EDMA_QCHMAP(qdma_ch));
+ 
+-	reg = EDMA_QCHMAP(lch - EDMA_NUM_DMACH);
+-	CLEAR_REG_VAL(PAENTRY | TRWORD, reg);
+-	SET_REG_VAL(((param_no & 0x1ff) << 5) | (QDMA_TRWORD << 2), reg);
++	/* Set CCNT as default Trigger Word */
++	CLEAR_REG_VAL(QDMACH_TRWORD_CLR_MASK, EDMA_QCHMAP(qdma_ch));
++	SET_REG_VAL(QDMACH_TRWORD_SET_MASK(param_set), EDMA_QCHMAP(qdma_ch));
+ }
+ 
+-static int reserve_param(int lch)
++static void register_callback(unsigned int tcc,
++			void (*callback) (int lch, unsigned short ch_status,
++					void *data),
++			void *data)
+ {
+-	int i;
++	/* If callback function is not NULL */
++	if (callback == NULL)
++		return;
+ 
+-	/* The EDMA Channels are mapped to the first PARAM entries */
+-	if (dma_is_edmach(lch)) {
+-		param_reserve(lch);
+-		return lch;
++	if (tcc < 32) {
++		SET_REG_VAL(1 << tcc, EDMA_SH_IESR(EDMA_MASTER_SHADOW_REGION));
++
++		pr_debug("ier = %x \r\n",
++			    EDMA_SH_IER(EDMA_MASTER_SHADOW_REGION));
++
++	} else if (tcc < EDMA_NUM_TCC) {
++		SET_REG_VAL(1 << (tcc - 32),
++			    EDMA_SH_IESRH(EDMA_MASTER_SHADOW_REGION));
++
++		pr_debug("ierh = %x \r\n",
++			    EDMA_SH_IERH(EDMA_MASTER_SHADOW_REGION));
++	} else {
++		printk(KERN_WARNING "WARNING: dma register callback failed - "
++			"invalid tcc %d\n", tcc);
++		return;
++	}
++
++	/* Save the callback function also */
++	intr_data[tcc].callback = callback;
++	intr_data[tcc].data = data;
++}
++
++static void unregister_callback(unsigned int lch, enum resource_type ch_type)
++{
++	unsigned int tcc;
++
++	pr_debug("[%s]: start\n", __func__);
++	pr_debug("lch = %d\n", lch);
++
++	switch (ch_type) {
++	case RES_DMA_CHANNEL:
++		tcc = edma_dma_ch_tcc_mapping[lch];
++		pr_debug("mapped tcc for DMA channel = %d\n", tcc);
++		/* reset */
++		edma_dma_ch_tcc_mapping[lch] = EDMA_NUM_TCC;
++		break;
++
++	case RES_QDMA_CHANNEL:
++		tcc = edma_qdma_ch_tcc_mapping[lch - EDMA_QDMA_CHANNEL_0];
++		pr_debug("mapped tcc for QDMA channel = %d\n", tcc);
++		/* reset */
++		edma_qdma_ch_tcc_mapping[lch - EDMA_QDMA_CHANNEL_0] =
++					EDMA_NUM_TCC;
++		break;
++
++	default:
++		return;
+ 	}
+ 
+-	for (i = EDMA_NUM_DMACH; i < EDMA_NUM_PARAMENTRY; i++) {
+-		if (param_is_free(i) && param_is_valid(i)) {
+-			param_reserve(i);
+-			return i;
++	/* Remove the callback function and disable the interrupts */
++	if (tcc < 32) {
++		SET_REG_VAL(1 << tcc, EDMA_SH_IECR(EDMA_MASTER_SHADOW_REGION));
++	} else if (tcc < EDMA_NUM_TCC) {
++		SET_REG_VAL(1 << (tcc - 32),
++			    EDMA_SH_IECRH(EDMA_MASTER_SHADOW_REGION));
++	} else {
++		printk(KERN_WARNING "WARNING: dma unregister callback failed - "
++			"invalid tcc %d on lch %d\n", tcc, lch);
++		return;
++	}
++
++	if (tcc < EDMA_NUM_TCC) {
++		intr_data[tcc].callback = 0;
++		intr_data[tcc].data = 0;
++	}
++
++	pr_debug("[%s]: end\n", __func__);
++}
++
++static int reserve_one_edma_channel(unsigned int res_id,
++				    unsigned int res_id_set)
++{
++	int result = -1;
++	u32 idx, reg;
++
++	idx = res_id / 32;
++
++	spin_lock(&dma_chan_lock);
++	if (((edma_channels_arm[idx] & res_id_set) != 0) &&
++	    ((dma_ch_use_status[idx] & res_id_set) != 0)) {
++		/* Mark it as non-available now */
++		dma_ch_use_status[idx] &= ~res_id_set;
++		if (res_id < 32u)  {
++			/* Enable the DMA channel in the DRAE register */
++			reg = EDMA_DRAE(EDMA_MASTER_SHADOW_REGION);
++			SET_REG_VAL(res_id_set, reg);
++			pr_debug("drae = %x\n", dma_read(reg));
++			reg = EDMA_SH_EECR(EDMA_MASTER_SHADOW_REGION);
++			SET_REG_VAL(res_id_set, reg);
++		} else {
++			reg = EDMA_DRAEH(EDMA_MASTER_SHADOW_REGION);
++			SET_REG_VAL(res_id_set, reg);
++			pr_debug("draeh = %x\n", dma_read(reg));
++			reg = EDMA_SH_EECRH(EDMA_MASTER_SHADOW_REGION);
++			SET_REG_VAL(res_id_set, reg);
+ 		}
++		result = res_id;
+ 	}
++	spin_unlock(&dma_chan_lock);
++	return result;
++}
+ 
+-	/* there is no free PaRam */
+-	return -EBUSY;
++static int reserve_any_edma_channel(void)
++{
++	int avl_id;
++	int result = -1;
++	u32 idx, mask;
++
++	for (avl_id = 0; avl_id < EDMA_NUM_DMACH; ++avl_id) {
++		idx = avl_id / 32;
++		mask = 1 << (avl_id % 32);
++		if ((~edma2event_map[idx] & mask) != 0) {
++			result = reserve_one_edma_channel(avl_id, mask);
++			if (result != -1)
++				break;
++		}
++	}
++	return result;
+ }
+ 
+-static void free_param(int param_no)
++static int reserve_one_qdma_channel(unsigned int res_id,
++				     unsigned int res_id_mask)
+ {
+-	param_free(param_no);
++	int result = -1;
++	int idx = res_id / 32;
++	u32 reg;
++
++	if (res_id >= EDMA_NUM_QDMACH)
++		return result;
++
++	spin_lock(&dma_chan_lock);
++	if (((qdma_channels_arm[idx] & res_id_mask) != 0) &&
++	    ((qdma_ch_use_status[idx] & res_id_mask) != 0))  {
++		/* QDMA Channel Available, mark it as unavailable */
++		qdma_ch_use_status[idx] &= ~res_id_mask;
++
++		/* Enable the QDMA channel in the QRAE regs */
++		reg = EDMA_QRAE(EDMA_MASTER_SHADOW_REGION);
++		SET_REG_VAL(res_id_mask, reg);
++		pr_debug("qdma = %x qrae = %x\n", res_id, dma_read(reg));
++
++		result = res_id;
++	}
++	spin_unlock(&dma_chan_lock);
++	return result;
+ }
+ 
+-static int reserve_dma_interrupt(int lch, int tcc)
++static int reserve_any_qdma_channel(void)
+ {
+-	if (dma_is_edmach(lch)) {
+-		if (interrupt_is_free(lch)) {
+-			interrupt_reserve(lch);
+-			return lch;
+-		}
+-	} else if (dma_is_qdmach(lch)) {
+-		int i = 0;
++	int result = -1;
++	int avl_id;
++	u32 mask;
++
++	for (avl_id = 0; avl_id < EDMA_NUM_QDMACH; ++avl_id) {
++		mask = 1 << (avl_id % 32);
++		result = reserve_one_qdma_channel(avl_id, mask);
++		if (result != -1)
++			break;
++	}
++	return result;
++}
+ 
+-		if (tcc != TCC_ANY) {
+-			if (!interrupt_is_free(tcc))
+-				return -EBUSY;
+-			if (edmach_has_event(tcc))
+-				return -EINVAL;
+-			interrupt_reserve(tcc);
+-			return tcc;
++static int reserve_one_tcc(unsigned int res_id, unsigned int res_id_mask)
++{
++	int result = -1;
++	int idx;
++	u32 reg;
++
++	idx = res_id / 32;
++
++	spin_lock(&dma_chan_lock);
++	if (((tcc_arm[idx] & res_id_mask) != 0) &&
++	    ((tcc_use_status[idx] & res_id_mask) != 0)) {
++		pr_debug("tcc = %x\n", res_id);
++
++		/* Mark it as non-available now */
++		tcc_use_status[idx] &= ~res_id_mask;
++
++		/* Enable the TCC in the DRAE/DRAEH registers */
++		if (res_id < 32u) {
++			reg = EDMA_DRAE(EDMA_MASTER_SHADOW_REGION);
++			SET_REG_VAL(res_id_mask, reg);
++			pr_debug("drae = %x\n", dma_read(reg));
++
++			/* Add it to the Allocated TCCs list */
++			allocated_tccs[0u] |= res_id_mask;
++		} else {
++			reg = EDMA_DRAEH(EDMA_MASTER_SHADOW_REGION);
++			SET_REG_VAL(res_id_mask, reg);
++			pr_debug("draeh = %x\n", dma_read(reg));
++
++			/* Add it to the Allocated TCCs list */
++			allocated_tccs[1u] |= res_id_mask;
+ 		}
++		result = res_id;
++	}
++	spin_unlock(&dma_chan_lock);
++	return result;
++}
+ 
+-		while (i < EDMA_NUM_DMACH) {
+-			if (interrupt_is_free(i) && !edmach_has_event(i)) {
+-				interrupt_reserve(i);
+-				return i;
+-			}
+-			i++;
++static int reserve_any_tcc(void)
++{
++	int result = -1;
++	int avl_id;
++	u32 mask;
++
++	for (avl_id = 0; avl_id < EDMA_NUM_TCC; ++avl_id) {
++		mask = 1 << (avl_id % 32);
++		if ((~(edma2event_map[avl_id / 32]) & mask) != 0) {
++			result = reserve_one_tcc(avl_id, mask);
++			if (result != -1)
++				break;
+ 		}
+ 	}
++	return result;
++}
++
++static int reserve_one_edma_param(unsigned int res_id, unsigned int res_id_mask)
++{
++	int result = -1;
++	int idx;
++	u32 reg;
++
++	idx = res_id / 32;
+ 
+-	/* there is no free interrupt channels */
+-	return -EBUSY;
++	spin_lock(&dma_chan_lock);
++	if (((param_entry_arm[idx] & res_id_mask) != 0) &&
++	    ((param_entry_use_status[idx] & res_id_mask) != 0)) {
++		pr_debug("edma param = %x\n", res_id);
++		/* Mark it as non-available now */
++		param_entry_use_status[idx] &= ~res_id_mask;
++		result = res_id;
++
++		/* Also, make the actual PARAM Set NULL */
++		reg = EDMA_PARAM_OPT(res_id);
++		memset((void *)IO_ADDRESS(reg), 0x00, EDMA_PARAM_ENTRY_SIZE);
++	}
++	spin_unlock(&dma_chan_lock);
++	return result;
+ }
+ 
+-static void free_dma_interrupt(int ch_irq)
++static int reserve_any_edma_param(void)
+ {
+-	interrupt_free(ch_irq);
++	int result = -1;
++	int avl_id;
++	u32 mask;
++
++	for (avl_id = 0; avl_id < davinci_edma_num_param; ++avl_id) {
++		mask = 1 << (avl_id % 32);
++		if ((~(param_entry_reserved[avl_id / 32]) & mask) != 0) {
++			result = reserve_one_edma_param(avl_id, mask);
++			if (result != -1)
++				break;
++		}
++	}
++	return result;
+ }
+ 
+-static int request_dma_interrupt(void (*callback) (int lch, u16 ch_status,
+-						   void *data),
+-				 void *data, int *lch, int *tcc)
++static int alloc_resource(unsigned int res_id, enum resource_type res_type)
+ {
+-	int ch_irq;
+-	u32 reg, mask;
++	int result = -1;
++	unsigned int res_id_set = 1u << (res_id % 32u);
+ 
+-	if (callback) {
+-		ch_irq = reserve_dma_interrupt(*lch, *tcc);
+-		if (ch_irq < 0)
+-			return ch_irq;
+-
+-		reg = ch_irq < 32 ?  EDMA_SH_IESR(0) : EDMA_SH_IESRH(0);
+-		mask = 1 << (ch_irq < 32 ? ch_irq : ch_irq - 32);
+-		SET_REG_VAL(mask, reg);
+-
+-		dma_chan[*lch].tcc = ch_irq;
+-		*tcc = ch_irq;
+-		intr_data[*tcc].callback = callback;
+-		intr_data[*tcc].data = data;
+-	} else {
+-		dma_chan[*lch].tcc = -1;
++	switch (res_type) {
++	case RES_DMA_CHANNEL :
++		if (res_id == EDMA_DMA_CHANNEL_ANY)
++			result = reserve_any_edma_channel();
++		else if (res_id < EDMA_NUM_DMACH)
++			result = reserve_one_edma_channel(res_id, res_id_set);
++		break;
++	case RES_QDMA_CHANNEL:
++		if (res_id == EDMA_QDMA_CHANNEL_ANY)
++			result = reserve_any_qdma_channel();
++		else if (res_id < EDMA_NUM_QDMACH)
++			result = reserve_one_qdma_channel(res_id, res_id_set);
++		break;
++	case RES_TCC:
++		if (res_id == EDMA_TCC_ANY)
++			result = reserve_any_tcc();
++		else if (res_id < EDMA_NUM_TCC)
++			result = reserve_one_tcc(res_id, res_id_set);
++		break;
++	case RES_PARAM_SET:
++		if (res_id == DAVINCI_EDMA_PARAM_ANY)
++			result = reserve_any_edma_param();
++		else if (res_id < davinci_edma_num_param)
++			result = reserve_one_edma_param(res_id, res_id_set);
++		break;
++	}
++	return result;
++}
++
++static void free_resource(unsigned int res_id,
++			enum resource_type res_type)
++{
++	unsigned int res_id_set = 0x0;
++
++	res_id_set = (1u << (res_id % 32u));
++
++	spin_lock(&dma_chan_lock);
++
++	switch (res_type) {
++	case RES_DMA_CHANNEL :
++		if (res_id >= EDMA_NUM_DMACH)
++			break;
++
++		if (((edma_channels_arm[res_id/32]) & (res_id_set)) == 0)
++			break;
++
++		if ((~(dma_ch_use_status[res_id/32u]) & (res_id_set)) == 0)
++			break;
++
++		/* Make it as available */
++		dma_ch_use_status[res_id/32u] |= res_id_set;
++
++		/* Reset the DRAE/DRAEH bit also */
++		if (res_id < 32u) {
++			CLEAR_REG_VAL(res_id_set,
++				      EDMA_DRAE(EDMA_MASTER_SHADOW_REGION));
++		} else {
++			CLEAR_REG_VAL(res_id_set,
++				      EDMA_DRAEH(EDMA_MASTER_SHADOW_REGION));
++		}
++		break;
++	case RES_QDMA_CHANNEL:
++		if (res_id >= EDMA_NUM_QDMACH)
++			break;
++
++		if (((qdma_channels_arm[0]) & (res_id_set)) == 0)
++			break;
++
++		if ((~(qdma_ch_use_status[0]) & (res_id_set)) == 0)
++			break;
++
++		/* Make it as available */
++		qdma_ch_use_status[0] |= res_id_set;
++
++		/* Reset the DRAE/DRAEH bit also */
++		CLEAR_REG_VAL(res_id_set, EDMA_QRAE(EDMA_MASTER_SHADOW_REGION));
++		break;
++	case RES_TCC:
++		if (res_id >= EDMA_NUM_TCC)
++			break;
++
++		if (((tcc_arm[res_id/32]) & (res_id_set)) == 0)
++			break;
++
++		if ((~(tcc_use_status[res_id/32u]) & (res_id_set)) == 0)
++			break;
++
++		/* Make it as available */
++		tcc_use_status[res_id/32u] |= res_id_set;
++
++		/* Reset the DRAE/DRAEH bit also */
++		if (res_id < 32u) {
++			CLEAR_REG_VAL(res_id_set,
++				      EDMA_DRAE(EDMA_MASTER_SHADOW_REGION));
++
++			/* Remove it from the Allocated TCCs list */
++			allocated_tccs[0u] &= (~res_id_set);
++		} else {
++			CLEAR_REG_VAL(res_id_set,
++				      EDMA_DRAEH(EDMA_MASTER_SHADOW_REGION));
++
++			/* Remove it from the Allocated TCCs list */
++			allocated_tccs[1u] &= (~res_id_set);
++		}
++		break;
++	case RES_PARAM_SET:
++		if (res_id >= davinci_edma_num_param)
++			break;
++
++		if (((param_entry_arm[res_id/32]) & (res_id_set)) == 0)
++			break;
++
++		if ((~(param_entry_use_status[res_id/32u]) & (res_id_set)) == 0)
++			break;
++
++		/* Make it as available */
++		param_entry_use_status[res_id/32u] |= res_id_set;
++		break;
+ 	}
+ 
+-	return 0;
++	spin_unlock(&dma_chan_lock);
+ }
+ 
+-/**
+- * DMA transfer completion interrupt handler
++/*
++ * EDMA3 CC Transfer Completion Interrupt Handler
+  */
+-static irqreturn_t davinci_dma_irq_handler(int irq, void *dev_id, struct pt_regs *regs)
++static irqreturn_t dma_irq_handler(int irq, void *dev_id, struct pt_regs *regs)
+ {
++	unsigned int cnt = 0;
++
+ 	if (!(dma_read(EDMA_SH_IPR(0)) || dma_read(EDMA_SH_IPRH(0))))
+ 		return IRQ_NONE;
+ 
+-	while (1) {
++	/* Loop while cnt < 10, breaks when no pending interrupt is found */
++	while (cnt < 10u) {
+ 		u32 status_l = dma_read(EDMA_SH_IPR(0));
+ 		u32 status_h = dma_read(EDMA_SH_IPRH(0));
+ 		int lch;
+ 		int i;
+ 
++		status_h &= allocated_tccs[1];
+ 		if (!(status_l || status_h))
+ 			break;
+ 
+@@ -215,9 +955,19 @@ static irqreturn_t davinci_dma_irq_handl
+ 		while (status_l) {
+ 			i = ffs(status_l);
+ 			lch += i;
+-			/* Clear the corresponding IPR bits */
+-			SET_REG_VAL(1 << (lch - 1), EDMA_SH_ICR(0));
+-			dma_handle_cb(lch - 1, DMA_COMPLETE);
++
++			/*
++			 * If the user has not given any callback function
++			 * while requesting the TCC, its TCC specific bit
++			 * in the IPR register will NOT be cleared.
++			 */
++			if (intr_data[lch - 1].callback) {
++				/* Clear the corresponding IPR bits */
++				SET_REG_VAL(1 << (lch - 1), EDMA_SH_ICR(0));
++
++				/* Call the callback function now */
++				dma_handle_cb(lch - 1, DMA_COMPLETE);
++			}
+ 			status_l >>= i;
+ 		}
+ 
+@@ -225,110 +975,279 @@ static irqreturn_t davinci_dma_irq_handl
+ 		while (status_h) {
+ 			i = ffs(status_h);
+ 			lch += i;
+-			/* Clear the corresponding IPR bits */
+-			SET_REG_VAL(1 << (lch - 33), EDMA_SH_ICRH(0));
+-			dma_handle_cb(lch - 1, DMA_COMPLETE);
++
++			/*
++			 * If the user has not given any callback function
++			 * while requesting the TCC, its TCC specific bit
++			 * in the IPRH register will NOT be cleared.
++			 */
++			if (intr_data[lch - 1].callback) {
++				/* Clear the corresponding IPR bits */
++				SET_REG_VAL(1 << (lch - 33), EDMA_SH_ICRH(0));
++
++				/* Call the callback function now */
++				dma_handle_cb(lch - 1, DMA_COMPLETE);
++			}
+ 			status_h >>= i;
+ 		}
++
++		cnt++;
+ 	}
++
+ 	dma_write(0x1, EDMA_SH_IEVAL(0));
+ 
+ 	return IRQ_HANDLED;
+ }
+ 
+-/**
+- * DMA error interrupt handler
++/*
++ * EDMA3 CC Error Interrupt Handler
++ */
++static irqreturn_t dma_ccerr_handler(int irq, void *dev_id,
++				     struct pt_regs *regs)
++{
++	unsigned int mapped_tcc = 0;
++
++	if (!(dma_read(EDMA_EMR) || dma_read(EDMA_EMRH) ||
++	      dma_read(EDMA_QEMR) || dma_read(EDMA_CCERR)))
++		return IRQ_NONE;
++
++	while (1) {
++		u32 status_emr = dma_read(EDMA_EMR);
++		u32 status_emrh = dma_read(EDMA_EMRH);
++		u32 status_qemr = dma_read(EDMA_QEMR);
++		u32 status_ccerr = dma_read(EDMA_CCERR);
++		int lch;
++		int i;
++
++		if (!(status_emr || status_emrh || status_qemr || status_ccerr))
++			break;
++
++		lch = 0;
++		while (status_emr) {
++			i = ffs(status_emr);
++			lch += i;
++			/* Clear the corresponding EMR bits */
++			SET_REG_VAL(1 << (lch - 1), EDMA_EMCR);
++			/* Clear any SER */
++			SET_REG_VAL(1 << (lch - 1), EDMA_SH_SECR(0));
++
++			mapped_tcc = edma_dma_ch_tcc_mapping[lch - 1];
++			dma_handle_cb(mapped_tcc, DMA_CC_ERROR);
++			status_emr >>= i;
++		}
++
++		lch = 32;
++		while (status_emrh) {
++			i = ffs(status_emrh);
++			lch += i;
++			/* Clear the corresponding IPR bits */
++			SET_REG_VAL(1 << (lch - 33), EDMA_EMCRH);
++			/* Clear any SER */
++			SET_REG_VAL(1 << (lch - 33), EDMA_SH_SECRH(0));
++
++			mapped_tcc = edma_dma_ch_tcc_mapping[lch - 1];
++			dma_handle_cb(mapped_tcc, DMA_CC_ERROR);
++			status_emrh >>= i;
++		}
++
++		lch = 0;
++		while (status_qemr) {
++			i = ffs(status_qemr);
++			lch += i;
++			/* Clear the corresponding IPR bits */
++			SET_REG_VAL(1 << (lch - 1), EDMA_QEMCR);
++			SET_REG_VAL(1 << (lch - 1), EDMA_SH_QSECR(0));
++
++			mapped_tcc = edma_qdma_ch_tcc_mapping[lch - 1];
++			dma_handle_cb(mapped_tcc, QDMA_EVT_MISS_ERROR);
++			status_qemr >>= i;
++		}
++
++
++		lch = 0;
++		while (status_ccerr) {
++			i = ffs(status_ccerr);
++			lch += i;
++			/* Clear the corresponding IPR bits */
++			SET_REG_VAL(1 << (lch - 1), EDMA_CCERRCLR);
++			status_ccerr >>= i;
++		}
++	}
++	dma_write(0x1, EDMA_EEVAL);
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * EDMA3 Transfer Controller Error Interrupt Handler
++ */
++static int dma_tc_err_handler(unsigned int tc_num)
++{
++	u32 tcregs;
++	u32 err_stat;
++
++	if (tc_num >= davinci_edma_num_tc)
++		return -EINVAL;
++
++	tcregs = davinci_edmatc_base_addrs[tc_num];
++	if (tcregs == (u32)NULL)
++		return 0;
++
++	err_stat = dma_read(EDMATC_ERRSTAT(tcregs));
++	if (err_stat) {
++		if (err_stat & (1 << EDMA_TC_ERRSTAT_BUSERR_SHIFT))
++			dma_write(1 << EDMA_TC_ERRSTAT_BUSERR_SHIFT,
++				  EDMATC_ERRCLR(tcregs));
++
++		if (err_stat & (1 << EDMA_TC_ERRSTAT_TRERR_SHIFT))
++			dma_write(1 << EDMA_TC_ERRSTAT_TRERR_SHIFT,
++				  EDMATC_ERRCLR(tcregs));
++
++		if (err_stat & (1 << EDMA_TC_ERRSTAT_MMRAERR_SHIFT))
++			dma_write(1 << EDMA_TC_ERRSTAT_MMRAERR_SHIFT,
++				  EDMATC_ERRCLR(tcregs));
++	}
++	return 0;
++}
++
++/*
++ * EDMA3 TC0 Error Interrupt Handler
++ */
++static irqreturn_t dma_tc0_err_handler(int irq, void *dev_id,
++				       struct pt_regs *data)
++{
++	/* Invoke Error Handler ISR for TC0 */
++	dma_tc_err_handler(0);
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * EDMA3 TC1 Error Interrupt Handler
++ */
++static irqreturn_t dma_tc1_err_handler(int irq, void *dev_id,
++				      struct pt_regs *data)
++{
++	/* Invoke Error Handler ISR for TC1*/
++	dma_tc_err_handler(1);
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * EDMA3 TC2 Error Interrupt Handler
++ */
++static irqreturn_t dma_tc2_err_handler(int irq, void *dev_id,
++				      struct pt_regs *data)
++{
++	/* Invoke Error Handler ISR for TC2*/
++	dma_tc_err_handler(2);
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * EDMA3 TC3 Error Interrupt Handler
++ */
++static irqreturn_t dma_tc3_err_handler(int irq, void *dev_id,
++				       struct pt_regs *data)
++{
++	/* Invoke Error Handler ISR for TC3*/
++	dma_tc_err_handler(3);
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * EDMA3 TC4 Error Interrupt Handler
++ */
++static irqreturn_t dma_tc4_err_handler(int irq, void *dev_id,
++				       struct pt_regs *data)
++{
++	/* Invoke Error Handler ISR for TC4*/
++	dma_tc_err_handler(4);
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * EDMA3 TC5 Error Interrupt Handler
++ */
++static irqreturn_t dma_tc5_err_handler(int irq, void *dev_id,
++				       struct pt_regs *data)
++{
++	/* Invoke Error Handler ISR for TC5*/
++	dma_tc_err_handler(5);
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * EDMA3 TC6 Error Interrupt Handler
++ */
++static irqreturn_t dma_tc6_err_handler(int irq, void *dev_id,
++				       struct pt_regs *data)
++{
++	/* Invoke Error Handler ISR for TC6*/
++	dma_tc_err_handler(6);
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * EDMA3 TC7 Error Interrupt Handler
+  */
+-static irqreturn_t davinci_dma_ccerr_handler(int irq, void *dev_id, struct pt_regs *regs)
++static irqreturn_t dma_tc7_err_handler(int irq, void *dev_id,
++				       struct pt_regs *data)
+ {
+-	if (!(dma_read(EDMA_EMR) || dma_read(EDMA_EMRH) ||
+-	    dma_read(EDMA_QEMR) || dma_read(EDMA_CCERR)))
+-		return IRQ_NONE;
+-
+-	while (1) {
+-		u32 status_emr = dma_read(EDMA_EMR);
+-		u32 status_emrh = dma_read(EDMA_EMRH);
+-		u32 status_qemr = dma_read(EDMA_QEMR);
+-		u32 status_ccerr = dma_read(EDMA_CCERR);
+-		int lch;
+-		int i;
+-
+-		if (!(status_emr || status_emrh || status_qemr || status_ccerr))
+-			break;
+-
+-		lch = 0;
+-		while (status_emr) {
+-			i = ffs(status_emr);
+-			lch += i;
+-			/* Clear the corresponding EMR bits */
+-			SET_REG_VAL(1 << (lch - 1), EDMA_EMCR);
+-			/* Clear any SER */
+-			SET_REG_VAL(1 << (lch - 1), EDMA_SH_SECR(0));
+-			dma_handle_cb(lch - 1, DMA_CC_ERROR);
+-			status_emr >>= i;
+-		}
+-
+-		lch = 32;
+-		while (status_emrh) {
+-			i = ffs(status_emrh);
+-			lch += i;
+-			/* Clear the corresponding IPR bits */
+-			SET_REG_VAL(1 << (lch - 1), EDMA_EMCRH);
+-			/* Clear any SER */
+-			SET_REG_VAL(1 << (lch - 1), EDMA_SH_SECRH(0));
+-			dma_handle_cb(lch - 1, DMA_CC_ERROR);
+-			status_emrh >>= i;
+-		}
+-
+-		lch = 0;
+-		while (status_qemr) {
+-			i = ffs(status_qemr);
+-			lch += i;
+-			/* Clear the corresponding IPR bits */
+-			SET_REG_VAL(1 << (lch - 1), EDMA_QEMCR);
+-			SET_REG_VAL(1 << (lch - 1), EDMA_SH_QSECR(0));
+-			status_qemr >>= i;
+-		}
+-
+-		lch = 0;
+-		while (status_ccerr) {
+-			i = ffs(status_ccerr);
+-			lch += i;
+-			/* Clear the corresponding IPR bits */
+-			SET_REG_VAL(1 << (lch - 1), EDMA_CCERRCLR);
+-			status_ccerr >>= i;
+-		}
+-	}
+-	dma_write(0x1, EDMA_EEVAL);
++	/* Invoke Error Handler ISR for TC7*/
++	dma_tc_err_handler(7);
+ 
+ 	return IRQ_HANDLED;
+ }
+ 
+-/**
+- * DMA channel request - request for the Davinci DMA channel
+- *
+- * dev_id - DMA channel number
+- *
+- * EX: DAVINCI_DMA_MCBSP_TX - For requesting a DMA MasterChannel with MCBSP_TX
+- *     event association
+- *
+- *     EDMA_DMA_CHANNEL_ANY - For requesting a DMA Master channel which does
+- *                            not has event association
++/*
++ * davinci_get_qdma_channel - convert QDMA channel to logical channel
++ * Arguments:
++ *      ch     - input QDMA channel.
+  *
+- *     DAVINCI_EDMA_PARAM_ANY - for requesting a DMA Slave Channel
++ * Return: logical channel associated with QDMA channel or logical channel
++ *     associated with QDMA channel 0 for out of range channel input.
++ */
++int davinci_get_qdma_channel(int ch)
++{
++	if ((ch >= 0) || (ch <= EDMA_MAX_CHANNEL))
++		return (davinci_qdma_ch_map[davinci_cpu_index] + ch);
++	else    /* return channel 0 for out of range values */
++		return davinci_qdma_ch_map[davinci_cpu_index];
++}
++EXPORT_SYMBOL(davinci_get_qdma_channel);
++
++/*
++ * davinci_request_dma - requests for the DMA device passed if it is free
+  *
+- * dev_name   - name of the dma channel in human readable format
+- * callback   - channel callback function (valied only if you are requesting
+- *              for a DMA MasterChannel)
+- * data       - private data for the channel to be requested
+- * lch        - contains the device id allocated
+- * tcc        - specifies the channel number on which the interrupt is generated
+- *              Valid for QDMA and PARAM channes
+- * eventq_no  - Event Queue no to which the channel will be associated with
+- *              (valied only if you are requesting for a DMA MasterChannel)
+- *              Values : EVENTQ_0/EVENTQ_1 for event queue 0/1.
++ * Arguments:
++ *      dev_id     - request for the PaRAM entry device ID
++ *      dev_name   - device name
++ *      callback   - pointer to the channel callback.
++ *      Arguments:
++ *          lch  - channel number which is the IPR bit position,
++ *         indicating from which channel the interrupt arised.
++ *          data - channel private data, which is received as one of the
++ *         arguments in davinci_request_dma.
++ *      data - private data for the channel to be requested which is used to
++ *                   pass as a parameter in the callback function
++ *           in IRQ handler.
++ *      lch - contains the device id allocated
++ *  tcc        - Transfer Completion Code, used to set the IPR register bit
++ *                   after transfer completion on that channel.
++ *  eventq_no  - Event Queue no to which the channel will be associated with
++ *               (valid only if you are requesting for a DMA MasterChannel)
++ *               Values : 0 to 7
++ * INPUT:   dev_id
++ * OUTPUT:  *dma_ch_out
+  *
+- * Return: zero on success or error on failure
++ * Return: zero on success, or corresponding error number on failure
+  */
+ int davinci_request_dma(int dev_id, const char *dev_name,
+ 			void (*callback) (int lch, u16 ch_status, void *data),
+@@ -336,513 +1255,991 @@ int davinci_request_dma(int dev_id, cons
+ 			enum dma_event_q eventq_no)
+ {
+ 	int ret_val = 0;
+-	int temp_ch = 0;
+-	int i;
+-	u32 reg, mask;
++	int param_id = 0;
++	int tcc_val = 0;
++	u32 reg;
++
++	pr_debug("[%s]: start\n", __func__);
++	if (dev_name != NULL)
++		pr_debug("dev id %d dev_name %s\n", dev_id, dev_name);
++
++	/* Validating the arguments passed first */
++	if ((!lch) || (!tcc) || (eventq_no >= davinci_edma_num_evtq)) {
++		ret_val = -EINVAL;
++		goto request_dma_exit;
++	}
+ 
+ 	if (dma_is_edmach(dev_id)) {
++		if (alloc_resource(dev_id, RES_DMA_CHANNEL) != dev_id)  {
++			/* Dma channel allocation failed */
++			pr_debug("DMA channel allocation  failed \r\n");
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
+ 		*lch = dev_id;
+-		temp_ch = *lch;
++		pr_debug("DMA channel %d allocated\r\n", *lch);
++
++		/*
++		 * Allocate PaRAM Set.
++		 * 64 DMA Channels are mapped to the first 64 PaRAM entries.
++		 */
++		if (alloc_resource(dev_id, RES_PARAM_SET) != dev_id) {
++			/* PaRAM Set allocation failed */
++			/*free previously allocated resources*/
++			 free_resource(dev_id, RES_DMA_CHANNEL);
++
++			pr_debug("PaRAM Set allocation  failed \r\n");
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
+ 
+-		if (!dmach_is_valid(dev_id))
+-			return -EINVAL;
++		/* Allocate TCC (1-to-1 mapped with the DMA channel) */
++		if (alloc_resource(dev_id, RES_TCC) != dev_id)  {
++			/* TCC allocation failed */
++			/* free previously allocated resources */
++			free_resource(dev_id, RES_PARAM_SET);
++			free_resource(dev_id, RES_DMA_CHANNEL);
++
++			pr_debug("TCC allocation failed \r\n");
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
+ 
+-		if (dma_chan[dev_id].in_use)
+-			return -EBUSY;
++		param_id = dev_id;
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[dev_id].param_id = param_id;
++		spin_unlock(&dma_chan_lock);
++		pr_debug("PaRAM Set %d allocated\r\n", param_id);
++
++		*tcc = dev_id;
++		pr_debug("TCC %d allocated\r\n", *tcc);
++
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[dev_id].tcc = *tcc;
++		spin_unlock(&dma_chan_lock);
++
++		/* all resources allocated */
++		/* Store the mapping b/w DMA channel and TCC first. */
++		edma_dma_ch_tcc_mapping[*lch] = *tcc;
+ 
+-		dma_chan[*lch].param_no = reserve_param(*lch);
+-		if (dma_chan[*lch].param_no == -1)
+-			return -EBUSY;
++		/* Register callback function */
++		register_callback((*tcc), callback, data);
+ 
+-		reg = dev_id < 32 ? EDMA_DRAE(0) : EDMA_DRAEH(0);
+-		mask = 1 << (dev_id < 32 ? dev_id : dev_id - 32);
+-		SET_REG_VAL(mask, reg);
++		/* Map DMA channel to event queue */
++		map_dma_ch_evt_queue(*lch, eventq_no);
+ 
+-		ret_val = request_dma_interrupt(callback, data, lch, tcc);
+-		if (ret_val)
+-			return ret_val;
++		/* Map DMA channel to PaRAM Set */
++		map_dma_ch_param_set(*lch, param_id);
+ 
+-		/* Map EDMA channel to event queue */
+-		map_edmach2evt_queue(dev_id, eventq_no);
+ 	} else if (dma_is_qdmach(dev_id)) {
++		/*
++		 * Allocate QDMA channel first.
++		 * Modify the *lch to point it to the correct QDMA
++		 * channel and then check whether the same channel
++		 * has been allocated or not.
++		 */
++		*lch = dev_id - EDMA_QDMA_CHANNEL_0;
++		if (alloc_resource((*lch), RES_QDMA_CHANNEL) != (*lch)) {
++			/* QDMA Channel allocation failed */
++			pr_debug("QDMA channel allocation  failed \r\n");
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
++
++		/* Requested Channel allocated successfully */
+ 		*lch = dev_id;
++		pr_debug("QDMA channel %d allocated\r\n", (*lch));
++
++		/* Allocate param set */
++		param_id = alloc_resource(DAVINCI_EDMA_PARAM_ANY,
++					  RES_PARAM_SET);
++
++		if (param_id == -1) {
++			/* PaRAM Set allocation failed. */
++			/*free previously allocated resources*/
++			free_resource((dev_id - EDMA_QDMA_CHANNEL_0),
++				      RES_QDMA_CHANNEL);
++
++			pr_debug("PaRAM channel allocation  failed \r\n");
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
++		pr_debug("PaRAM Set %d allocated\r\n", param_id);
++
++		/* Allocate TCC */
++		tcc_val = alloc_resource(*tcc, RES_TCC);
++		if (tcc_val == -1) {
++			/* TCC allocation failed */
++			/* free previously allocated resources */
++			free_resource(param_id, RES_PARAM_SET);
++
++			free_resource((dev_id - EDMA_QDMA_CHANNEL_0),
++				      RES_QDMA_CHANNEL);
++
++			pr_debug("TCC channel allocation  failed \r\n");
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
++
++		pr_debug("TCC %d allocated\n", tcc_val);
++		*tcc = tcc_val;
++
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[*lch].param_id = param_id;
++		dma_ch_bound_res[*lch].tcc = *tcc;
++		spin_unlock(&dma_chan_lock);
++
++		/* all resources allocated */
++		/* Store the mapping b/w QDMA channel and TCC first. */
++		edma_qdma_ch_tcc_mapping[(*lch) - EDMA_QDMA_CHANNEL_0] = *tcc;
++
++		/* Register callback function */
++		register_callback((*tcc), callback, data);
++
++		/* Map QDMA channel to event queue */
++		map_qdma_ch_evt_queue((*lch) - EDMA_QDMA_CHANNEL_0, eventq_no);
++
++		/* Map QDMA channel to PaRAM Set */
++		map_qdma_ch_param_set((*lch) - EDMA_QDMA_CHANNEL_0, param_id);
++
++	} else if (dev_id == EDMA_DMA_CHANNEL_ANY) {
++		*lch = alloc_resource(EDMA_DMA_CHANNEL_ANY, RES_DMA_CHANNEL);
++		if ((*lch) == -1) {
++			pr_debug("EINVAL \r\n");
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
++		pr_debug("EDMA_DMA_CHANNEL_ANY::channel %d allocated\n",
++			    (*lch));
++
++		/* Allocate param set tied to the DMA channel
++		   (1-to-1 mapping) */
++		param_id = alloc_resource((*lch), RES_PARAM_SET);
++		if (param_id == -1) {
++			/*
++			 * PaRAM Set allocation failed, free previously
++			 * allocated resources.
++			 */
++			pr_debug("PaRAM Set allocation failed \r\n");
++			free_resource((*lch), RES_DMA_CHANNEL);
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
++		pr_debug("EDMA_DMA_CHANNEL_ANY::param %d allocated\n",
++			    param_id);
++
++		/* Allocate TCC */
++		*tcc = alloc_resource(*tcc, RES_TCC);
++
++		if (*tcc == -1) {
++			/* free previously allocated resources */
++			free_resource(param_id, RES_PARAM_SET);
++			free_resource((*lch), RES_DMA_CHANNEL);
++
++			pr_debug("free resource \r\n");
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
++		pr_debug("EDMA_DMA_CHANNEL_ANY:: tcc %d allocated\n",
++			    (*tcc));
++
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[*lch].param_id = param_id;
++		dma_ch_bound_res[*lch].tcc = *tcc;
++		spin_unlock(&dma_chan_lock);
++
++		/* all resources allocated */
++		/* Store the mapping b/w DMA channel and TCC first. */
++		edma_dma_ch_tcc_mapping[*lch] = *tcc;
++
++		/* Register callback function */
++		register_callback((*tcc), callback, data);
++
++		/* Map DMA channel to event queue */
++		map_dma_ch_evt_queue(*lch, eventq_no);
++
++		/* Map DMA channel to PaRAM Set */
++		map_dma_ch_param_set(*lch, param_id);
++
++	} else if (dev_id == EDMA_QDMA_CHANNEL_ANY) {
++		*lch = alloc_resource(dev_id, RES_QDMA_CHANNEL);
++
++		if ((*lch) == -1)   {
++			/* QDMA Channel allocation failed */
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
++		/* Channel allocated successfully */
++		*lch = ((*lch) + EDMA_QDMA_CHANNEL_0);
+ 
+-		if (!dmach_is_valid(dev_id))
+-			return -EINVAL;
++		pr_debug("EDMA_QDMA_CHANNEL_ANY::channel %d allocated\n",
++			    (*lch));
+ 
+-		dma_chan[*lch].param_no = reserve_param(*lch);
+-		if (dma_chan[*lch].param_no == -1)
+-			return -EBUSY;
++		/* Allocate param set */
++		param_id = alloc_resource(DAVINCI_EDMA_PARAM_ANY,
++					  RES_PARAM_SET);
++
++		if (param_id == -1) {
++			/*
++			 * PaRAM Set allocation failed, free previously
++			 * allocated resources.
++			 */
++			free_resource((dev_id - EDMA_QDMA_CHANNEL_0),
++				      RES_QDMA_CHANNEL);
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
++		pr_debug("EDMA_QDMA_CHANNEL_ANY::param %d allocated\n",
++			    param_id);
+ 
+-		temp_ch = dev_id - EDMA_NUM_DMACH;
+-		qdma2param_map[temp_ch] = dma_chan[*lch].param_no;
+-		temp_ch = qdma2param_map[temp_ch];
++		/* Allocate TCC */
++		tcc_val = alloc_resource(*tcc, RES_TCC);
+ 
+-		if (dma_chan[temp_ch].in_use)
+-			return -EBUSY;
++		if (tcc_val == -1) {
++			/* free previously allocated resources */
++			free_resource(param_id, RES_PARAM_SET);
++			free_resource((dev_id - EDMA_QDMA_CHANNEL_0),
++					RES_QDMA_CHANNEL);
+ 
+-		SET_REG_VAL(1 << (dev_id - EDMA_NUM_DMACH), EDMA_QRAE(0));
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
++		pr_debug("EDMA_QDMA_CHANNEL_ANY:: tcc %d allocated\n",
++			    tcc_val);
++		*tcc = tcc_val;
++
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[*lch].param_id = param_id;
++		dma_ch_bound_res[*lch].tcc = *tcc;
++		spin_unlock(&dma_chan_lock);
++
++		/* all resources allocated */
++		/* Store the mapping b/w QDMA channel and TCC first. */
++		edma_qdma_ch_tcc_mapping[(*lch) - EDMA_QDMA_CHANNEL_0] = *tcc;
+ 
+-		ret_val = request_dma_interrupt(callback, data, lch, tcc);
+-		if (ret_val)
+-			return ret_val;
++		/* Register callback function */
++		register_callback((*tcc), callback, data);
+ 
+ 		/* Map QDMA channel to event queue */
+-		map_qdmach2evt_queue(*lch, eventq_no);
++		map_qdma_ch_evt_queue((*lch) - EDMA_QDMA_CHANNEL_0, eventq_no);
++
+ 		/* Map QDMA channel to PaRAM Set */
+-		map_qdmach2param(*lch, dma_chan[*lch].param_no);
++		map_qdma_ch_param_set((*lch) - EDMA_QDMA_CHANNEL_0, param_id);
+ 
+-		dma_chan[temp_ch].tcc = dma_chan[*lch].tcc;
+-		dma_chan[temp_ch].param_no = dma_chan[*lch].param_no;
+-	} else if (dev_id == PARAM_ANY) {
+-		for (i = (EDMA_NUM_DMACH + EDMA_NUM_QDMACH);
+-		     i < EDMA_NUM_PARAMENTRY; i++) {
+-			if (!dma_chan[i].in_use) {
+-				*lch = i;
+-				temp_ch = *lch;
+-
+-				dma_chan[*lch].param_no = reserve_param(*lch);
+-				if (dma_chan[*lch].param_no == -1)
+-					return -EBUSY;
++	} else if (dev_id == DAVINCI_EDMA_PARAM_ANY) {
++		/* Check for the valid TCC */
++		if ((*tcc) >= EDMA_NUM_TCC)   {
++			/* Invalid TCC passed. */
++			ret_val = -EINVAL;
++			goto request_dma_exit;
++		}
+ 
+-				dma_chan[*lch].tcc = *tcc;
+-				break;
+-			}
++		/* Allocate a PaRAM Set */
++		*lch = alloc_resource(dev_id, RES_PARAM_SET);
++		if ((*lch) == -1) {
++			ret_val = -EINVAL;
++			goto request_dma_exit;
+ 		}
+-	}
++		pr_debug("DAVINCI_EDMA_PARAM_ANY:: link channel %d "
++			    "allocated\n", (*lch));
++
++		/* link channel allocated */
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[*lch].param_id = *lch;
++		spin_unlock(&dma_chan_lock);
++
++		/* assign the link field to NO link. i.e 0xFFFF */
++		SET_REG_VAL(0xFFFFu, EDMA_PARAM_LINK_BCNTRLD(*lch));
++
++		/*
++		 *  Check whether user has passed a NULL TCC or not.
++		 *  If it is not NULL, use that value to set the OPT.TCC field
++		 *  of the link channel and enable the interrupts also.
++		 *  Otherwise, disable the interrupts.
++		 */
++		reg = EDMA_PARAM_OPT(*lch);
++		if (*tcc >= 0) {
++			/* Set the OPT.TCC field */
++			CLEAR_REG_VAL(TCC, reg);
++			SET_REG_VAL(((0x3F & (*tcc)) << 12), reg);
++
++			/* Set TCINTEN bit in PaRAM entry */
++			SET_REG_VAL(TCINTEN, reg);
++
++			/* Store the TCC also */
++			spin_lock(&dma_chan_lock);
++			dma_ch_bound_res[*lch].tcc = *tcc;
++			spin_unlock(&dma_chan_lock);
++		} else {
++			CLEAR_REG_VAL(TCINTEN, reg);
++		}
++		goto request_dma_exit;
+ 
+-	dma_chan[temp_ch].in_use = 1;
+-	dma_chan[temp_ch].dev_id = *lch;
++	} else {
++		ret_val = -EINVAL;
++		goto request_dma_exit;
++	}
+ 
+-	reg = EDMA_PARAM_OPT(dma_chan[temp_ch].param_no);
+-	if (dma_chan[*lch].tcc != TCC_ANY) {
++	reg = EDMA_PARAM_OPT(param_id);
++	if (callback) {
+ 		CLEAR_REG_VAL(TCC, reg);
+-		SET_REG_VAL((0x3f & dma_chan[*lch].tcc) << 12, reg);
+-		/* set TCINTEN bit in PARAM entry */
++		SET_REG_VAL(((0x3F & (*tcc)) << 12), reg);
++
++		/* Set TCINTEN bit in PaRAM entry */
+ 		SET_REG_VAL(TCINTEN, reg);
+ 	} else {
+ 		CLEAR_REG_VAL(TCINTEN, reg);
+ 	}
+-	/* assign the link field to no link. i.e 0xffff */
+-	SET_REG_VAL(0xffff,
+-		    EDMA_PARAM_LINK_BCNTRLD(dma_chan[temp_ch].param_no));
+ 
+-	return 0;
++	/* assign the link field to NO link. i.e 0xFFFF */
++	SET_REG_VAL(0xFFFFu, EDMA_PARAM_LINK_BCNTRLD(param_id));
++
++request_dma_exit:
++	pr_debug("[%s]: end\n", __func__);
++
++	return ret_val;
+ }
+ EXPORT_SYMBOL(davinci_request_dma);
+ 
+-void davinci_free_dma(int lch)
++/*
++ * davinci_free_dma - free DMA channel
++ * Arguments:
++ *      dev_id     - request for the PaRAM entry device ID
++ *
++ * Return: zero on success, or corresponding error no on failure
++ */
++int davinci_free_dma(int lch)
+ {
+-	u32 reg, mask;
+-	int tcc;
+-
+-	if (dma_is_qdmach(lch))
+-		lch = qdma2param_map[lch - EDMA_NUM_DMACH];
+-
+-	free_param(dma_chan[lch].param_no);
+-
+-	if (lch >= 0 && lch < (EDMA_NUM_DMACH + EDMA_NUM_QDMACH)) {
+-		tcc = dma_chan[lch].tcc;
+-		free_dma_interrupt(tcc);
++	int param_id = 0;
++	int tcc = 0;
++	int ret_code = 0;
++
++	pr_debug("[%s]: start\n", __func__);
++	pr_debug("lch = %d\n", lch);
++
++	if (lch >=0 && lch < EDMA_NUM_DMACH)   {
++		/* Disable any ongoing transfer first */
++		davinci_stop_dma(lch);
++
++		/* Un-register the callback function */
++		unregister_callback(lch, RES_DMA_CHANNEL);
++
++		/* Remove DMA channel to PaRAM Set mapping */
++		if (davinci_edma_chmap_exist == 1)
++			CLEAR_REG_VAL(DMACH_PARAM_CLR_MASK, EDMA_DCHMAP(lch));
++
++		param_id = dma_ch_bound_res[lch].param_id;
++		tcc = dma_ch_bound_res[lch].tcc;
++
++		pr_debug("Free ParamSet %d\n", param_id);
++		free_resource(param_id, RES_PARAM_SET);
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[lch].param_id = 0;
++		spin_unlock(&dma_chan_lock);
++
++		pr_debug("Free TCC %d\n", tcc);
++		free_resource(tcc, RES_TCC);
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[lch].tcc = 0;
++		spin_unlock(&dma_chan_lock);
++
++		pr_debug("Free DMA channel %d\n", lch);
++		free_resource(lch, RES_DMA_CHANNEL);
++	} else  if (lch >= EDMA_NUM_DMACH && lch < davinci_edma_num_param) {
++		param_id = dma_ch_bound_res[lch].param_id;
++
++		pr_debug("Free LINK channel %d\n", param_id);
++		free_resource(param_id, RES_PARAM_SET);
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[lch].param_id = 0;
++		spin_unlock(&dma_chan_lock);
++	} else if (dma_is_qdmach(lch)) {
++		/* Disable any ongoing transfer first */
++		davinci_stop_dma(lch);
+ 
+-		if (lch < EDMA_NUM_DMACH) {
+-			/* Clear the corresponding IPR bits */
+-			reg = tcc < 32 ? EDMA_SH_ICR(0) : EDMA_SH_ICRH(0);
+-			mask = 1 << (tcc < 32 ? tcc : tcc - 32);
+-			SET_REG_VAL(mask, reg);
+-		}
++		/* Un-register the callback function */
++		unregister_callback(lch, RES_QDMA_CHANNEL);
+ 
+-		intr_data[tcc].callback = NULL;
+-		intr_data[tcc].data = NULL;
+-	}
++		/* Remove QDMA channel to PaRAM Set mapping */
++		CLEAR_REG_VAL(QDMACH_PARAM_CLR_MASK,
++			      EDMA_QCHMAP(lch - EDMA_QDMA_CHANNEL_0));
++		/* Reset trigger word */
++		CLEAR_REG_VAL(QDMACH_TRWORD_CLR_MASK,
++			      EDMA_QCHMAP(lch - EDMA_QDMA_CHANNEL_0));
++
++		param_id = dma_ch_bound_res[lch].param_id;
++		tcc = dma_ch_bound_res[lch].tcc;
++
++		pr_debug("Free ParamSet %d\n", param_id);
++		free_resource(param_id, RES_PARAM_SET);
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[lch].param_id = 0;
++		spin_unlock(&dma_chan_lock);
++
++		pr_debug("Free TCC %d\n", tcc);
++		free_resource(tcc, RES_TCC);
++		spin_lock(&dma_chan_lock);
++		dma_ch_bound_res[lch].tcc = 0;
++		spin_unlock(&dma_chan_lock);
++
++		pr_debug("Free QDMA channel %d\n", lch);
++		free_resource(lch - EDMA_QDMA_CHANNEL_0, RES_QDMA_CHANNEL);
++	} else
++		ret_code = -1;
+ 
+-	dma_chan[lch].in_use = 0;
++	pr_debug("[%s]: end\n", __func__);
++	return ret_code;
+ }
+ EXPORT_SYMBOL(davinci_free_dma);
+ 
+-/**
++/*
+  * DMA source parameters setup
+  * Arguments:
+  *     lch - logical channel number
+  *     src_port - Source port address
+- *     mode - indicates wether addressing mode is fifo.
++ *     mode - indicates wether addressing mode is FIFO
+  */
+-void davinci_set_dma_src_params(int lch, u32 src_port,
+-				enum address_mode mode, enum fifo_width width)
++int davinci_set_dma_src_params(int lch, u32 src_port,
++			       enum address_mode mode, enum fifo_width width)
+ {
++	int param_id = 0;
+ 	u32 reg;
+ 
+-	if (dma_is_qdmach(lch))
+-		lch = qdma2param_map[lch - EDMA_NUM_DMACH];
++	pr_debug("[%s]: start\n", __func__);
+ 
+-	if (!(lch >= 0 && lch < EDMA_NUM_PARAMENTRY))
+-		return;
++	if (!(lch >= 0 && lch < edma_max_logical_ch)) {
++		pr_debug("[%s]: end\n", __func__);
++		return -1;
++	}
+ 
+-	dma_write(src_port, EDMA_PARAM_SRC(dma_chan[lch].param_no));
+-	/* set the fifo addressing mode */
++	/* Address in FIFO mode not 32 bytes aligned */
++	if ((mode) && ((src_port & 0x1Fu) != 0)) {
++		pr_debug("[%s]: end\n", __func__);
++		return -1;
++	}
++
++	param_id = dma_ch_bound_res[lch].param_id;
++
++	/* Set the source port address in source register of PaRAM structure */
++	dma_write(src_port, EDMA_PARAM_SRC(param_id));
++
++	/* Set the FIFO addressing mode */
+ 	if (mode) {
+-		reg = EDMA_PARAM_OPT(dma_chan[lch].param_no);
++		reg = EDMA_PARAM_OPT(param_id);
+ 		/* reset SAM and FWID */
+ 		CLEAR_REG_VAL(SAM | EDMA_FWID, reg);
+ 		/* set SAM and program FWID */
+-		SET_REG_VAL(mode | ((width & 0x7) << 8), reg);
++		SET_REG_VAL(SAM | ((width & 0x7) << 8), reg);
+ 	}
++	pr_debug("[%s]: end\n", __func__);
++	return 0;
+ }
+ EXPORT_SYMBOL(davinci_set_dma_src_params);
+ 
+-/**
++/*
+  * DMA destination parameters setup
+  * Arguments:
+- *     lch - logical channel number or param device
++ *     lch - logical channel number or PaRAM device
+  *     dest_port - destination port address
+- *     mode - indicates wether addressing mode is fifo.
++ *     mode - indicates wether addressing mode is FIFO
+  */
+-void davinci_set_dma_dest_params(int lch, u32 dest_port,
+-				 enum address_mode mode, enum fifo_width width)
++
++int davinci_set_dma_dest_params(int lch, u32 dest_port,
++				enum address_mode mode, enum fifo_width width)
+ {
++	int param_id = 0;
+ 	u32 reg;
+ 
+-	if (dma_is_qdmach(lch))
+-		lch = qdma2param_map[lch - EDMA_NUM_DMACH];
++	pr_debug("[%s]: start\n", __func__);
+ 
+-	if (!(lch >= 0 && lch < EDMA_NUM_PARAMENTRY))
+-		return;
++	if (!(lch >= 0 && lch < edma_max_logical_ch)) {
++		pr_debug("[%s]: end\n", __func__);
++		return -1;
++	}
++
++	if ((mode) && ((dest_port & 0x1Fu) != 0))   {
++		/* Address in FIFO mode not 32 bytes aligned */
++		pr_debug("[%s]: end\n", __func__);
++		return -1;
++	}
++
++	param_id = dma_ch_bound_res[lch].param_id;
+ 
+-	dma_write(dest_port, EDMA_PARAM_DST(dma_chan[lch].param_no));
+-	/* set the fifo addressing mode */
++	/* Set the dest port address in dest register of PaRAM structure */
++	dma_write(dest_port, EDMA_PARAM_DST(param_id));
++
++	/* Set the FIFO addressing mode */
+ 	if (mode) {
+-		reg = EDMA_PARAM_OPT(dma_chan[lch].param_no);
++		reg = EDMA_PARAM_OPT(param_id);
+ 		/* reset DAM and FWID */
+-		CLEAR_REG_VAL(DAM | EDMA_FWID, reg);
++		CLEAR_REG_VAL((DAM | EDMA_FWID), reg);
+ 		/* set DAM and program FWID */
+-		SET_REG_VAL((mode << 1) | ((width & 0x7) << 8), reg);
++		SET_REG_VAL((DAM | ((width & 0x7) << 8)), reg);
+ 	}
++	pr_debug("[%s]: end\n", __func__);
++	return 0;
+ }
+ EXPORT_SYMBOL(davinci_set_dma_dest_params);
+ 
+-/**
++/*
+  * DMA source index setup
+  * Arguments:
+  *     lch - logical channel number or param device
+  *     srcbidx - source B-register index
+  *     srccidx - source C-register index
+  */
+-void davinci_set_dma_src_index(int lch, u16 src_bidx, u16 src_cidx)
++
++int davinci_set_dma_src_index(int lch, u16 src_bidx, u16 src_cidx)
+ {
++	int param_id = 0;
+ 	u32 reg;
+ 
+-	if (dma_is_qdmach(lch))
+-		lch = qdma2param_map[lch - EDMA_NUM_DMACH];
++	pr_debug("[%s]: start\n", __func__);
++	if (!(lch >= 0 && lch < edma_max_logical_ch)) {
++		pr_debug("[%s]: end\n", __func__);
++		return -1;
++	}
+ 
+-	if (!(lch >= 0 && lch < EDMA_NUM_PARAMENTRY))
+-		return;
++	param_id = dma_ch_bound_res[lch].param_id;
+ 
+-	reg = EDMA_PARAM_SRC_DST_BIDX(dma_chan[lch].param_no);
++	reg = EDMA_PARAM_SRC_DST_BIDX(param_id);
+ 	CLEAR_REG_VAL(0xffff, reg);
+ 	SET_REG_VAL(src_bidx, reg);
+ 
+-	reg = EDMA_PARAM_SRC_DST_CIDX(dma_chan[lch].param_no);
++	reg = EDMA_PARAM_SRC_DST_CIDX(param_id);
+ 	CLEAR_REG_VAL(0xffff, reg);
+ 	SET_REG_VAL(src_cidx, reg);
++
++	pr_debug("[%s]: end\n", __func__);
++	return 0;
+ }
+ EXPORT_SYMBOL(davinci_set_dma_src_index);
+ 
+-/**
++/*
+  * DMA destination index setup
+  * Arguments:
+  *     lch - logical channel number or param device
+- *     srcbidx - dest B-register index
+- *     srccidx - dest C-register index
++ *     dest_bidx - source B-register index
++ *     dest_cidx - source C-register index
+  */
+-void davinci_set_dma_dest_index(int lch, u16 dest_bidx, u16 dest_cidx)
++
++int davinci_set_dma_dest_index(int lch, u16 dest_bidx, u16 dest_cidx)
+ {
++	int param_id = 0;
+ 	u32 reg;
+ 
+-	if (dma_is_qdmach(lch))
+-		lch = qdma2param_map[lch - EDMA_NUM_DMACH];
++	pr_debug("[%s]: start\n", __func__);
++	if (!(lch >= 0 && lch < edma_max_logical_ch)) {
++		pr_debug("[%s]: end\n", __func__);
++		return -1;
++	}
+ 
+-	if (!(lch >= 0 && lch < EDMA_NUM_PARAMENTRY))
+-		return;
++	param_id = dma_ch_bound_res[lch].param_id;
+ 
+-	reg = EDMA_PARAM_SRC_DST_BIDX(dma_chan[lch].param_no);
++	reg = EDMA_PARAM_SRC_DST_BIDX(param_id);
+ 	CLEAR_REG_VAL(0xffff0000, reg);
+-	SET_REG_VAL((u32)dest_bidx << 16, reg);
++	SET_REG_VAL(dest_bidx << 16, reg);
+ 
+-	reg = EDMA_PARAM_SRC_DST_CIDX(dma_chan[lch].param_no);
++	reg = EDMA_PARAM_SRC_DST_CIDX(param_id);
+ 	CLEAR_REG_VAL(0xffff0000, reg);
+-	SET_REG_VAL((u32)dest_cidx << 16, reg);
++	SET_REG_VAL(dest_cidx << 16, reg);
++
++	pr_debug("[%s]: end\n", __func__);
++	return 0;
+ }
+ EXPORT_SYMBOL(davinci_set_dma_dest_index);
+ 
+-/**
++/*
+  * DMA transfer parameters setup
+- * Arguments:
+- *     lch - logical channel number or param device
+- *     acnt - acnt register value to be configured
+- *     bcnt - bcnt register value to be configured
+- *     ccnt - ccnt register value to be configured
++ * ARGUMENTS:
++ *      lch  - channel or param device for configuration of aCount, bCount and
++ *         cCount regs.
++ *      acnt - acnt register value to be configured
++ *      bcnt - bcnt register value to be configured
++ *      ccnt - ccnt register value to be configured
+  */
+-void davinci_set_dma_transfer_params(int lch, u16 acnt, u16 bcnt, u16 ccnt,
+-				     u16 bcntrld, enum sync_dimension sync_mode)
++int davinci_set_dma_transfer_params(int lch, u16 acnt, u16 bcnt, u16 ccnt,
++				    u16 bcntrld, enum sync_dimension sync_mode)
+ {
+ 	u32 reg;
++	int param_id = 0;
++	int ret_code = 0;
+ 
+-	if (dma_is_qdmach(lch))
+-		lch = qdma2param_map[lch - EDMA_NUM_DMACH];
++	pr_debug("[%s]: start\n", __func__);
+ 
+-	if (!(lch >= 0 && lch < EDMA_NUM_PARAMENTRY))
+-		return;
++	if ((lch >= 0) && (lch < edma_max_logical_ch)) {
+ 
+-	reg = EDMA_PARAM_LINK_BCNTRLD(dma_chan[lch].param_no);
+-	CLEAR_REG_VAL(0xffff0000, reg);
+-	SET_REG_VAL((u32)bcntrld << 16, reg);
++		param_id = dma_ch_bound_res[lch].param_id;
+ 
+-	reg = EDMA_PARAM_OPT(dma_chan[lch].param_no);
+-	if (sync_mode == ASYNC)
+-		CLEAR_REG_VAL(SYNCDIM, reg);
+-	else
+-		SET_REG_VAL(SYNCDIM, reg);
++		reg = EDMA_PARAM_LINK_BCNTRLD(param_id);
++		CLEAR_REG_VAL(0xffff0000, reg);
++		SET_REG_VAL(((u32)bcntrld & 0xffff) << 16, reg);
++
++		reg = EDMA_PARAM_OPT(param_id);
++		if (sync_mode == ASYNC)
++			CLEAR_REG_VAL(SYNCDIM, reg);
++		else
++			SET_REG_VAL(SYNCDIM, reg);
++
++		/* Set the acount, bcount, ccount registers */
++		dma_write((((u32)bcnt & 0xffff) << 16) | acnt,
++			  EDMA_PARAM_A_B_CNT(param_id));
++		dma_write(ccnt, EDMA_PARAM_CCNT(param_id));
++	} else
++		ret_code = -1;
+ 
+-	/* Set the acount, bcount, ccount registers */
+-	dma_write(((u32)bcnt << 16) | acnt,
+-		  EDMA_PARAM_A_B_CNT(dma_chan[lch].param_no));
+-	dma_write(ccnt, EDMA_PARAM_CCNT(dma_chan[lch].param_no));
++	pr_debug("[%s]: end\n", __func__);
++	return ret_code;
+ }
+ EXPORT_SYMBOL(davinci_set_dma_transfer_params);
+ 
+-void davinci_set_dma_params(int lch, struct paramentry_descriptor *d)
++/*
++ * davinci_set_dma_params -
++ * ARGUMENTS:
++ *      lch - logical channel number
++ */
++int davinci_set_dma_params(int lch, struct paramentry_descriptor *d)
+ {
+-	if (dma_is_qdmach(lch))
+-		lch = qdma2param_map[lch - EDMA_NUM_DMACH];
++	int param_id = 0;
++	int ret_code = 0;
+ 
+-	if (!(lch >= 0 && lch < EDMA_NUM_PARAMENTRY))
+-		return;
++	pr_debug("[%s]: start\n", __func__);
++	if (d && (lch >= 0) && (lch < edma_max_logical_ch)) {
++		param_id = dma_ch_bound_res[lch].param_id;
++
++		dma_write(d->opt, EDMA_PARAM_OPT(param_id));
++		dma_write(d->src, EDMA_PARAM_SRC(param_id));
++		dma_write(d->a_b_cnt, EDMA_PARAM_A_B_CNT(param_id));
++		dma_write(d->dst, EDMA_PARAM_DST(param_id));
++		dma_write(d->src_dst_bidx, EDMA_PARAM_SRC_DST_BIDX(param_id));
++		dma_write(d->link_bcntrld, EDMA_PARAM_LINK_BCNTRLD(param_id));
++		dma_write(d->src_dst_cidx, EDMA_PARAM_SRC_DST_CIDX(param_id));
++		dma_write(d->ccnt, EDMA_PARAM_CCNT(param_id));
++	} else
++		ret_code = -1;
+ 
+-	dma_write(d->opt, EDMA_PARAM_OPT(dma_chan[lch].param_no));
+-	dma_write(d->src, EDMA_PARAM_SRC(dma_chan[lch].param_no));
+-	dma_write(d->a_b_cnt, EDMA_PARAM_A_B_CNT(dma_chan[lch].param_no));
+-	dma_write(d->dst, EDMA_PARAM_DST(dma_chan[lch].param_no));
+-	dma_write(d->src_dst_bidx,
+-		      EDMA_PARAM_SRC_DST_BIDX(dma_chan[lch].param_no));
+-	dma_write(d->link_bcntrld,
+-		      EDMA_PARAM_LINK_BCNTRLD(dma_chan[lch].param_no));
+-	dma_write(d->src_dst_cidx,
+-		      EDMA_PARAM_SRC_DST_CIDX(dma_chan[lch].param_no));
+-	dma_write(d->ccnt, EDMA_PARAM_CCNT(dma_chan[lch].param_no));
++	pr_debug("[%s]: end\n", __func__);
++	return ret_code;
+ }
+ EXPORT_SYMBOL(davinci_set_dma_params);
+ 
+-void davinci_get_dma_params(int lch, struct paramentry_descriptor *d)
++/*
++ * davinci_get_dma_params -
++ * ARGUMENTS:
++ *      lch - logical channel number
++ */
++int davinci_get_dma_params(int lch, struct paramentry_descriptor *d)
+ {
+-	if (dma_is_qdmach(lch))
+-		lch = qdma2param_map[lch - EDMA_NUM_DMACH];
+-
+-	if (!(lch >= 0 && lch < EDMA_NUM_PARAMENTRY))
+-		return;
++	int param_id = 0;
+ 
+-	d->opt = dma_read(EDMA_PARAM_OPT(dma_chan[lch].param_no));
+-	d->src = dma_read(EDMA_PARAM_SRC(dma_chan[lch].param_no));
+-	d->a_b_cnt = dma_read(EDMA_PARAM_A_B_CNT(dma_chan[lch].param_no));
+-	d->dst = dma_read(EDMA_PARAM_DST(dma_chan[lch].param_no));
+-	d->src_dst_bidx =
+-	    dma_read(EDMA_PARAM_SRC_DST_BIDX(dma_chan[lch].param_no));
+-	d->link_bcntrld =
+-	    dma_read(EDMA_PARAM_LINK_BCNTRLD(dma_chan[lch].param_no));
+-	d->src_dst_cidx =
+-	    dma_read(EDMA_PARAM_SRC_DST_CIDX(dma_chan[lch].param_no));
+-	d->ccnt = dma_read(EDMA_PARAM_CCNT(dma_chan[lch].param_no));
++	pr_debug("[%s]: start\n", __func__);
++	if ((d == NULL) || (lch >= edma_max_logical_ch)) {
++		pr_debug("[%s]: end\n", __func__);
++		return -1;
++	}
++
++	param_id = dma_ch_bound_res[lch].param_id;
++
++	d->opt = dma_read(EDMA_PARAM_OPT(param_id));
++	d->src = dma_read(EDMA_PARAM_SRC(param_id));
++	d->a_b_cnt = dma_read(EDMA_PARAM_A_B_CNT(param_id));
++	d->dst = dma_read(EDMA_PARAM_DST(param_id));
++	d->src_dst_bidx = dma_read(EDMA_PARAM_SRC_DST_BIDX(param_id));
++	d->link_bcntrld = dma_read(EDMA_PARAM_LINK_BCNTRLD(param_id));
++	d->src_dst_cidx = dma_read(EDMA_PARAM_SRC_DST_CIDX(param_id));
++	d->ccnt = dma_read(EDMA_PARAM_CCNT(param_id));
++	pr_debug("[%s]: end\n", __func__);
++	return 0;
+ }
+ EXPORT_SYMBOL(davinci_get_dma_params);
+ 
+-/**
+- * DMA start - starts the dma on the channel passed
++/*
++ * davinci_start_dma - starts the DMA on the channel passed
+  * Arguments:
+  *     lch - logical channel number
+  */
+ int davinci_start_dma(int lch)
+ {
+ 	int ret = 0;
+-	u32 mask;
++	int mask = 0;
+ 
++	pr_debug("[%s]: start\n", __func__);
+ 	if (dma_is_edmach(lch)) {
+-		/* Check is EDMA channel with event association */
+-		if (!edmach_has_event(lch)) {
+-			DBG("ESR=%x\n", dma_read(EDMA_SH_ESR(0)));
++		/* DMA Channel */
++		if (edmach_has_event(lch)) {
+ 
+-			if (lch < 32)
+-				SET_REG_VAL(1 << lch, EDMA_SH_ESR(0));
+-			else
+-				SET_REG_VAL(1 << (lch - 32), EDMA_SH_ESRH(0));
+-
+-			return ret;
+-		}
++			pr_debug("ER=%d\n", dma_read(EDMA_SH_ER(0)));
+ 
+-		DBG("ER=%d\n", dma_read(EDMA_SH_ER(0)));
+-		if (lch < 32) {
+-			mask = 1 << lch;
+-			/* Clear any pedning error */
+-			SET_REG_VAL(mask, EDMA_EMCR);
+-			/* Clear any SER */
+-			SET_REG_VAL(mask, EDMA_SH_SECR(0));
+-			SET_REG_VAL(mask, EDMA_SH_EESR(0));
++			if (lch < 32)   {
++				mask = 1 << lch;
++				/* Clear any pedning error */
++				dma_write(mask, EDMA_EMCR);
++				/* Clear any SER */
++				dma_write(mask, EDMA_SH_SECR(0));
++				dma_write(mask, EDMA_SH_EESR(0));
++				dma_write(mask, EDMA_SH_ECR(0));
++			} else {
++				mask = 1 << (lch - 32);
++				/* Clear any pedning error */
++				dma_write(mask, EDMA_EMCRH);
++				/* Clear any SER */
++				dma_write(mask, EDMA_SH_SECRH(0));
++				dma_write(mask, EDMA_SH_EESRH(0));
++				dma_write(mask, EDMA_SH_ECRH(0));
++			}
++			pr_debug("EER=%d\n", dma_read(EDMA_SH_EER(0)));
+ 		} else {
+-			mask = 1 << (lch - 32);
+-			/* Clear any pedning error */
+-			SET_REG_VAL(mask, EDMA_EMCRH);
+-			/* Clear any SER */
+-			SET_REG_VAL(mask, EDMA_SH_SECRH(0));
+-			SET_REG_VAL(mask, EDMA_SH_EESRH(0));
++			pr_debug("ESR=%x\n", dma_read(EDMA_SH_ESR(0)));
++
++			if (lch < 32)
++				dma_write(1 << lch, EDMA_SH_ESR(0));
++			else
++				dma_write(1 << (lch - 32), EDMA_SH_ESRH(0));
+ 		}
+-		DBG("EER=%d\n", dma_read(EDMA_SH_EER(0)));
+ 	} else if (dma_is_qdmach(lch)) {
+-		SET_REG_VAL(1 << (lch - EDMA_NUM_DMACH), EDMA_SH_QEESR(0));
++		/* QDMA Channel */
++		dma_write(1 << (lch - EDMA_QDMA_CHANNEL_0), EDMA_SH_QEESR(0));
+ 	} else {
+-		/* for Slave Channels */
+-		ret = -EINVAL;
++		ret = EINVAL;
+ 	}
+-
++	pr_debug("[%s]: end\n", __func__);
+ 	return ret;
+ }
+ EXPORT_SYMBOL(davinci_start_dma);
+ 
+-/**
+- * DMA stop - stops the dma on the channel passed
++/*
++ * davinci_stop_dma - stops the DMA on the channel passed
+  * Arguments:
+  *     lch - logical channel number
+  */
+-void davinci_stop_dma(int lch)
++int davinci_stop_dma(int lch)
+ {
+-	u32 reg, mask;
++	u32 reg;
++	u32 mask;
++	int ret_code = 0;
+ 
+-	if (lch < EDMA_NUM_DMACH) {
+-		/* Check is EDMA channel with event association */
+-		if (!edmach_has_event(lch))
+-			return;
++	pr_debug("[%s]: start\n", __func__);
+ 
++	if (lch >= 0 && lch < EDMA_NUM_DMACH) {
++		/* DMA Channel */
+ 		if (lch < 32) {
+-			reg = EDMA_SH_EECR(0);
+ 			mask = 1 << lch;
+-			CLEAR_EVENT(mask, EDMA_SH_ER(0), EDMA_SH_ECR(0));
++			if (edmach_has_event(lch)) {
++				reg = EDMA_SH_EECR(0);
++				dma_write(mask, reg);
++				CLEAR_EVENT(mask, EDMA_SH_ER(0),
++					    EDMA_SH_ECR(0));
++			}
+ 			CLEAR_EVENT(mask, EDMA_SH_SER(0), EDMA_SH_SECR(0));
+ 			CLEAR_EVENT(mask, EDMA_EMR, EDMA_EMCR);
+ 		} else {
+-			reg = EDMA_SH_EECRH(0);
+ 			mask = 1 << (lch - 32);
+-			CLEAR_EVENT(mask, EDMA_SH_ERH(0), EDMA_SH_ECRH(0));
++			if (edmach_has_event(lch)) {
++				reg = EDMA_SH_EECRH(0);
++				dma_write(mask, reg);
++				CLEAR_EVENT(mask, EDMA_SH_ERH(0),
++					    EDMA_SH_ECRH(0));
++			}
+ 			CLEAR_EVENT(mask, EDMA_SH_SERH(0), EDMA_SH_SECRH(0));
+ 			CLEAR_EVENT(mask, EDMA_EMRH, EDMA_EMCRH);
+ 		}
+-		SET_REG_VAL(mask, reg);
+-		DBG("EER=%d\n", dma_read(EDMA_SH_EER(0)));
++		pr_debug("EER=%d\n", dma_read(EDMA_SH_EER(0)));
+ 	} else if (dma_is_qdmach(lch)) {
+-		/* for QDMA channels */
+-		SET_REG_VAL(1 << (lch - EDMA_NUM_DMACH), EDMA_QEECR);
+-		DBG("QER=%d\n", dma_read(EDMA_QER));
+-		DBG("QEER=%d\n", dma_read(EDMA_QEER));
+-	} else if ((lch >= (EDMA_NUM_DMACH + EDMA_NUM_QDMACH)) &&
+-		   lch < EDMA_NUM_PARAMENTRY) {
+-		/* for slaveChannels */
+-		CLEAR_REG_VAL(0xffff, EDMA_PARAM_LINK_BCNTRLD(lch));
+-		SET_REG_VAL(0xffff, EDMA_PARAM_LINK_BCNTRLD(lch));
+-	}
++		/* QDMA Channel */
++		dma_write(1 << (lch - EDMA_QDMA_CHANNEL_0), EDMA_QEECR);
++		pr_debug("QER=%d\n", dma_read(EDMA_QER));
++		pr_debug("QEER=%d\n", dma_read(EDMA_QEER));
++	} else
++		ret_code = -1;
++
++	pr_debug("[%s]: end\n", __func__);
++	return ret_code;
+ }
+ EXPORT_SYMBOL(davinci_stop_dma);
+ 
+-/**
+- * DMA channel link - link the two logical channels passed through by linking
+- *                    the link field of head to the param pointed by the
+- *                    lch_queue.
+- * Arguments:
+- *     lch_head  - logical channel number, in which the link field is linked
+- *                 to the param pointed to by lch_queue
+- *     lch_queue - logical channel number or the param entry number, which is
++/*
++ * davinci_dma_link_lch - link two logical channels passed through by linking
++ *			  the link field of head to the param pointed by the
++ * 			  lch_queue.
++ * Arguments:
++ *     lch_head  - logical channel number in which the link field is linked
++ *                 to the PaRAM pointed to by lch_queue
++ *     lch_queue - logical channel number or the PaRAM entry number which is
+  *                 to be linked to the lch_head
+  */
+-void davinci_dma_link_lch(int lch_head, int lch_queue)
++int davinci_dma_link_lch(int lch_head, int lch_queue)
+ {
+ 	u16 link;
+ 	u32 reg;
++	int ret_code = 0;
++
++	pr_debug("[%s]: start\n", __func__);
+ 
+-	if (dma_is_qdmach(lch_head))
+-		lch_head = qdma2param_map[lch_head - EDMA_NUM_DMACH];
++	if ((lch_head  >=0 && lch_head  < edma_max_logical_ch) ||
++	    (lch_queue >=0 && lch_queue < edma_max_logical_ch)) {
++		unsigned int param1_id = 0;
++		unsigned int param2_id = 0;
+ 
+-	if (dma_is_qdmach(lch_queue))
+-		lch_queue = qdma2param_map[lch_queue - EDMA_NUM_DMACH];
++		param1_id = dma_ch_bound_res[lch_head].param_id;
++		param2_id = dma_ch_bound_res[lch_queue].param_id;
+ 
+-	if ((lch_head >= 0 && lch_head < EDMA_NUM_PARAMENTRY) &&
+-	    (lch_queue >= 0 && lch_queue < EDMA_NUM_PARAMENTRY)) {
+ 		/* program LINK */
+-		link = (u16)
+-		       IO_ADDRESS(EDMA_PARAM_OPT(dma_chan[lch_queue].param_no));
+-		reg = EDMA_PARAM_LINK_BCNTRLD(dma_chan[lch_head].param_no);
++		link = (u16) IO_ADDRESS(EDMA_PARAM_OPT(param2_id));
++
++		reg = EDMA_PARAM_LINK_BCNTRLD(param1_id);
+ 		CLEAR_REG_VAL(0xffff, reg);
+ 		SET_REG_VAL(link, reg);
+-	}
++	} else
++		ret_code = -1;
++
++	pr_debug("[%s]: end\n", __func__);
++	return ret_code;
+ }
+ EXPORT_SYMBOL(davinci_dma_link_lch);
+ 
+-/**
+- * DMA channel unlink - unlink the two logical channels passed through by
+- *                      setting the link field of head to 0xffff.
++/*
++ * davinci_dma_unlink_lch - unlink the two logical channels passed through by
++ *			    setting the link field of head to 0xffff.
+  * Arguments:
+- *     lch_head - logical channel number, from which the link field is
++ *     lch_head - logical channel number from which the link field is
+  *                to be removed
+- *     lch_queue - logical channel number or the param entry number,
++ *     lch_queue - logical channel number or the PaRAM entry number,
+  *                 which is to be unlinked from lch_head
+  */
+-void davinci_dma_unlink_lch(int lch_head, int lch_queue)
++int davinci_dma_unlink_lch(int lch_head, int lch_queue)
+ {
+ 	u32 reg;
++	unsigned int param_id = 0;
++	int ret_code = 0;
+ 
+-	if (dma_is_qdmach(lch_head))
+-		lch_head = qdma2param_map[lch_head - EDMA_NUM_DMACH];
++	pr_debug("[%s]: start\n", __func__);
+ 
+-	if (dma_is_qdmach(lch_queue))
+-		lch_queue = qdma2param_map[lch_queue - EDMA_NUM_DMACH];
+-
+-	if ((lch_head >= 0 && lch_head < EDMA_NUM_PARAMENTRY) &&
+-	    (lch_queue >= 0 && lch_queue < EDMA_NUM_PARAMENTRY)) {
+-		reg = EDMA_PARAM_LINK_BCNTRLD(dma_chan[lch_head].param_no);
++	if ((lch_head  >=0 && lch_head  < edma_max_logical_ch) ||
++	    (lch_queue >=0 && lch_queue < edma_max_logical_ch)) {
++		param_id = dma_ch_bound_res[lch_head].param_id;
++		reg = EDMA_PARAM_LINK_BCNTRLD(param_id);
+ 		SET_REG_VAL(0xffff, reg);
+-	}
++	} else
++		ret_code = -1;
++
++	pr_debug("[%s]: end\n", __func__);
++	return ret_code;
+ }
+ EXPORT_SYMBOL(davinci_dma_unlink_lch);
+ 
+-/**
+- * DMA clean channel - cleans Paramentry and bring back EDMA to initial state
+- * if media has been removed before EDMA has finished. It is usedful for
+- * removable media.
++/*
++ * davinci_dma_chain_lch - chains two logical channels passed through
++ * ARGUMENTS:
++ * lch_head - logical channel number which will trigger the chained channel
++ *              'lch_queue'
++ * lch_queue - logical channel number which will be triggered by 'lch_head'
++ */
++int davinci_dma_chain_lch(int lch_head, int lch_queue)
++{
++	int ret_code = 0;
++
++	pr_debug("[%s]: start\n", __func__);
++
++	if ((lch_head  >=0 && lch_head  < edma_max_logical_ch) ||
++	    (lch_queue >=0 && lch_queue < edma_max_logical_ch)) {
++		unsigned int param_id = 0;
++
++		param_id = dma_ch_bound_res[lch_head].param_id;
++
++		/* set TCCHEN */
++		SET_REG_VAL(TCCHEN, EDMA_PARAM_OPT(param_id));
++
++		/* Program TCC */
++		CLEAR_REG_VAL(TCC, EDMA_PARAM_OPT(param_id));
++		SET_REG_VAL((lch_queue & 0x3f) << 12, EDMA_PARAM_OPT(param_id));
++	} else
++		ret_code = -1;
++
++	pr_debug("[%s]: end\n", __func__);
++	return ret_code;
++}
++EXPORT_SYMBOL(davinci_dma_chain_lch);
++
++/*
++ * davinci_dma_unchain_lch - unchain the logical channels passed through
++ * ARGUMENTS:
++ * lch_head - logical channel number from which the link field is to be removed
++ * lch_queue - logical channel number or the PaRAM entry number which is to be
++ *             unlinked from lch_head
++ */
++int davinci_dma_unchain_lch(int lch_head, int lch_queue)
++{
++	int ret_code = 0;
++
++	pr_debug("[%s]: start\n", __func__);
++
++	if ((lch_head  >=0 && lch_head  < edma_max_logical_ch) ||
++	    (lch_queue >=0 && lch_queue < edma_max_logical_ch)) {
++		unsigned int param_id = 0;
++
++		param_id = dma_ch_bound_res[lch_head].param_id;
++
++		/* reset TCCHEN */
++		SET_REG_VAL(~TCCHEN, EDMA_PARAM_OPT(param_id));
++		/* reset ITCCHEN */
++		SET_REG_VAL(~ITCCHEN, EDMA_PARAM_OPT(param_id));
++	} else
++		ret_code = -1;
++
++	pr_debug("[%s]: end\n", __func__);
++	return ret_code;
++}
++EXPORT_SYMBOL(davinci_dma_unchain_lch);
++
++/*
++ * davinci_clean_channel - clean PaRAM entry and bring back EDMA to initial
++ *			   state if media has been removed before EDMA has
++ *			   finished.  It is useful for removable media.
+  * Arguments:
+  *     lch - logical channel number
+  */
+ void davinci_clean_channel(int lch)
+ {
+-	u32 mask;
++	u32 mask, value = 0, count;
+ 
++	pr_debug("[%s]: start\n", __func__);
++
++	if (lch < 0 || lch >= EDMA_NUM_DMACH)
++		return;
+ 	if (lch < 32) {
+-		DBG("EMR =%d\n", dma_read(EDMA_EMR));
++		pr_debug("EMR =%d\n", dma_read(EDMA_EMR));
+ 		mask = 1 << lch;
+-		SET_REG_VAL(mask, EDMA_SH_ECR(0));
++		dma_write(mask, EDMA_SH_ECR(0));
+ 		/* Clear the corresponding EMR bits */
+-		SET_REG_VAL(mask, EDMA_EMCR);
++		dma_write(mask, EDMA_EMCR);
+ 		/* Clear any SER */
+-		SET_REG_VAL(mask, EDMA_SH_SECR(0));
++		dma_write(mask, EDMA_SH_SECR(0));
++		/* Clear any EER */
++		dma_write(mask, EDMA_SH_EECR(0));
++
+ 	} else {
+-		DBG("EMRH =%d\n", dma_read(EDMA_EMRH));
++		pr_debug("EMRH =%d\n", dma_read(EDMA_EMRH));
+ 		mask = 1 << (lch - 32);
+-		SET_REG_VAL(mask, EDMA_SH_ECRH(0));
++		dma_write(mask, EDMA_SH_ECRH(0));
+ 		/* Clear the corresponding EMRH bits */
+-		SET_REG_VAL(mask, EDMA_EMCRH);
++		dma_write(mask, EDMA_EMCRH);
+ 		/* Clear any SER */
+-		SET_REG_VAL(mask, EDMA_SH_SECRH(0));
++		dma_write(mask, EDMA_SH_SECRH(0));
++		/* Clear any EERH */
++		dma_write(mask, EDMA_SH_EECRH(0));
+ 	}
+ 
+-	SET_REG_VAL((1 << 16) | 0x3, EDMA_CCERRCLR);
++	for (count = 0; count < davinci_edma_num_evtq; count++)
++		value |= (1u << count);
++
++	dma_write((1 << 16) | value, EDMA_CCERRCLR);
++
++	pr_debug("[%s]: end\n", __func__);
+ }
+ EXPORT_SYMBOL(davinci_clean_channel);
+ 
+-/**
+- * DMA transfer position - returns the current transfer points for the dma
++/*
++ * davinci_dma_getposition - returns the current transfer points for the DMA
+  * source and destination
+  * Arguments:
+  *     lch - logical channel number
+@@ -861,59 +2258,208 @@ void davinci_dma_getposition(int lch, dm
+ }
+ EXPORT_SYMBOL(davinci_dma_getposition);
+ 
+-static int __init davinci_dma_init(void)
++/*
++ * EDMA3 Initialisation on DaVinci
++ */
++int __init arch_dma_init(void)
+ {
+-	int i, ret;
+-	u32 mask;
++	struct edma_map *q_pri, *q_wm, *q_tc;
++	unsigned int i = 0u;
++	u32 reg;
+ 
+-	DBG("DMA BASE ADDR=%x\n", (unsigned int)IO_ADDRESS(EDMA_BASE));
++	if (cpu_is_davinci_dm6467()) {
++		davinci_edma_num_evtq = EDMA_DM646X_NUM_EVQUE;
++		davinci_edma_chmap_exist = EDMA_DM646X_CHMAP_EXIST;
++		davinci_edma_num_tc = EDMA_DM646X_NUM_TC;
++		davinci_edmatc_base_addrs = dm646x_edmatc_base_addrs;
++		edma_max_logical_ch = EDMA_NUM_QDMACH +
++				      EDMA_DM646X_NUM_PARAMENTRY;
++		davinci_edma_num_param = EDMA_DM646X_NUM_PARAMENTRY;
++		edma2event_map = dm646x_dma_ch_hw_event_map;
++
++		edma_channels_arm = dm646x_edma_channels_arm;
++		qdma_channels_arm = dm646x_qdma_channels_arm;
++		param_entry_arm = dm646x_param_entry_arm;
++		tcc_arm = dm646x_tcc_arm;
++		param_entry_reserved = dm646x_param_entry_reserved;
++
++		q_pri = dm646x_queue_priority_mapping;
++		q_tc = dm646x_queue_tc_mapping;
++		q_wm = dm646x_queue_watermark_level;
++
++		davinci_cpu_index = 1;
++	} else if (cpu_is_davinci_dm355()) {
++		davinci_edma_num_evtq = EDMA_DM355_NUM_EVQUE;
++		davinci_edma_chmap_exist = EDMA_DM355_CHMAP_EXIST;
++		davinci_edma_num_tc = EDMA_DM355_NUM_TC;
++		davinci_edmatc_base_addrs = dm355_edmatc_base_addrs;
++		edma_max_logical_ch = EDMA_NUM_QDMACH +
++				      EDMA_DM355_NUM_PARAMENTRY;
++		davinci_edma_num_param = EDMA_DM355_NUM_PARAMENTRY;
++		edma2event_map = dm355_dma_ch_hw_event_map;
++
++		edma_channels_arm = dm355_edma_channels_arm;
++		qdma_channels_arm = dm355_qdma_channels_arm;
++		param_entry_arm = dm355_param_entry_arm;
++		tcc_arm = dm355_tcc_arm;
++		param_entry_reserved = dm355_param_entry_reserved;
++
++		q_pri = dm355_queue_priority_mapping;
++		q_tc = dm355_queue_tc_mapping;
++		q_wm = dm355_queue_watermark_level;
++
++		davinci_cpu_index = 2;
++	} else {
++		davinci_edma_num_evtq = EDMA_DM644X_NUM_EVQUE;
++		davinci_edma_chmap_exist = EDMA_DM644X_CHMAP_EXIST;
++		davinci_edma_num_tc = EDMA_DM644X_NUM_TC;
++		davinci_edmatc_base_addrs = dm644x_edmatc_base_addrs;
++		edma_max_logical_ch = EDMA_NUM_QDMACH +
++				      EDMA_DM644X_NUM_PARAMENTRY;
++		davinci_edma_num_param = EDMA_DM644X_NUM_PARAMENTRY;
++		edma2event_map = dm644x_dma_ch_hw_event_map;
++
++		edma_channels_arm = dm644x_edma_channels_arm;
++		qdma_channels_arm = dm644x_qdma_channels_arm;
++		param_entry_arm = dm644x_param_entry_arm;
++		tcc_arm = dm644x_tcc_arm;
++		param_entry_reserved = dm644x_param_entry_reserved;
++
++		q_pri = dm644x_queue_priority_mapping;
++		q_tc = dm644x_queue_tc_mapping;
++		q_wm = dm644x_queue_watermark_level;
++
++		davinci_cpu_index = 0;
++	}
++	dma_ch_bound_res =
++		kmalloc(sizeof(struct edma3_ch_bound_res) * edma_max_logical_ch,
++			 GFP_KERNEL);
++
++	/* Reset global data */
++	/* Reset the DCHMAP registers if they exist */
++	if (davinci_edma_chmap_exist == 1)
++		memset((void *)IO_ADDRESS(EDMA_DCHMAP(0)), 0x00,
++		       EDMA_DCHMAP_SIZE);
++
++	/* Reset book-keeping info */
++	memset(dma_ch_bound_res, 0x00u,  (sizeof(struct edma3_ch_bound_res) *
++		edma_max_logical_ch));
++	memset(intr_data, 0x00u, sizeof(intr_data));
++	memset(edma_dma_ch_tcc_mapping, 0x00u, sizeof(edma_dma_ch_tcc_mapping));
++	memset(edma_qdma_ch_tcc_mapping, 0x00u,
++	       sizeof(edma_qdma_ch_tcc_mapping));
+ 
+ 	memset((void *)IO_ADDRESS(EDMA_PARAM_OPT(0)), 0x00, EDMA_PARAM_SIZE);
+ 
+-	/* Event queue to TC mapping */
+-	for (i = 0; i < EDMA_NUM_EVQUE; i++) {
+-		mask = evtqueue_tc_map[i][0] << 2;
+-		CLEAR_REG_VAL(0x7 << mask, EDMA_QUETCMAP);
+-		mask = (evtqueue_tc_map[i][1] & 0x7) << mask;
+-		SET_REG_VAL(mask, EDMA_QUETCMAP);
+-	}
+-
+-	/* Assign priority to event queue */
+-	for (i = 0; i < EDMA_NUM_EVQUE; i++) {
+-		mask = evtqueue_priority_map[i][0] << 2;
+-		CLEAR_REG_VAL(0x7 << mask, EDMA_QUEPRI);
+-		mask = (evtqueue_priority_map[i][1] & 0x7) << mask;
+-		SET_REG_VAL(mask, EDMA_QUEPRI);
+-	}
+-
+-	for (i = 0; i < EDMA_NUM_REGIONS; i++) {
+-		dma_write(0x0, EDMA_DRAE(i));
+-		dma_write(0x0, EDMA_DRAEH(i));
+-		dma_write(0x0, EDMA_QRAE(i));
+-	}
+-
+-	ret = request_irq(IRQ_CCINT0, davinci_dma_irq_handler, 0, "EDMA", NULL);
+-	if (ret) {
+-		printk(KERN_ERR "unable to request IRQ %d for DMA (error %d)\n",
+-		       IRQ_CCINT0, ret);
+-		DBG("request_irq failed\n");
+-		return ret;
+-	}
+-
+-	ret = request_irq(IRQ_CCERRINT, davinci_dma_ccerr_handler, 0,
+-			  "EDMA CC Err", NULL);
+-	if (ret) {
+-		printk(KERN_ERR "unable to request IRQ %d for DMA (error %d)\n",
+-		       IRQ_CCERRINT, ret);
+-		free_irq(IRQ_CCINT0, NULL);
+-		return ret;
+-	}
+-
+-	/* TODO: add cpu_is_xxx() check for different Davinci SoCs */
+-	edma2event_map[0] = DM644X_DMACH2EVENT_MAP0;
+-	edma2event_map[1] = DM644X_DMACH2EVENT_MAP1;
++	/* Clear Error Registers */
++	dma_write(0xFFFFFFFFu, EDMA_EMCR);
++	dma_write(0xFFFFFFFFu, EDMA_EMCRH);
++	dma_write(0xFFFFFFFFu, EDMA_QEMCR);
++	dma_write(0xFFFFFFFFu, EDMA_CCERRCLR);
++
++	for (i = 0; i < davinci_edma_num_evtq; i++) {
++		/* Event Queue to TC mapping, if it exists */
++		if (EDMA_EVENT_QUEUE_TC_MAPPING == 1u) {
++			reg = EDMA_QUETCMAP;
++			CLEAR_REG_VAL(QUETCMAP_CLR_MASK(q_tc[i].param1), reg);
++			SET_REG_VAL(QUETCMAP_SET_MASK(q_tc[i].param1,
++						      q_tc[i].param2), reg);
++		}
++
++		/* Event Queue Priority */
++		reg = EDMA_QUEPRI;
++		CLEAR_REG_VAL(QUEPRI_CLR_MASK(q_pri[i].param1), reg);
++		SET_REG_VAL(QUEPRI_SET_MASK(q_pri[i].param1, q_pri[i].param2),
++			    reg);
++
++		/* Event Queue Watermark Level */
++		reg = EDMA_QWMTHRA;
++		CLEAR_REG_VAL(QUEWMTHR_CLR_MASK(q_wm[i].param1), reg);
++		SET_REG_VAL(QUEWMTHR_SET_MASK(q_wm[i].param1, q_wm[i].param2),
++			    reg);
++	}
++
++	/* Reset the Allocated TCCs Array first. */
++	allocated_tccs[0u] = 0x0u;
++	allocated_tccs[1u] = 0x0u;
++
++	/* Clear region specific Shadow Registers */
++	reg = EDMA_MASTER_SHADOW_REGION;
++	dma_write(edma_channels_arm[0] | tcc_arm[0], EDMA_SH_ECR(reg));
++	dma_write(edma_channels_arm[1] | tcc_arm[1], EDMA_SH_ECRH(reg));
++	dma_write(edma_channels_arm[0] | tcc_arm[0], EDMA_SH_EECR(reg));
++	dma_write(edma_channels_arm[1] | tcc_arm[1], EDMA_SH_EECRH(reg));
++	dma_write(edma_channels_arm[0] | tcc_arm[0], EDMA_SH_SECR(reg));
++	dma_write(edma_channels_arm[1] | tcc_arm[1], EDMA_SH_SECRH(reg));
++	dma_write(edma_channels_arm[0] | tcc_arm[0], EDMA_SH_IECR(reg));
++	dma_write(edma_channels_arm[1] | tcc_arm[1], EDMA_SH_IECRH(reg));
++	dma_write(edma_channels_arm[0] | tcc_arm[0], EDMA_SH_ICR(reg));
++	dma_write(edma_channels_arm[1] | tcc_arm[1], EDMA_SH_ICRH(reg));
++	dma_write(qdma_channels_arm[0], EDMA_SH_QEECR(reg));
++	dma_write(qdma_channels_arm[0], EDMA_SH_QSECR(reg));
++
++	/* Reset Region Access Enable Registers for the Master Shadow Region */
++	dma_write(0, EDMA_DRAE(EDMA_MASTER_SHADOW_REGION));
++	dma_write(0, EDMA_DRAEH(EDMA_MASTER_SHADOW_REGION));
++	dma_write(0, EDMA_QRAE(EDMA_MASTER_SHADOW_REGION));
++
++	if (register_dma_interrupts())
++		return -EINVAL;
++
++
++	spin_lock_init(&dma_chan_lock);
+ 
+ 	return 0;
+ }
+ 
+-arch_initcall(davinci_dma_init);
++/*
++ * Register different ISRs with the underlying OS
++ */
++int register_dma_interrupts(void)
++{
++	int result = 0;
++	int i;
++	unsigned int *tc_error_int;
++
++	if (cpu_is_davinci_dm6467())
++		tc_error_int = dm646x_tc_error_int;
++	else if (cpu_is_davinci_dm355())
++		tc_error_int = dm355_tc_error_int;
++	else
++		tc_error_int = dm644x_tc_error_int;
++
++	result = request_irq(EDMA_XFER_COMPLETION_INT, dma_irq_handler, 0,
++			     "EDMA Completion", NULL);
++	if (result < 0) {
++		pr_debug("request_irq failed for dma_irq_handler, "
++			    "error=%d\n", result);
++		return result;
++	}
++
++	result = request_irq(EDMA_CC_ERROR_INT, dma_ccerr_handler, 0,
++			     "EDMA CC Err", NULL);
++	if (result < 0) {
++		pr_debug("request_irq failed for dma_ccerr_handler, "
++			    "error=%d\n", result);
++		return result;
++	}
++
++	for (i = 0; i < davinci_edma_num_tc; i++) {
++		snprintf(tc_error_int_name[i], 19, "EDMA TC%d Error", i);
++		result = request_irq(tc_error_int[i], ptr_edmatc_isrs[i], 0,
++				     tc_error_int_name[i], NULL);
++		if (result < 0) {
++			pr_debug("request_irq failed for dma_tc%d "
++				    "err_handler\n", i);
++			pr_debug("error = %d \n", result);
++			return result;
++		}
++	}
++
++	return result;
++}
++arch_initcall(arch_dma_init);
++
++MODULE_AUTHOR("Texas Instruments");
++MODULE_LICENSE("GPL");
++
+Index: linux-2.6.18/include/asm-arm/arch-davinci/edma.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/edma.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/edma.h
+@@ -2,7 +2,7 @@
+  * TI DaVinci DMA Support
+  *
+  * Copyright (C) 2006 Texas Instruments.
+- * Copyright (c) 2007, MontaVista Software, Inc. <source@mvista.com>
++ * Copyright (c) 2007-2008, MontaVista Software, Inc. <source@mvista.com>
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -17,20 +17,20 @@
+ #include <asm/arch/hardware.h>
+ 
+ /*
+- * DMA driver for DaVinci
+- * DMA driver for Davinci abstractes each ParamEntry as a Logical DMA channel
+- * for the user.So on Davinci the user can request 128 DAM channels
++ * EDMA3 Driver
++ * EDMA3 Driver abstracts each ParamEntry as a Logical DMA channel
++ * for the user. So for eg on DM644x, the user can request 128 DMA channels
+  *
+- * Actual Physical DMA channels = 64 EDMA channels + 8 QDMA channels
++ * Actual Physical DMA channels (on DM644x) = 64 EDMA channels + 8 QDMA channels
+  *
+- * On davinci user can request for two kinds of Logical DMA channels
++ * User can request for two kinds of Logical DMA channels
+  * DMA MasterChannel -> ParamEntry which is associated with a DMA channel.
+- *                      On Davinci there are (64 + 8) MasterChanneles
++ *                      On DM644x, there are (64 + 8) MasterChanneles
+  *                      MasterChannel can be triggered by an event or manually
+  *
+  * DMA SlaveChannel  -> ParamEntry which is not associated with DMA cahnnel but
+  *                      which can be used to associate with MasterChannel.
+- *                      On Davinci there are (128-(64 + 8)) SlaveChannels
++ *                      On DM644x, there are (128-(64 + 8)) SlaveChannels
+  *                      SlaveChannel can only be triggered by a MasterChannel
+  */
+ 
+@@ -38,6 +38,8 @@
+ 
+ #define EDMA_REV		(EDMA_BASE + 0x0000)
+ #define EDMA_CCCFG		(EDMA_BASE + 0x0004)
++#define EDMA_CLKGDIS		(EDMA_BASE + 0x00FC)
++#define EDMA_DCHMAP(n)		(EDMA_BASE + 0x0100 + ((n) << 2))
+ #define EDMA_QCHMAP(n)		(EDMA_BASE + 0x0200 + ((n) << 2))
+ #define EDMA_DMAQNUM(n)		(EDMA_BASE + 0x0240 + ((n) << 2))
+ #define EDMA_QDMAQNUM		(EDMA_BASE + 0x0260)
+@@ -143,7 +145,8 @@
+ 
+ /* Paramentry Registers */
+ #define EDMA_PARAM_BASE			(EDMA_BASE + 0x4000)
+-#define EDMA_PARAM_SIZE			0x1000
++#define EDMA_PARAM_ENTRY_SIZE		0x20
++#define EDMA_PARAM_SIZE			EDMA_PARAM_ENTRY_SIZE * 512
+ #define EDMA_PARAM(offset, n)		(EDMA_PARAM_BASE + offset + (n << 5))
+ 
+ #define EDMA_PARAM_OPT(n)		EDMA_PARAM(0x00, n)
+@@ -155,6 +158,48 @@
+ #define EDMA_PARAM_SRC_DST_CIDX(n)	EDMA_PARAM(0x18, n)
+ #define EDMA_PARAM_CCNT(n)		EDMA_PARAM(0x1C, n)
+ 
++/* Transfer Controller registers */
++#define EDMATC_REV(base)	(base + 0x000)
++#define EDMATC_TCCFG(base)	(base + 0x004)
++#define EDMATC_CLKGDIS(base)	(base + 0x0FC)
++#define EDMATC_TCSTAT(base)	(base + 0x100)
++#define EDMATC_INTSTAT(base)	(base + 0x104)
++#define EDMATC_INTEN(base)	(base + 0x108)
++#define EDMATC_INTCLR(base)	(base + 0x10C)
++#define EDMATC_INTCMD(base)	(base + 0x110)
++#define EDMATC_ERRSTAT(base)	(base + 0x120)
++#define EDMATC_ERREN(base)	(base + 0x124)
++#define EDMATC_ERRCLR(base)	(base + 0x128)
++#define EDMATC_ERRDET(base)	(base + 0x12C)
++#define EDMATC_ERRCMD(base)	(base + 0x130)
++#define EDMATC_RDRATE(base)	(base + 0x140)
++#define EDMATC_POPT(base)	(base + 0x200)
++#define EDMATC_PSRC(base)	(base + 0x204)
++#define EDMATC_PCNT(base)	(base + 0x208)
++#define EDMATC_PDST(base)	(base + 0x20C)
++#define EDMATC_PBIDX(base)	(base + 0x210)
++#define EDMATC_PMPPRXY(base)	(base + 0x214)
++#define EDMATC_SAOPT(base)	(base + 0x240)
++#define EDMATC_SASRC(base)	(base + 0x244)
++#define EDMATC_SACNT(base)	(base + 0x248)
++#define EDMATC_SADST(base)	(base + 0x24C)
++#define EDMATC_SABIDX(base)	(base + 0x250)
++#define EDMATC_SAMPPRXY(base)	(base + 0x254)
++#define EDMATC_SACNTRLD(base)	(base + 0x258)
++#define EDMATC_SASRCBREF(base)	(base + 0x25C)
++#define EDMATC_SADSTBREF(base)	(base + 0x260)
++#define EDMATC_DFCNTRLD(base)	(base + 0x280)
++#define EDMATC_DFSRCBREF(base)	(base + 0x284)
++#define EDMATC_DFDSTBREF(base)	(base + 0x288)
++
++#define EDMATC_DFIFREG(base, n, x)	((base + 0x300) + (n << 6) + x)
++#define EDMATC_DFOPT(base, n)		EDMATC_DFIFREG(base, n, 0x00)
++#define EDMATC_DFSRC(base, n)		EDMATC_DFIFREG(base, n, 0x04)
++#define EDMATC_DFCNT(base, n)		EDMATC_DFIFREG(base, n, 0x08)
++#define EDMATC_DFDST(base, n)		EDMATC_DFIFREG(base, n, 0x0C)
++#define EDMATC_DFBIDX(base, n)		EDMATC_DFIFREG(base, n, 0x10)
++#define EDMATC_DFMPPRXY(base, n)	EDMATC_DFIFREG(base, n, 0x14)
++
+ /*
+  * Paramentry descriptor
+  */
+@@ -169,28 +214,35 @@ struct paramentry_descriptor {
+ 	unsigned int ccnt;
+ };
+ 
++#define EDMA_DCHMAP_SIZE		0x100
+ 
+-#define dma_write(val, addr)	davinci_writel(val, addr)
++#define dma_write(val, addr)	davinci_writel((val), (addr))
+ #define dma_read(addr)		davinci_readl(addr)
+ 
+ #define SET_REG_VAL(mask, reg) do { \
+-	dma_write(dma_read(reg) | (mask), reg); \
++	dma_write(dma_read(reg) | (mask), (reg)); \
+ } while (0)
+ 
+ #define CLEAR_REG_VAL(mask, reg) do { \
+-	dma_write(dma_read(reg) & ~(mask), reg); \
++	dma_write(dma_read(reg) & ~(mask), (reg)); \
+ } while (0)
+ 
+ #define CLEAR_EVENT(mask, event, reg) do { \
+-	if (dma_read(event) & mask) \
+-		SET_REG_VAL(mask, reg);	\
++	if (dma_read(event) & (mask)) \
++		SET_REG_VAL((mask), (reg)); \
+ } while (0)
+ 
+-
++/* Generic defines for all the platforms */
++#define EDMA_NUM_DMACH			64
++#define EDMA_NUM_QDMACH			8
++#define EDMA_NUM_TCC			64
++#define EDMA_CC_BASE_ADDRESS		DAVINCI_DMA_3PCC_BASE
+ #define EDMA_XFER_COMPLETION_INT	IRQ_CCINT0
+ #define EDMA_CC_ERROR_INT		IRQ_CCERRINT
+-#define EDMA_TC0_ERROR_INT		IRQ_TCERRINT0
+-#define EDMA_TC1_ERROR_INT		IRQ_TCERRINT
++#define EDMA_EVENT_QUEUE_TC_MAPPING	1
++#define EDMA_MASTER_SHADOW_REGION	0
++#define EDMA_NUM_DMA_CHAN_DWRDS		(EDMA_NUM_DMACH / 32)
++#define EDMA_NUM_QDMA_CHAN_DWRDS	1
+ 
+ #define SAM		(1 << 0)
+ #define DAM		(1 << 1)
+@@ -210,49 +262,105 @@ struct paramentry_descriptor {
+ #define TRWORD		(0x7 << 2)
+ #define PAENTRY		(0x1ff << 5)
+ /* if changing the QDMA_TRWORD do appropriate change in davinci_start_dma */
+-#define QDMA_TRWORD	(7 & 0x7)
+-
+-#define EDMA_NUM_DMACH		64
+-#define EDMA_NUM_QDMACH		8
+-#define dma_is_edmach(lch)	((lch >= 0) && (lch < EDMA_NUM_DMACH))
+-#define dma_is_qdmach(lch)	((lch >= EDMA_NUM_DMACH) && \
+-				 (lch < (EDMA_NUM_DMACH + EDMA_NUM_QDMACH)))
+-
+-#define EDMA_NUM_PARAMENTRY	128
+-#define EDMA_NUM_EVQUE		2
+-#define EDMA_NUM_REGIONS	4
+-
+-#define TCC_ANY			-1
+-#define DMACH_ANY		-1
+-#define PARAM_ANY		-2
+-
+-
+-#define edmach_has_event(lch)	(edma2event_map[lch >> 5] & (1 << (lch % 32)))
++#define QDMA_DEF_TRIG_WORD			(7 & 0x7)
+ 
+-#define dmach_is_valid(lch)	(dma2arm_map[lch >> 5] & (1 << (lch % 32)))
+-#define param_is_valid(lch)	(param2arm_map[lch >> 5] & (1 << (lch % 32)))
+-
+-#define param_reserve(lch)	do { \
+-	param_entry_reserved[lch >> 5] |= (1 << (lch % 32)); \
+-} while (0)
+-#define param_free(lch)		do { \
+-	param_entry_reserved[lch >> 5] &= ~(1 << (lch % 32)); \
+-} while (0)
+-#define param_is_free(lch)	\
+-	(!(param_entry_reserved[lch >> 5] & (1 << (lch % 32))))
+-
+-#define interrupt_reserve(lch)	do { \
+-	dma_intr_reseved[lch >> 5] |= (1 << (lch % 32));\
+-} while (0)
+-#define interrupt_free(lch)	do { \
+-	dma_intr_reseved[lch >> 5] &= ~(1 << (lch % 32)); \
+-} while (0)
+-#define interrupt_is_free(lch)	\
+-	(!(dma_intr_reseved[lch >> 5] & (1 << (lch % 32))))
+-
+-#define DM644X_DMACH2EVENT_MAP0	0x3DFF0FFC
+-#define DM644X_DMACH2EVENT_MAP1	0x007F1FFF
++/* Defines for QDMA Channels */
++#define EDMA_MAX_CHANNEL			(7u)
++#define EDMA_QDMA_CHANNEL_0			davinci_get_qdma_channel(0)
++#define EDMA_QDMA_CHANNEL_1			davinci_get_qdma_channel(1)
++#define EDMA_QDMA_CHANNEL_2			davinci_get_qdma_channel(2)
++#define EDMA_QDMA_CHANNEL_3			davinci_get_qdma_channel(3)
++#define EDMA_QDMA_CHANNEL_4			davinci_get_qdma_channel(4)
++#define EDMA_QDMA_CHANNEL_5			davinci_get_qdma_channel(5)
++#define EDMA_QDMA_CHANNEL_6			davinci_get_qdma_channel(6)
++#define EDMA_QDMA_CHANNEL_7			davinci_get_qdma_channel(7)
++
++#define dma_is_edmach(lch)	((lch) >= 0 && (lch) < EDMA_NUM_DMACH)
++#define dma_is_qdmach(lch)	((lch) >= EDMA_QDMA_CHANNEL_0 && \
++				 (lch) <= EDMA_QDMA_CHANNEL_7)
++
++#define CCRL_CCERR_TCCERR_SHIFT			(0x10u)
++
++/* DMAQNUM bits Clear */
++#define DMAQNUM_CLR_MASK(ch_num)		(0x7u<<(((ch_num)%8u)*4u))
++/* DMAQNUM bits Set */
++#define DMAQNUM_SET_MASK(ch_num, que_num)	((0x7u & (que_num)) << \
++							(((ch_num)%8u)*4u))
++/* QDMAQNUM bits Clear */
++#define QDMAQNUM_CLR_MASK(ch_num)		(0x7u<<((ch_num)*4u))
++/* QDMAQNUM bits Set */
++#define QDMAQNUM_SET_MASK(ch_num, que_num)	((0x7u & (que_num)) << \
++							((ch_num)*4u))
++
++
++/* QUETCMAP bits Clear */
++#define QUETCMAP_CLR_MASK(que_num)		(0x7u << ((que_num) * 0x4u))
++/* QUETCMAP bits Set */
++#define QUETCMAP_SET_MASK(que_num, tc_num)	((0x7u & (tc_num)) << \
++							((que_num) * 0x4u))
++/* QUEPRI bits Clear */
++#define QUEPRI_CLR_MASK(que_num)		(0x7u << ((que_num) * 0x4u))
++/* QUEPRI bits Set */
++#define QUEPRI_SET_MASK(que_num, que_pri)	((0x7u & (que_pri)) << \
++							((que_num) * 0x4u))
++/* QUEWMTHR bits Clear */
++#define QUEWMTHR_CLR_MASK(que_num)		(0x1Fu << ((que_num) * 0x8u))
++/* QUEWMTHR bits Set */
++#define QUEWMTHR_SET_MASK(que_num, que_thr)	((0x1Fu & (que_thr)) << \
++							((que_num) * 0x8u))
++
++
++/* DCHMAP-PaRAMEntry bitfield Clear */
++#define DMACH_PARAM_CLR_MASK			(0x3FE0u)
++/* DCHMAP-PaRAMEntry bitfield Set */
++#define DMACH_PARAM_SET_MASK(param_id)		(((0x3FE0u >> 0x5u) & \
++							(param_id)) << 0x5u)
++
++/* QCHMAP-PaRAMEntry bitfield Clear */
++#define QDMACH_PARAM_CLR_MASK			(0x3FE0u)
++/* QCHMAP-PaRAMEntry bitfield Set */
++#define QDMACH_PARAM_SET_MASK(param_id)		(((0x3FE0u >> 0x5u) & \
++							(param_id)) << 0x5u)
++/* QCHMAP-TrigWord bitfield Clear */
++#define QDMACH_TRWORD_CLR_MASK			(0x1Cu)
++/* QCHMAP-TrigWord bitfield Set */
++#define QDMACH_TRWORD_SET_MASK(param_id)	(((0x1Cu >> 0x2u) & \
++							(param_id)) << 0x2u)
++
++
++/* Defines needed for TC error checking */
++#define EDMA_TC_ERRSTAT_BUSERR_SHIFT		(0x00000000u)
++#define EDMA_TC_ERRSTAT_TRERR_SHIFT		(0x00000002u)
++#define EDMA_TC_ERRSTAT_MMRAERR_SHIFT		(0x00000003u)
++
++/* Maximum number of TCs possible */
++#define EDMA_MAX_TC				(8u)
++/* Maximum number of PARAMs possible */
++#define EDMA_MAX_PARAM_SET			(512u)
++
++/* Used for any TCC (Interrupt Channel) */
++#define EDMA_TCC_ANY				1001
++/* Used for LINK Channels */
++#define DAVINCI_EDMA_PARAM_ANY			1002
++/* Used for any DMA Channel */
++#define EDMA_DMA_CHANNEL_ANY			1003
++/* Used for any QDMA Channel */
++#define EDMA_QDMA_CHANNEL_ANY			1004
++
++#define edmach_has_event(lch)	(edma2event_map[(lch) >> 5] & \
++					(1 << ((lch) % 32)))
++
++/* SoC specific EDMA3 hardware information, should be provided for a new SoC */
++/* DM644x specific EDMA3 information */
++#define EDMA_DM644X_NUM_PARAMENTRY	128
++#define EDMA_DM644X_NUM_EVQUE		2
++#define EDMA_DM644X_NUM_TC		2
++#define EDMA_DM644X_CHMAP_EXIST		0
++#define EDMA_DM644X_NUM_REGIONS		4
++#define DM644X_DMACH2EVENT_MAP0		0x3DFF0FFCu
++#define DM644X_DMACH2EVENT_MAP1		0x007F1FFFu
+ 
++/* DM644x specific EDMA3 Events Information */
+ enum dm644x_edma_ch {
+ 	DM644X_DMACH_MCBSP_TX = 2,
+ 	DM644X_DMACH_MCBSP_RX,
+@@ -309,13 +417,104 @@ enum dm644x_qdma_ch {
+ 	QDMACH6 = 71,
+ 	QDMACH7
+ };
++/* end DM644x specific */
++
++/* DM646x specific EDMA3 information */
++#define EDMA_DM646X_NUM_PARAMENTRY	512
++#define EDMA_DM646X_NUM_EVQUE		4
++#define EDMA_DM646X_NUM_TC		4
++#define EDMA_DM646X_CHMAP_EXIST		1
++#define EDMA_DM646X_NUM_REGIONS			8
++#define DM646X_DMACH2EVENT_MAP0		0x30FF1FF0u
++#define DM646X_DMACH2EVENT_MAP1		0xFE3FFFFFu
++
++/* DM646x specific EDMA3 Events Information */
++enum dm646x_edma_ch {
++	DAVINCI_DM646X_DMA_MCASP0_AXEVTE0 = 4,
++	DAVINCI_DM646X_DMA_MCASP0_AXEVTO0,
++	DAVINCI_DM646X_DMA_MCASP0_AXEVT0,
++	DAVINCI_DM646X_DMA_MCASP0_AREVTE0,
++	DAVINCI_DM646X_DMA_MCASP0_AREVTO0,
++	DAVINCI_DM646X_DMA_MCASP0_AREVT0,
++	DAVINCI_DM646X_DMA_MCASP1_AXEVTE1,
++	DAVINCI_DM646X_DMA_MCASP1_AXEVTO1,
++	DAVINCI_DM646X_DMA_MCASP1_AXEVT1,
++	DAVINCI_DM646X_DMA_IMCOP1_CP_ECDCMP1 = 43,
++	DAVINCI_DM646X_DMA_IMCOP1_CP_MC1,
++	DAVINCI_DM646X_DMA_IMCOP1_CP_BS1,
++	DAVINCI_DM646X_DMA_IMCOP1_CP_CALC1,
++	DAVINCI_DM646X_DMA_IMCOP1_CP_LPF1,
++	DAVINCI_DM646X_DMA_IMCOP0_CP_ME0 = 57,
++	DAVINCI_DM646X_DMA_IMCOP0_CP_IPE0,
++	DAVINCI_DM646X_DMA_IMCOP0_CP_ECDCMP0,
++	DAVINCI_DM646X_DMA_IMCOP0_CP_MC0,
++	DAVINCI_DM646X_DMA_IMCOP0_CP_BS0,
++	DAVINCI_DM646X_DMA_IMCOP0_CP_CALC0,
++	DAVINCI_DM646X_DMA_IMCOP0_CP_LPF0,
++};
++/* end DM646X specific info */
++
++/* DM355 specific info */
++#define EDMA_DM355_NUM_PARAMENTRY	512
++#define EDMA_DM355_NUM_EVQUE		8
++#define EDMA_DM355_NUM_TC		2
++#define EDMA_DM355_CHMAP_EXIST		0
++#define EDMA_DM355_NUM_REGIONS		4
++#define DM355_DMACH2EVENT_MAP0		0xFEFFCFFFu
++#define DM355_DMACH2EVENT_MAP1		0x00FFFFFFu
++
++/* DM355 specific EDMA3 Events Information */
++enum dm355_edma_ch {
++	DM355_DMA_TIMER3_TINT6 = 0,
++	DM355_DMA_TIMER3_TINT7,
++	DM355_DMA_MCBSP0_TX,
++	DM355_DMA_MCBSP0_RX,
++	DM355_DMA_MCBSP1_TX = 8,
++	DM355_DMA_TIMER2_TINT4 = 8,
++	DM355_DMA_MCBSP1_RX,
++	DM355_DMA_TIMER2_TINT5 = 9,
++	DM355_DMA_SPI2_SPI2XEVT,
++	DM355_DMA_SPI2_SPI2REVT,
++	DM355_DMA_IMCOP_IMXINT,
++	DM355_DMA_IMCOP_SEQINT,
++	DM355_DMA_SPI1_SPI1XEVT,
++	DM355_DMA_SPI1_SPI1REVT,
++	DM355_DMA_SPI0_SPIX0,
++	DM355_DMA_SPI0_SPIR0,
++	DM355_DMA_RTOINT = 24,
++	DM355_DMA_GPIO_GPINT9,
++	DM355_DMA_MMC0RXEVT,
++	DM355_DMA_MEMSTK_MSEVT = 26,
++	DM355_DMA_MMC0TXEVT,
++	DM355_DMA_MMC1RXEVT = 30,
++	DM355_DMA_MMC1TXEVT,
++	DM355_DMA_GPIO_GPBNKINT5 = 45,
++	DM355_DMA_GPIO_GPBNKINT6,
++	DM355_DMA_GPIO_GPINT8,
++	DM355_DMA_TIMER0_TINT1 = 49,
++	DM355_DMA_TIMER1_TINT2,
++	DM355_DMA_TIMER1_TINT3,
++	DM355_DMA_PWM3 = 55,
++	DM355_DMA_IMCOP_VLCDINT,
++	DM355_DMA_IMCOP_BIMINT,
++	DM355_DMA_IMCOP_DCTINT,
++	DM355_DMA_IMCOP_QIQINT,
++	DM355_DMA_IMCOP_BPSINT,
++	DM355_DMA_IMCOP_VLCDERRINT,
++	DM355_DMA_IMCOP_RCNTINT,
++	DM355_DMA_IMCOP_COPCINT,
++};
++/* end DM355 specific info */
+ 
+ /* ch_status paramater of callback function possible values */
+ enum edma_status {
+ 	DMA_COMPLETE = 1,
++	DMA_EVT_MISS_ERROR,
++	QDMA_EVT_MISS_ERROR,
+ 	DMA_CC_ERROR,
+ 	DMA_TC1_ERROR,
+-	DMA_TC2_ERROR
++	DMA_TC2_ERROR,
++	DMA_TC3_ERROR,
+ };
+ 
+ enum address_mode {
+@@ -335,7 +534,8 @@ enum fifo_width {
+ enum dma_event_q {
+ 	EVENTQ_0 = 0,
+ 	EVENTQ_1 = 1,
+-	EVENTQ_DEFAULT = -1
++	EVENTQ_2 = 2,
++	EVENTQ_3 = 3,
+ };
+ 
+ enum sync_dimension {
+@@ -343,28 +543,236 @@ enum sync_dimension {
+ 	ABSYNC = 1
+ };
+ 
++enum resource_type {
++	RES_DMA_CHANNEL = 0,
++	RES_QDMA_CHANNEL = 1,
++	RES_TCC = 2,
++	RES_PARAM_SET = 3
++};
++
++/*
++ * davinci_get_qdma_channel: Convert QDMA channel to logical channel
++ * Arguments:
++ *      ch      - input QDMA channel.
++ *
++ * Return: logical channel associated with QDMA channel or logical channel
++ *      associated with QDMA channel 0 for out of range channel input.
++ */
++int davinci_get_qdma_channel(int ch);
++
++/*
++ * davinci_request_dma - request for the Davinci DMA channel
++ *
++ * dev_id - DMA channel number
++ *
++ * EX: DAVINCI_DMA_MCBSP_TX - For requesting a DMA MasterChannel with MCBSP_TX
++ *     event association
++ *
++ *     EDMA_DMA_CHANNEL_ANY - For requesting a DMA MasterChannel which does
++ *                            not have event association
++ *
++ *     DAVINCI_EDMA_PARAM_ANY - for requesting a DMA SlaveChannel
++ *
++ * dev_name   - name of the DMA channel in human readable format
++ * callback   - channel callback function (valid only if you are requesting
++ *              for a DMA MasterChannel)
++ * data       - private data for the channel to be requested
++ * lch        - contains the device ID allocated
++ * tcc        - specifies the channel number on which the interrupt is
++ *              generated
++ *              Valid for QDMA and PaRAM channels
++ * eventq_no  - Event Queue number with which the channel will be associated
++ *              (valid only if you are requesting for a DMA MasterChannel)
++ *              Values : EVENTQ_0/EVENTQ_1 for event queue 0/1.
++ *
++ * Return: zero on success,
++ *         -EINVAL - if the requested channel is not supported on the ARM
++ *		     side events
++ */
+ int davinci_request_dma(int dev_id,
+ 			const char *dev_name,
+ 			void (*callback) (int lch, unsigned short ch_status,
+ 					  void *data), void *data, int *lch,
+-			int *tcc, enum dma_event_q
+-);
+-void davinci_set_dma_src_params(int lch, u32 src_port,
+-				enum address_mode mode, enum fifo_width);
+-void davinci_set_dma_dest_params(int lch, u32 dest_port,
+-				 enum address_mode mode, enum fifo_width);
+-void davinci_set_dma_src_index(int lch, u16 srcbidx, u16 srccidx);
+-void davinci_set_dma_dest_index(int lch, u16 destbidx, u16 destcidx);
+-void davinci_set_dma_transfer_params(int lch, u16 acnt, u16 bcnt, u16 ccnt,
+-				     u16 bcntrld,
+-				     enum sync_dimension sync_mode);
+-void davinci_set_dma_params(int lch, struct paramentry_descriptor *d);
+-void davinci_get_dma_params(int lch, struct paramentry_descriptor *d);
++			int *tcc, enum dma_event_q);
++
++/*
++ * davinci_set_dma_src_params - DMA source parameters setup
++ *
++ * lch         - channel for which the source parameters to be configured
++ * src_port    - Source port address
++ * mode        - indicates whether the address mode is FIFO or not
++ * width       - valid only if addressMode is FIFO, indicates the width of FIFO
++ *             0 - 8 bit
++ *             1 - 16 bit
++ *             2 - 32 bit
++ *             3 - 64 bit
++ *             4 - 128 bit
++ *             5 - 256 bit
++ */
++int davinci_set_dma_src_params(int lch, u32 src_port,
++			       enum address_mode mode, enum fifo_width width);
++
++/*
++ * davinci_set_dma_dest_params - DMA destination parameters setup
++ *
++ * lch         - channel or param device for destination parameters are to be
++ *               configured
++ * dest_port   - Destination port address
++ * mode        - indicates whether the address mode is FIFO or not
++ * width       - valid only if addressMode is FIFO,indicates the width of FIFO
++ *             0 - 8 bit
++ *             1 - 16 bit
++ *             2 - 32 bit
++ *             3 - 64 bit
++ *             4 - 128 bit
++ *             5 - 256 bit
++ */
++int davinci_set_dma_dest_params(int lch, u32 dest_port,
++				enum address_mode mode, enum fifo_width width);
++
++/*
++ * davinci_set_dma_src_index - DMA source index setup
++ *
++ * lch     - channel or param device for configuration of source index
++ * srcbidx - source B-register index
++ * srccidx - source C-register index
++ */
++int davinci_set_dma_src_index(int lch, u16 srcbidx, u16 srccidx);
++
++/*
++ * davinci_set_dma_dest_index - DMA destination index setup
++ *
++ * lch      - channel or param device for configuration of destination index
++ * destbidx - dest B-register index
++ * destcidx - dest C-register index
++ */
++int davinci_set_dma_dest_index(int lch, u16 destbidx, u16 destcidx);
++
++/*
++ * davinci_set_dma_transfer_params -  DMA transfer parameters setup
++ *
++ * lch  - channel or param device for configuration of aCount, bCount and
++ *        cCount regs.
++ * aCnt - aCnt register value to be configured
++ * bCnt - bCnt register value to be configured
++ * cCnt - cCnt register value to be configured
++ */
++int davinci_set_dma_transfer_params(int lch, u16 acnt, u16 bcnt, u16 ccnt,
++				    u16 bcntrld,
++				    enum sync_dimension sync_mode);
++
++/*
++ * davinci_set_dma_params -
++ * ARGUMENTS:
++ *      lch - logical channel number
++ */
++int davinci_set_dma_params(int lch, struct paramentry_descriptor *d);
++
++/*
++ * davinci_get_dma_params -
++ * ARGUMENTS:
++ *      lch - logical channel number
++ */
++int davinci_get_dma_params(int lch, struct paramentry_descriptor *d);
++
++/*
++ * davinci_start_dma -  Starts the DMA on the channel passed
++ *
++ * lch - logical channel number
++ *
++ * Note:    This API can be used only on DMA MasterChannel
++ *
++ * Return: zero on success
++ *        -EINVAL on failure, i.e if requested for the slave channels
++ */
+ int davinci_start_dma(int lch);
+-void davinci_stop_dma(int lch);
+-void davinci_dma_link_lch(int lch_head, int lch_queue);
+-void davinci_dma_unlink_lch(int lch_head, int lch_queue);
+-void davinci_free_dma(int lch);
++
++/*
++ * davinci_stop_dma -  Stops the DMA on the channel passed
++ *
++ * lch - logical channel number
++ *
++ * Note:    This API can be used on MasterChannel and SlaveChannel
++ */
++int davinci_stop_dma(int lch);
++
++/*
++ * davinci_dma_link_lch - Link two Logical channels
++ *
++ * lch_head  - logical channel number in which the link field is linked to
++ *             the param pointed to by lch_queue
++ *             Can be a MasterChannel or SlaveChannel
++ * lch_queue - logical channel number or the param entry number, which is to be
++ *             linked to the lch_head
++ *             Must be a SlaveChannel
++ *
++ *                     |---------------|
++ *                     v               |
++ *      Ex:    ch1--> ch2-->ch3-->ch4--|
++ *
++ *             ch1 must be a MasterChannel
++ *
++ *             ch2, ch3, ch4 must be SlaveChannels
++ *
++ * Note:       After channel linking the user should not update any PaRAM entry
++ *             of MasterChannel ( In the above example ch1 )
++ */
++int davinci_dma_link_lch(int lch_head, int lch_queue);
++
++/*
++ * davinci_dma_unlink_lch - unlink the two logical channels passed through by
++ *                          setting the link field of head to 0xffff.
++ *
++ * lch_head  - logical channel number from which the link field is to be
++ *             removed
++ * lch_queue - logical channel number or the PaRAM entry number which is to be
++ *             unlinked from lch_head
++ */
++int davinci_dma_unlink_lch(int lch_head, int lch_queue);
++
++/*
++ * DMA channel chain - chains the two logical channels passed through by
++ * ARGUMENTS:
++ * lch_head - logical channel number from which the link field is to be removed
++ * lch_queue - logical channel number or the PaRAM entry number which is to be
++ *             unlinked from lch_head
++ */
++int davinci_dma_chain_lch(int lch_head, int lch_queue);
++
++/*
++ * DMA channel unchain - unchain the two logical channels passed through by
++ * ARGUMENTS:
++ * lch_head - logical channel number, from which the link field is to be removed
++ * lch_queue - logical channel number or the param entry number, which is to be
++ *             unlinked from lch_head
++ */
++int davinci_dma_unchain_lch(int lch_head, int lch_queue);
++
++/*
++ * Free DMA channel - Free the DMA channel number passed
++ *
++ * ARGUMENTS:
++ * lch - DMA channel number to set free
++ */
++int davinci_free_dma(int lch);
++
++/*
++ * davinci_clean_channel - clean PaRAM entry and bring back EDMA to initial
++ *			   state if media has been removed before EDMA has
++ *			   finished.  It is useful for removable media.
++ * Arguments:
++ * lch		- logical channel number
++ */
++void davinci_clean_channel(int lch);
++
++/*
++ * davinci_dma_getposition - returns the current transfer points for the DMA
++ *			     source and destination
++ * Arguments:
++ * lch		- logical channel number
++ * src		- source port position
++ * dst		- destination port position
++ */
+ void davinci_dma_getposition(int lch, dma_addr_t *src, dma_addr_t *dst);
+ 
+-#endif		/* __ASM_ARCH_EDMA_H */
++#endif
+Index: linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/hardware.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/hardware.h
+@@ -54,13 +54,8 @@
+ 
+ #define DM644X_UART2_BASE                       (0x01C20800)
+ 
+-#define DM355_MMC1_BASE				(0x01E00000)
+-#define DM355_UART2_BASE			(0x01E06000)
+-#define DM355_ASYNC_EMIF_CNTRL_BASE		(0x01E10000)
+-#define DM355_MMC0_BASE				(0x01E11000)
+-
+ /*
+- * DM6467 base register addresses different from origina DaVinci
++ * DM6467 base register addresses different from original DaVinci
+  */
+ #define DAVINCI_DM646X_DMA_3PTC2_BASE             (0x01C10800)
+ #define DAVINCI_DM646X_DMA_3PTC3_BASE             (0x01C10C00)
+@@ -137,5 +132,40 @@
+ #define PINMUX3		(DAVINCI_SYSTEM_MODULE_BASE + 0x0c)
+ #define PINMUX4		(DAVINCI_SYSTEM_MODULE_BASE + 0x10)
+ 
++/*
++ * DM355 base register addresses different from original DaVinci
++ */
++#define DM355_TIMER2_BASE		(0x01C20800)
++#define DM355_REALTIME_BASE		(0x01C20C00)
++#define DM355_PWM3_BASE			(0x01C22C00)
++#define DM355_SPI_BASE			(0x01C66000)
++#define DM355_SPI0_BASE			DM355_SPI_BASE
++#define DM355_SPI1_BASE			(0x01C66800)
++#define DM355_SPI2_BASE			(0x01C67800)
++#define DM355_VPSS_CLK_BASE		DAVINCI_VPSS_REGS_BASE
++#define DM355_VPSS_HW3A_BASE		(0x01C70080)
++#define DM355_VPSS_IPIPE0_BASE		(0x01C70100)
++#define DM355_VPSS_OSD_BASE		(0x01C70200)
++#define DM355_VPSS_HSSIF_BASE		(0x01C70300)
++#define DM355_VPSS_VENC_BASE		(0x01C70400)
++#define DM355_VPSS_CCDC_BASE		(0x01C70600)
++#define DM355_VPSS_BL_BASE		(0x01C70800)
++#define DM355_VPSS_CFA_LD_BASE		(0x01C70900)
++#define DM355_VPSS_IPIPE1_BASE		(0x01C71000)
++#define DM355_IMX_BASE			(0x01CD0000)
++#define DM355_IMX_CTL_BASE		(0x01CD0380)
++#define DM355_IMCOP_CTL_BASE		(0x01CDF400)
++#define DM355_IMCOP_SEQ_BASE		(0x01CDFF00)
++#define DM355_MMC1_BASE 		(0x01E00000)
++#define DM355_MCBSP0_BASE		DAVINCI_MCBSP_BASE
++#define DM355_MCBSP1_BASE		(0x01E04000)
++#define DM355_MCBSP1_RX_DMA_PORT	DM355_MCBSP1_BASE
++#define DM355_MCBSP1_TX_DMA_PORT	(DM355_MCBSP1_BASE + 4)
++#define DM355_UART2_BASE		(0x01E06000)
++#define DM355_ASYNC_EMIF_CNTRL_BASE	(0x01E10000)
++
++#define DM355_MMC_SD_BASE		(0x01E11000)
++#define DM355_MMC0_BASE 		DM355_MMC_SD_BASE
++#define DAVINCI_MMC_SD0_BASE		DM355_MMC_SD_BASE
+ 
+ #endif /* __ASM_ARCH_HARDWARE_H */
+Index: linux-2.6.18/sound/soc/davinci/davinci-pcm.c
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/davinci-pcm.c
++++ linux-2.6.18/sound/soc/davinci/davinci-pcm.c
+@@ -132,7 +132,7 @@ static int davinci_pcm_dma_request(struc
+ 	struct davinci_runtime_data *prtd = substream->runtime->private_data;
+ 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+ 	struct davinci_pcm_dma_params *dma_data = rtd->dai->cpu_dai->dma_data;
+-	int tcc = TCC_ANY;
++	int tcc = EDMA_TCC_ANY;
+ 	int ret;
+ 
+ 	if (!dma_data)
+@@ -148,7 +148,7 @@ static int davinci_pcm_dma_request(struc
+ 		return ret;
+ 
+ 	/* Request slave DMA channel */
+-	ret = davinci_request_dma(PARAM_ANY, "Link",
++	ret = davinci_request_dma(DAVINCI_EDMA_PARAM_ANY, "Link",
+ 				  NULL, NULL, &prtd->slave_lch, &tcc, EVENTQ_0);
+ 	if (ret) {
+ 		davinci_free_dma(prtd->master_lch);
+Index: linux-2.6.18/mvl_patches/pro50-1564.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1564.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1564);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

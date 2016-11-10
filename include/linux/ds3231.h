@@ -1,0 +1,90 @@
+/*
+ * Copyright (C) 1998, 1999, 2003 Ralf Baechle
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
+ */
+#ifndef __LINUX_DS3231_H
+#define __LINUX_DS3231_H
+
+//#include <asm/ds3231.h>
+
+/*
+ * RTC register addresses
+ */
+#define RTC_SEC_REG_ADDR    0x00
+#define RTC_MIN_REG_ADDR    0x01
+#define RTC_HR_REG_ADDR     0x02
+#define RTC_DAY_REG_ADDR    0x03
+#define RTC_DATE_REG_ADDR   0x04
+#define RTC_MON_REG_ADDR    0x05
+#define RTC_YR_REG_ADDR     0x06
+
+#define RTC_A1_SEC_ADDR     0x07
+#define RTC_A1_MIN_ADDR     0x08
+#define RTC_A1_HR_ADDR      0x09
+#define RTC_A1_DAYDATE_ADDR 0x0A
+
+#define RTC_A2_MIN_ADDR     0x0B
+#define RTC_A2_HR_ADDR      0x0C
+#define RTC_A2_DAYDATE_ADDR 0x0D
+
+#define RTC_CTL_REG_ADDR    0x0e
+#define RTC_STAT_REG_ADDR   0x0f
+
+#define RTC_AGING_OFFSET_ADDR   0x10
+#define RTC_TEMP_MSB_ADDR   0x11
+#define RTC_TEMP_LSB_ADDR   0x12
+
+#define RTC_A1_IE_MASK 0x01
+#define RTC_A2_IE_MASK 0x02
+
+#define RTC_A1_IE_OFF 0x00
+#define RTC_A2_IE_OFF 0x01
+#define RTC_A1_IE_ON  0x02
+#define RTC_A2_IE_ON  0x03
+
+#define RTC_STATUS_A1F_BIT 0x01
+#define RTC_STATUS_A2F_BIT 0x02
+#define RTC_STATUS_BUSY_BIT 0x04
+#define RTC_STATUS_EN32KHZ_BIT 0x08
+#define RTC_STATUS_OSF_BIT 0x80
+
+#define RTC_CTRL_A1E_BIT    0x01
+#define RTC_CTRL_A2E_BIT    0x02
+#define RTC_CTRL_INTCN_BIT  0x04
+#define RTC_CTRL_RS1_BIT    0x08
+#define RTC_CTRL_RS2_BIT    0x10
+#define RTC_CTRL_CONV_BIT   0x20
+#define RTC_CTRL_BBSQ_BIT   0x40
+#define RTC_CTRL_EOSCN_BIT  0x80
+
+#define RTC_CTRL_RS1_IDX    0x03
+
+#define RTC_12_HR_MODE_BIT 0x40
+#define RTC_PM_MODE_BIT 0x20
+
+#define RTC_DAY_ALARM_MODE_BIT 0x40
+#define RTC_OSCILLATOR_STOP_FLAG_BIT 0x80
+#define RTC_CENTURY_BIT 0x80
+
+/*
+ * RTC control register bits
+ */
+#define RTC_CTL_BIT_A1IE    0x1 /* Alarm 1 interrupt enable     */
+#define RTC_CTL_BIT_A2IE    0x2 /* Alarm 2 interrupt enable     */
+#define RTC_CTL_BIT_INTCN   0x4 /* Interrupt control            */
+#define RTC_CTL_BIT_RS1     0x8 /* Rate select 1                */
+#define RTC_CTL_BIT_RS2     0x10    /* Rate select 2                */
+#define RTC_CTL_BIT_DOSC    0x80    /* Disable Oscillator           */
+
+/*
+ * RTC status register bits
+ */
+#define RTC_STAT_BIT_A1F    0x1 /* Alarm 1 flag                 */
+#define RTC_STAT_BIT_A2F    0x2 /* Alarm 2 flag                 */
+#define RTC_STAT_BIT_OSF    0x80    /* Oscillator stop flag         */
+
+
+#endif /* __LINUX_DS3231_H */

@@ -1,0 +1,1528 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_bEnd_with_epnum
+# Date: Fri Sep 19 14:07:40 2008
+# From 2e8c4745521eb327bb37d04125ee1a1b72f2e511 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Mon, 13 Aug 2007 04:01:13 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace bEnd with epnum
+# 
+# Search and replace bEnd with epnum
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit b5f3c4b58fc0c9a55642eac57c02e0e20a08fb6a)
+
+PATCHNUM=1674
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 2e8c4745521eb327bb37d04125ee1a1b72f2e511 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Mon, 13 Aug 2007 04:01:13 -0700
+Subject: [PATCH] musb_hdrc: Search and replace bEnd with epnum
+
+Search and replace bEnd with epnum
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit b5f3c4b58fc0c9a55642eac57c02e0e20a08fb6a)
+Index: linux-2.6.18/drivers/usb/musb/g_ep0.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/g_ep0.c
++++ linux-2.6.18/drivers/usb/musb/g_ep0.c
+@@ -76,7 +76,7 @@ static int service_tx_status_request(
+ {
+ 	void __iomem	*mbase = musb->mregs;
+ 	int handled = 1;
+-	u8 bResult[2], bEnd = 0;
++	u8 bResult[2], epnum = 0;
+ 	const u8 bRecip = pControlRequest->bRequestType & USB_RECIP_MASK;
+ 
+ 	bResult[1] = 0;
+@@ -107,27 +107,27 @@ static int service_tx_status_request(
+ 		u16		tmp;
+ 		void __iomem	*regs;
+ 
+-		bEnd = (u8) pControlRequest->wIndex;
+-		if (!bEnd) {
++		epnum = (u8) pControlRequest->wIndex;
++		if (!epnum) {
+ 			bResult[0] = 0;
+ 			break;
+ 		}
+ 
+-		is_in = bEnd & USB_DIR_IN;
++		is_in = epnum & USB_DIR_IN;
+ 		if (is_in) {
+-			bEnd &= 0x0f;
+-			ep = &musb->endpoints[bEnd].ep_in;
++			epnum &= 0x0f;
++			ep = &musb->endpoints[epnum].ep_in;
+ 		} else {
+-			ep = &musb->endpoints[bEnd].ep_out;
++			ep = &musb->endpoints[epnum].ep_out;
+ 		}
+-		regs = musb->endpoints[bEnd].regs;
++		regs = musb->endpoints[epnum].regs;
+ 
+-		if (bEnd >= MUSB_C_NUM_EPS || !ep->desc) {
++		if (epnum >= MUSB_C_NUM_EPS || !ep->desc) {
+ 			handled = -EINVAL;
+ 			break;
+ 		}
+ 
+-		MGC_SelectEnd(mbase, bEnd);
++		MGC_SelectEnd(mbase, epnum);
+ 		if (is_in)
+ 			tmp = musb_readw(regs, MGC_O_HDRC_TXCSR)
+ 						& MGC_M_TXCSR_P_SENDSTALL;
+@@ -256,19 +256,19 @@ __acquires(musb->Lock)
+ 			case USB_RECIP_INTERFACE:
+ 				break;
+ 			case USB_RECIP_ENDPOINT:{
+-				const u8 bEnd = pControlRequest->wIndex & 0x0f;
++				const u8 epnum = pControlRequest->wIndex & 0x0f;
+ 				struct musb_ep *musb_ep;
+ 
+-				if (bEnd == 0
+-						|| bEnd >= MUSB_C_NUM_EPS
++				if (epnum == 0
++						|| epnum >= MUSB_C_NUM_EPS
+ 						|| pControlRequest->wValue
+ 							!= USB_ENDPOINT_HALT)
+ 					break;
+ 
+ 				if (pControlRequest->wIndex & USB_DIR_IN)
+-					musb_ep = &musb->endpoints[bEnd].ep_in;
++					musb_ep = &musb->endpoints[epnum].ep_in;
+ 				else
+-					musb_ep = &musb->endpoints[bEnd].ep_out;
++					musb_ep = &musb->endpoints[epnum].ep_out;
+ 				if (!musb_ep->desc)
+ 					break;
+ 
+@@ -364,7 +364,7 @@ stall:
+ 				break;
+ 
+ 			case USB_RECIP_ENDPOINT:{
+-				const u8		bEnd =
++				const u8		epnum =
+ 					pControlRequest->wIndex & 0x0f;
+ 				struct musb_ep		*musb_ep;
+ 				struct musb_hw_ep	*ep;
+@@ -372,13 +372,13 @@ stall:
+ 				int			is_in;
+ 				u16			csr;
+ 
+-				if (bEnd == 0
+-						|| bEnd >= MUSB_C_NUM_EPS
++				if (epnum == 0
++						|| epnum >= MUSB_C_NUM_EPS
+ 						|| pControlRequest->wValue
+ 							!= USB_ENDPOINT_HALT)
+ 					break;
+ 
+-				ep = musb->endpoints + bEnd;
++				ep = musb->endpoints + epnum;
+ 				regs = ep->regs;
+ 				is_in = pControlRequest->wIndex & USB_DIR_IN;
+ 				if (is_in)
+@@ -388,7 +388,7 @@ stall:
+ 				if (!musb_ep->desc)
+ 					break;
+ 
+-				MGC_SelectEnd(mbase, bEnd);
++				MGC_SelectEnd(mbase, epnum);
+ 				if (is_in) {
+ 					csr = musb_readw(regs,
+ 							MGC_O_HDRC_TXCSR);
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -252,9 +252,9 @@ static inline int max_ep_writesize(struc
+  */
+ static void txstate(struct musb *musb, struct musb_request *req)
+ {
+-	u8			bEnd = req->bEnd;
++	u8			epnum = req->epnum;
+ 	struct musb_ep		*musb_ep;
+-	void __iomem		*epio = musb->endpoints[bEnd].regs;
++	void __iomem		*epio = musb->endpoints[epnum].regs;
+ 	struct usb_request	*pRequest;
+ 	u16			fifo_count = 0, wCsrVal;
+ 	int			use_dma = 0;
+@@ -287,7 +287,7 @@ static void txstate(struct musb *musb, s
+ 	}
+ 
+ 	DBG(4, "hw_ep%d, maxpacket %d, fifo count %d, txcsr %03x\n",
+-			bEnd, musb_ep->wPacketSize, fifo_count,
++			epnum, musb_ep->wPacketSize, fifo_count,
+ 			wCsrVal);
+ 
+ #ifndef	CONFIG_USB_INVENTRA_FIFO
+@@ -402,16 +402,16 @@ static void txstate(struct musb *musb, s
+  * FIFO state update (e.g. data ready).
+  * Called from IRQ,  with controller locked.
+  */
+-void musb_g_tx(struct musb *musb, u8 bEnd)
++void musb_g_tx(struct musb *musb, u8 epnum)
+ {
+ 	u16			wCsrVal;
+ 	struct usb_request	*pRequest;
+ 	u8 __iomem		*mbase = musb->mregs;
+-	struct musb_ep		*musb_ep = &musb->endpoints[bEnd].ep_in;
+-	void __iomem		*epio = musb->endpoints[bEnd].regs;
++	struct musb_ep		*musb_ep = &musb->endpoints[epnum].ep_in;
++	void __iomem		*epio = musb->endpoints[epnum].regs;
+ 	struct dma_channel	*dma;
+ 
+-	MGC_SelectEnd(mbase, bEnd);
++	MGC_SelectEnd(mbase, epnum);
+ 	pRequest = next_request(musb_ep);
+ 
+ 	wCsrVal = musb_readw(epio, MGC_O_HDRC_TXCSR);
+@@ -443,7 +443,7 @@ void musb_g_tx(struct musb *musb, u8 bEn
+ 			wCsrVal &= ~(MGC_M_TXCSR_P_UNDERRUN
+ 					| MGC_M_TXCSR_TXPKTRDY);
+ 			musb_writew(epio, MGC_O_HDRC_TXCSR, wCsrVal);
+-			DBG(20, "underrun on ep%d, req %p\n", bEnd, pRequest);
++			DBG(20, "underrun on ep%d, req %p\n", epnum, pRequest);
+ 		}
+ 
+ 		if (dma_channel_status(dma) == MGC_DMA_STATUS_BUSY) {
+@@ -469,7 +469,7 @@ void musb_g_tx(struct musb *musb, u8 bEn
+ 				pRequest->actual += musb_ep->dma->dwActualLength;
+ 				DBG(4, "TXCSR%d %04x, dma off, "
+ 						"len %Zd, req %p\n",
+-					bEnd, wCsrVal,
++					epnum, wCsrVal,
+ 					musb_ep->dma->dwActualLength,
+ 					pRequest);
+ 			}
+@@ -514,7 +514,7 @@ void musb_g_tx(struct musb *musb, u8 bEn
+ 				 * REVISIT for double buffering...
+ 				 * FIXME revisit for stalls too...
+ 				 */
+-				MGC_SelectEnd(mbase, bEnd);
++				MGC_SelectEnd(mbase, epnum);
+ 				wCsrVal = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 				if (wCsrVal & MGC_M_TXCSR_FIFONOTEMPTY)
+ 					break;
+@@ -573,10 +573,10 @@ void musb_g_tx(struct musb *musb, u8 bEn
+ static void rxstate(struct musb *musb, struct musb_request *req)
+ {
+ 	u16			wCsrVal = 0;
+-	const u8		bEnd = req->bEnd;
++	const u8		epnum = req->epnum;
+ 	struct usb_request	*pRequest = &req->request;
+-	struct musb_ep		*musb_ep = &musb->endpoints[bEnd].ep_out;
+-	void __iomem		*epio = musb->endpoints[bEnd].regs;
++	struct musb_ep		*musb_ep = &musb->endpoints[epnum].ep_out;
++	void __iomem		*epio = musb->endpoints[epnum].regs;
+ 	u16			fifo_count = 0;
+ 	u16			len = musb_ep->wPacketSize;
+ 
+@@ -732,16 +732,16 @@ static void rxstate(struct musb *musb, s
+ /*
+  * Data ready for a request; called from IRQ
+  */
+-void musb_g_rx(struct musb *musb, u8 bEnd)
++void musb_g_rx(struct musb *musb, u8 epnum)
+ {
+ 	u16			wCsrVal;
+ 	struct usb_request	*pRequest;
+ 	void __iomem		*mbase = musb->mregs;
+-	struct musb_ep		*musb_ep = &musb->endpoints[bEnd].ep_out;
+-	void __iomem		*epio = musb->endpoints[bEnd].regs;
++	struct musb_ep		*musb_ep = &musb->endpoints[epnum].ep_out;
++	void __iomem		*epio = musb->endpoints[epnum].regs;
+ 	struct dma_channel	*dma;
+ 
+-	MGC_SelectEnd(mbase, bEnd);
++	MGC_SelectEnd(mbase, epnum);
+ 
+ 	pRequest = next_request(musb_ep);
+ 
+@@ -799,7 +799,7 @@ void musb_g_rx(struct musb *musb, u8 bEn
+ 		pRequest->actual += musb_ep->dma->dwActualLength;
+ 
+ 		DBG(4, "RXCSR%d %04x, dma off, %04x, len %Zd, req %p\n",
+-			bEnd, wCsrVal,
++			epnum, wCsrVal,
+ 			musb_readw(epio, MGC_O_HDRC_RXCSR),
+ 			musb_ep->dma->dwActualLength, pRequest);
+ 
+@@ -826,7 +826,7 @@ void musb_g_rx(struct musb *musb, u8 bEn
+ 			goto done;
+ 
+ 		/* don't start more i/o till the stall clears */
+-		MGC_SelectEnd(mbase, bEnd);
++		MGC_SelectEnd(mbase, epnum);
+ 		wCsrVal = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 		if (wCsrVal & MGC_M_RXCSR_P_SENDSTALL)
+ 			goto done;
+@@ -856,7 +856,7 @@ static int musb_gadget_enable(struct usb
+ 	void __iomem		*regs;
+ 	struct musb		*musb;
+ 	void __iomem	*mbase;
+-	u8		bEnd;
++	u8		epnum;
+ 	u16		csr;
+ 	unsigned	tmp;
+ 	int		status = -EINVAL;
+@@ -869,7 +869,7 @@ static int musb_gadget_enable(struct usb
+ 	regs = hw_ep->regs;
+ 	musb = musb_ep->musb;
+ 	mbase = musb->mregs;
+-	bEnd = musb_ep->current_epnum;
++	epnum = musb_ep->current_epnum;
+ 
+ 	spin_lock_irqsave(&musb->Lock, flags);
+ 
+@@ -880,7 +880,7 @@ static int musb_gadget_enable(struct usb
+ 	musb_ep->type = desc->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK;
+ 
+ 	/* check direction and (later) maxpacket size against endpoint */
+-	if ((desc->bEndpointAddress & USB_ENDPOINT_NUMBER_MASK) != bEnd)
++	if ((desc->bEndpointAddress & USB_ENDPOINT_NUMBER_MASK) != epnum)
+ 		goto fail;
+ 
+ 	/* REVISIT this rules out high bandwidth periodic transfers */
+@@ -892,7 +892,7 @@ static int musb_gadget_enable(struct usb
+ 	/* enable the interrupts for the endpoint, set the endpoint
+ 	 * packet size (or fail), set the mode, clear the fifo
+ 	 */
+-	MGC_SelectEnd(mbase, bEnd);
++	MGC_SelectEnd(mbase, epnum);
+ 	if (desc->bEndpointAddress & USB_DIR_IN) {
+ 		u16 wIntrTxE = musb_readw(mbase, MGC_O_HDRC_INTRTXE);
+ 
+@@ -903,7 +903,7 @@ static int musb_gadget_enable(struct usb
+ 		if (tmp > hw_ep->wMaxPacketSizeTx)
+ 			goto fail;
+ 
+-		wIntrTxE |= (1 << bEnd);
++		wIntrTxE |= (1 << epnum);
+ 		musb_writew(mbase, MGC_O_HDRC_INTRTXE, wIntrTxE);
+ 
+ 		/* REVISIT if can_bulk_split(), use by updating "tmp";
+@@ -933,7 +933,7 @@ static int musb_gadget_enable(struct usb
+ 		if (tmp > hw_ep->wMaxPacketSizeRx)
+ 			goto fail;
+ 
+-		wIntrRxE |= (1 << bEnd);
++		wIntrRxE |= (1 << epnum);
+ 		musb_writew(mbase, MGC_O_HDRC_INTRRXE, wIntrRxE);
+ 
+ 		/* REVISIT if can_bulk_combine() use by updating "tmp"
+@@ -999,28 +999,28 @@ static int musb_gadget_disable(struct us
+ {
+ 	unsigned long	flags;
+ 	struct musb	*musb;
+-	u8		bEnd;
++	u8		epnum;
+ 	struct musb_ep	*musb_ep;
+ 	void __iomem	*epio;
+ 	int		status = 0;
+ 
+ 	musb_ep = to_musb_ep(ep);
+ 	musb = musb_ep->musb;
+-	bEnd = musb_ep->current_epnum;
+-	epio = musb->endpoints[bEnd].regs;
++	epnum = musb_ep->current_epnum;
++	epio = musb->endpoints[epnum].regs;
+ 
+ 	spin_lock_irqsave(&musb->Lock, flags);
+-	MGC_SelectEnd(musb->mregs, bEnd);
++	MGC_SelectEnd(musb->mregs, epnum);
+ 
+ 	/* zero the endpoint sizes */
+ 	if (musb_ep->is_in) {
+ 		u16 wIntrTxE = musb_readw(musb->mregs, MGC_O_HDRC_INTRTXE);
+-		wIntrTxE &= ~(1 << bEnd);
++		wIntrTxE &= ~(1 << epnum);
+ 		musb_writew(musb->mregs, MGC_O_HDRC_INTRTXE, wIntrTxE);
+ 		musb_writew(epio, MGC_O_HDRC_TXMAXP, 0);
+ 	} else {
+ 		u16 wIntrRxE = musb_readw(musb->mregs, MGC_O_HDRC_INTRRXE);
+-		wIntrRxE &= ~(1 << bEnd);
++		wIntrRxE &= ~(1 << epnum);
+ 		musb_writew(musb->mregs, MGC_O_HDRC_INTRRXE, wIntrRxE);
+ 		musb_writew(epio, MGC_O_HDRC_RXMAXP, 0);
+ 	}
+@@ -1052,7 +1052,7 @@ struct usb_request *musb_alloc_request(s
+ 	if (pRequest) {
+ 		INIT_LIST_HEAD(&pRequest->request.list);
+ 		pRequest->request.dma = DMA_ADDR_INVALID;
+-		pRequest->bEnd = musb_ep->current_epnum;
++		pRequest->epnum = musb_ep->current_epnum;
+ 		pRequest->ep = musb_ep;
+ 	}
+ 
+@@ -1137,9 +1137,9 @@ static void musb_ep_restart(struct musb 
+ {
+ 	DBG(3, "<== %s request %p len %u on hw_ep%d\n",
+ 		req->bTx ? "TX/IN" : "RX/OUT",
+-		&req->request, req->request.length, req->bEnd);
++		&req->request, req->request.length, req->epnum);
+ 
+-	MGC_SelectEnd(musb->mregs, req->bEnd);
++	MGC_SelectEnd(musb->mregs, req->epnum);
+ 	if (req->bTx)
+ 		txstate(musb, req);
+ 	else
+@@ -1174,7 +1174,7 @@ static int musb_gadget_queue(struct usb_
+ 	/* request is mine now... */
+ 	pRequest->request.actual = 0;
+ 	pRequest->request.status = -EINPROGRESS;
+-	pRequest->bEnd = musb_ep->current_epnum;
++	pRequest->epnum = musb_ep->current_epnum;
+ 	pRequest->bTx = musb_ep->is_in;
+ 
+ 	if (is_dma_capable() && musb_ep->dma) {
+@@ -1282,9 +1282,9 @@ done:
+ int musb_gadget_set_halt(struct usb_ep *ep, int value)
+ {
+ 	struct musb_ep		*musb_ep = to_musb_ep(ep);
+-	u8			bEnd = musb_ep->current_epnum;
++	u8			epnum = musb_ep->current_epnum;
+ 	struct musb		*musb = musb_ep->musb;
+-	void __iomem		*epio = musb->endpoints[bEnd].regs;
++	void __iomem		*epio = musb->endpoints[epnum].regs;
+ 	void __iomem		*mbase;
+ 	unsigned long		flags;
+ 	u16			wCsr;
+@@ -1302,7 +1302,7 @@ int musb_gadget_set_halt(struct usb_ep *
+ 		goto done;
+ 	}
+ 
+-	MGC_SelectEnd(mbase, bEnd);
++	MGC_SelectEnd(mbase, epnum);
+ 
+ 	/* cannot portably stall with non-empty FIFO */
+ 	pRequest = to_musb_request(next_request(musb_ep));
+@@ -1364,13 +1364,13 @@ static int musb_gadget_fifo_status(struc
+ 
+ 	if (musb_ep->desc && !musb_ep->is_in) {
+ 		struct musb		*musb = musb_ep->musb;
+-		int			bEnd = musb_ep->current_epnum;
++		int			epnum = musb_ep->current_epnum;
+ 		void __iomem		*mbase = musb->mregs;
+ 		unsigned long		flags;
+ 
+ 		spin_lock_irqsave(&musb->Lock, flags);
+ 
+-		MGC_SelectEnd(mbase, bEnd);
++		MGC_SelectEnd(mbase, epnum);
+ 		/* FIXME return zero unless RXPKTRDY is set */
+ 		retval = musb_readw(epio, MGC_O_HDRC_RXCOUNT);
+ 
+@@ -1610,25 +1610,25 @@ static void musb_gadget_release(struct d
+ 
+ 
+ static void __init
+-init_peripheral_ep(struct musb *musb, struct musb_ep *ep, u8 bEnd, int is_in)
++init_peripheral_ep(struct musb *musb, struct musb_ep *ep, u8 epnum, int is_in)
+ {
+-	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + epnum;
+ 
+ 	memset(ep, 0, sizeof *ep);
+ 
+-	ep->current_epnum = bEnd;
++	ep->current_epnum = epnum;
+ 	ep->musb = musb;
+ 	ep->hw_ep = hw_ep;
+ 	ep->is_in = is_in;
+ 
+ 	INIT_LIST_HEAD(&ep->req_list);
+ 
+-	sprintf(ep->name, "ep%d%s", bEnd,
+-			(!bEnd || hw_ep->bIsSharedFifo) ? "" : (
++	sprintf(ep->name, "ep%d%s", epnum,
++			(!epnum || hw_ep->bIsSharedFifo) ? "" : (
+ 				is_in ? "in" : "out"));
+ 	ep->end_point.name = ep->name;
+ 	INIT_LIST_HEAD(&ep->end_point.ep_list);
+-	if (!bEnd) {
++	if (!epnum) {
+ 		ep->end_point.maxpacket = 64;
+ 		ep->end_point.ops = &musb_g_ep0_ops;
+ 		musb->g.ep0 = &ep->end_point;
+@@ -1648,28 +1648,28 @@ init_peripheral_ep(struct musb *musb, st
+  */
+ static inline void __init musb_g_init_endpoints(struct musb *musb)
+ {
+-	u8			bEnd;
++	u8			epnum;
+ 	struct musb_hw_ep	*hw_ep;
+ 	unsigned		count = 0;
+ 
+ 	/* intialize endpoint list just once */
+ 	INIT_LIST_HEAD(&(musb->g.ep_list));
+ 
+-	for (bEnd = 0, hw_ep = musb->endpoints;
+-			bEnd < musb->nr_endpoints;
+-			bEnd++, hw_ep++) {
+-		if (hw_ep->bIsSharedFifo /* || !bEnd */) {
+-			init_peripheral_ep(musb, &hw_ep->ep_in, bEnd, 0);
++	for (epnum = 0, hw_ep = musb->endpoints;
++			epnum < musb->nr_endpoints;
++			epnum++, hw_ep++) {
++		if (hw_ep->bIsSharedFifo /* || !epnum */) {
++			init_peripheral_ep(musb, &hw_ep->ep_in, epnum, 0);
+ 			count++;
+ 		} else {
+ 			if (hw_ep->wMaxPacketSizeTx) {
+ 				init_peripheral_ep(musb, &hw_ep->ep_in,
+-							bEnd, 1);
++							epnum, 1);
+ 				count++;
+ 			}
+ 			if (hw_ep->wMaxPacketSizeRx) {
+ 				init_peripheral_ep(musb, &hw_ep->ep_out,
+-							bEnd, 0);
++							epnum, 0);
+ 				count++;
+ 			}
+ 		}
+@@ -1855,7 +1855,7 @@ stop_activity(struct musb *musb, struct 
+ 				i < musb->nr_endpoints;
+ 				i++, hw_ep++) {
+ 			MGC_SelectEnd(musb->mregs, i);
+-			if (hw_ep->bIsSharedFifo /* || !bEnd */) {
++			if (hw_ep->bIsSharedFifo /* || !epnum */) {
+ 				nuke(&hw_ep->ep_in, -ESHUTDOWN);
+ 			} else {
+ 				if (hw_ep->wMaxPacketSizeTx)
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.h
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.h
+@@ -39,7 +39,7 @@ struct musb_request {
+ 	struct musb_ep		*ep;
+ 	struct musb		*musb;
+ 	u8 bTx;			/* endpoint direction */
+-	u8 bEnd;
++	u8 epnum;
+ 	u8 mapped;
+ };
+ 
+@@ -92,8 +92,8 @@ static inline struct usb_request *next_r
+ 	return container_of(queue->next, struct usb_request, list);
+ }
+ 
+-extern void musb_g_tx(struct musb *musb, u8 bEnd);
+-extern void musb_g_rx(struct musb *musb, u8 bEnd);
++extern void musb_g_tx(struct musb *musb, u8 epnum);
++extern void musb_g_rx(struct musb *musb, u8 epnum);
+ 
+ extern const struct usb_ep_ops musb_g_ep0_ops;
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -103,7 +103,7 @@
+ 
+ /*************************** Forwards ***************************/
+ 
+-static void musb_ep_program(struct musb *musb, u8 bEnd,
++static void musb_ep_program(struct musb *musb, u8 epnum,
+ 			struct urb *pUrb, unsigned int nOut,
+ 			u8 * pBuffer, u32 dwLength);
+ 
+@@ -177,7 +177,7 @@ musb_start_urb(struct musb *musb, int is
+ 	struct musb_hw_ep	*hw_ep = qh->hw_ep;
+ 	unsigned		nPipe = urb->pipe;
+ 	u8			bAddress = usb_pipedevice(nPipe);
+-	int			bEnd = hw_ep->epnum;
++	int			epnum = hw_ep->epnum;
+ 
+ 	/* initialize software qh state */
+ 	qh->offset = 0;
+@@ -213,14 +213,14 @@ musb_start_urb(struct musb *musb, int is
+ 			case USB_ENDPOINT_XFER_ISOC:	s = "-iso"; break;
+ 			default:			s = "-intr"; break;
+ 			}; s;}),
+-			bEnd, pBuffer, dwLength);
++			epnum, pBuffer, dwLength);
+ 
+ 	/* Configure endpoint */
+ 	if (is_in || hw_ep->bIsSharedFifo)
+ 		hw_ep->in_qh = qh;
+ 	else
+ 		hw_ep->out_qh = qh;
+-	musb_ep_program(musb, bEnd, urb, !is_in, pBuffer, dwLength);
++	musb_ep_program(musb, epnum, urb, !is_in, pBuffer, dwLength);
+ 
+ 	/* transmit may have more work: start it when it is time */
+ 	if (is_in)
+@@ -246,7 +246,7 @@ musb_start_urb(struct musb *musb, int is
+ 		} else {
+ 			qh->frame = urb->start_frame;
+ 			/* enable SOF interrupt so we can count down */
+-DBG(1,"SOF for %d\n", bEnd);
++DBG(1,"SOF for %d\n", epnum);
+ #if 1 // ifndef	CONFIG_ARCH_DAVINCI
+ 			musb_writeb(mbase, MGC_O_HDRC_INTRUSBE, 0xff);
+ #endif
+@@ -254,7 +254,7 @@ DBG(1,"SOF for %d\n", bEnd);
+ 		break;
+ 	default:
+ start:
+-		DBG(4, "Start TX%d %s\n", bEnd,
++		DBG(4, "Start TX%d %s\n", epnum,
+ 			hw_ep->tx_channel ? "dma" : "pio");
+ 
+ 		if (!hw_ep->tx_channel)
+@@ -467,7 +467,7 @@ static inline u16 musb_h_flush_rxfifo(st
+  * PIO RX for a packet (or part of it).
+  */
+ static u8 musb_host_packet_rx(struct musb *musb, struct urb *pUrb,
+-		u8 bEnd, u8 bIsochError)
++		u8 epnum, u8 bIsochError)
+ {
+ 	u16 wRxCount;
+ 	u8 *pBuffer;
+@@ -475,15 +475,15 @@ static u8 musb_host_packet_rx(struct mus
+ 	u8 bDone = FALSE;
+ 	u32			length;
+ 	int			do_flush = 0;
+-	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + epnum;
+ 	void __iomem		*epio = hw_ep->regs;
+ 	struct musb_qh		*qh = hw_ep->in_qh;
+ 	int			nPipe = pUrb->pipe;
+ 	void			*buffer = pUrb->transfer_buffer;
+ 
+-	// MGC_SelectEnd(mbase, bEnd);
++	// MGC_SelectEnd(mbase, epnum);
+ 	wRxCount = musb_readw(epio, MGC_O_HDRC_RXCOUNT);
+-	DBG(3, "RX%d count %d, buffer %p len %d/%d\n", bEnd, wRxCount,
++	DBG(3, "RX%d count %d, buffer %p len %d/%d\n", epnum, wRxCount,
+ 			pUrb->transfer_buffer, qh->offset,
+ 			pUrb->transfer_buffer_length);
+ 
+@@ -623,7 +623,7 @@ musb_rx_reinit(struct musb *musb, struct
+  * Program an HDRC endpoint as per the given URB
+  * Context: irqs blocked, controller lock held
+  */
+-static void musb_ep_program(struct musb *musb, u8 bEnd,
++static void musb_ep_program(struct musb *musb, u8 epnum,
+ 			struct urb *pUrb, unsigned int is_out,
+ 			u8 * pBuffer, u32 dwLength)
+ {
+@@ -631,7 +631,7 @@ static void musb_ep_program(struct musb 
+ 	struct dma_channel	*pDmaChannel;
+ 	u8			bDmaOk;
+ 	void __iomem		*mbase = musb->mregs;
+-	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + epnum;
+ 	void __iomem		*epio = hw_ep->regs;
+ 	struct musb_qh		*qh;
+ 	u16			wPacketSize;
+@@ -646,16 +646,16 @@ static void musb_ep_program(struct musb 
+ 	DBG(3, "%s hw%d urb %p spd%d dev%d ep%d%s "
+ 				"h_addr%02x h_port%02x bytes %d\n",
+ 			is_out ? "-->" : "<--",
+-			bEnd, pUrb, pUrb->dev->speed,
++			epnum, pUrb, pUrb->dev->speed,
+ 			qh->addr_reg, qh->epnum, is_out ? "out" : "in",
+ 			qh->h_addr_reg, qh->h_port_reg,
+ 			dwLength);
+ 
+-	MGC_SelectEnd(mbase, bEnd);
++	MGC_SelectEnd(mbase, epnum);
+ 
+ 	/* candidate for DMA? */
+ 	pDmaController = musb->pDmaController;
+-	if (is_dma_capable() && bEnd && pDmaController) {
++	if (is_dma_capable() && epnum && pDmaController) {
+ 		pDmaChannel = is_out ? hw_ep->tx_channel : hw_ep->rx_channel;
+ 		if (!pDmaChannel) {
+ 			pDmaChannel = pDmaController->channel_alloc(
+@@ -680,10 +680,10 @@ static void musb_ep_program(struct musb 
+ 
+ 		/* disable interrupt in case we flush */
+ 		wIntrTxE = musb_readw(mbase, MGC_O_HDRC_INTRTXE);
+-		musb_writew(mbase, MGC_O_HDRC_INTRTXE, wIntrTxE & ~(1 << bEnd));
++		musb_writew(mbase, MGC_O_HDRC_INTRTXE, wIntrTxE & ~(1 << epnum));
+ 
+ 		/* general endpoint setup */
+-		if (bEnd) {
++		if (epnum) {
+ 			u16	csr = wCsr;
+ 
+ 			/* ASSERT:  TXCSR_DMAENAB was already cleared */
+@@ -722,20 +722,20 @@ static void musb_ep_program(struct musb 
+ 		/* target addr and (for multipoint) hub addr/port */
+ 		if (musb->bIsMultipoint) {
+ 			musb_writeb(mbase,
+-				MGC_BUSCTL_OFFSET(bEnd, MGC_O_HDRC_TXFUNCADDR),
++				MGC_BUSCTL_OFFSET(epnum, MGC_O_HDRC_TXFUNCADDR),
+ 				qh->addr_reg);
+ 			musb_writeb(mbase,
+-				MGC_BUSCTL_OFFSET(bEnd, MGC_O_HDRC_TXHUBADDR),
++				MGC_BUSCTL_OFFSET(epnum, MGC_O_HDRC_TXHUBADDR),
+ 				qh->h_addr_reg);
+ 			musb_writeb(mbase,
+-				MGC_BUSCTL_OFFSET(bEnd, MGC_O_HDRC_TXHUBPORT),
++				MGC_BUSCTL_OFFSET(epnum, MGC_O_HDRC_TXHUBPORT),
+ 				qh->h_port_reg);
+-/* FIXME if !bEnd, do the same for RX ... */
++/* FIXME if !epnum, do the same for RX ... */
+ 		} else
+ 			musb_writeb(mbase, MGC_O_HDRC_FADDR, qh->addr_reg);
+ 
+ 		/* protocol/endpoint/interval/NAKlimit */
+-		if (bEnd) {
++		if (epnum) {
+ 			musb_writeb(epio, MGC_O_HDRC_TXTYPE, qh->type_reg);
+ 			if (can_bulk_split(musb, qh->type))
+ 				musb_writew(epio, MGC_O_HDRC_TXMAXP,
+@@ -863,7 +863,7 @@ static void musb_ep_program(struct musb 
+ 			/* write CSR */
+ 			wCsr |= MGC_M_TXCSR_MODE;
+ 
+-			if (bEnd)
++			if (epnum)
+ 				musb_writew(epio, MGC_O_HDRC_TXCSR, wCsr);
+ 		}
+ 
+@@ -931,7 +931,7 @@ static void musb_ep_program(struct musb 
+ 		}
+ 
+ 		csr |= MGC_M_RXCSR_H_REQPKT;
+-		DBG(7, "RXCSR%d := %04x\n", bEnd, csr);
++		DBG(7, "RXCSR%d := %04x\n", epnum, csr);
+ 		musb_writew(hw_ep->regs, MGC_O_HDRC_RXCSR, csr);
+ 		csr = musb_readw(hw_ep->regs, MGC_O_HDRC_RXCSR);
+ 	}
+@@ -1162,7 +1162,7 @@ done:
+ #endif
+ 
+ /* Service a Tx-Available or dma completion irq for the endpoint */
+-void musb_host_tx(struct musb *musb, u8 bEnd)
++void musb_host_tx(struct musb *musb, u8 epnum)
+ {
+ 	int			nPipe;
+ 	u8			bDone = FALSE;
+@@ -1170,7 +1170,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 	size_t			wLength = 0;
+ 	u8			*pBuffer = NULL;
+ 	struct urb		*pUrb;
+-	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + epnum;
+ 	void __iomem		*epio = hw_ep->regs;
+ 	struct musb_qh		*qh = hw_ep->out_qh;
+ 	u32			status = 0;
+@@ -1179,36 +1179,36 @@ void musb_host_tx(struct musb *musb, u8 
+ 
+ 	pUrb = next_urb(qh);
+ 
+-	MGC_SelectEnd(mbase, bEnd);
++	MGC_SelectEnd(mbase, epnum);
+ 	wTxCsrVal = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 
+ 	/* with CPPI, DMA sometimes triggers "extra" irqs */
+ 	if (!pUrb) {
+-		DBG(4, "extra TX%d ready, csr %04x\n", bEnd, wTxCsrVal);
++		DBG(4, "extra TX%d ready, csr %04x\n", epnum, wTxCsrVal);
+ 		goto finish;
+ 	}
+ 
+ 	nPipe = pUrb->pipe;
+ 	dma = is_dma_capable() ? hw_ep->tx_channel : NULL;
+-	DBG(4, "OUT/TX%d end, csr %04x%s\n", bEnd, wTxCsrVal,
++	DBG(4, "OUT/TX%d end, csr %04x%s\n", epnum, wTxCsrVal,
+ 			dma ? ", dma" : "");
+ 
+ 	/* check for errors */
+ 	if (wTxCsrVal & MGC_M_TXCSR_H_RXSTALL) {
+ 		/* dma was disabled, fifo flushed */
+-		DBG(3, "TX end %d stall\n", bEnd);
++		DBG(3, "TX end %d stall\n", epnum);
+ 
+ 		/* stall; record URB status */
+ 		status = -EPIPE;
+ 
+ 	} else if (wTxCsrVal & MGC_M_TXCSR_H_ERROR) {
+ 		/* (NON-ISO) dma was disabled, fifo flushed */
+-		DBG(3, "TX 3strikes on ep=%d\n", bEnd);
++		DBG(3, "TX 3strikes on ep=%d\n", epnum);
+ 
+ 		status = -ETIMEDOUT;
+ 
+ 	} else if (wTxCsrVal & MGC_M_TXCSR_H_NAKTIMEOUT) {
+-		DBG(6, "TX end=%d device not responding\n", bEnd);
++		DBG(6, "TX end=%d device not responding\n", epnum);
+ 
+ 		/* NOTE:  this code path would be a good place to PAUSE a
+ 		 * transfer, if there's some other (nonperiodic) tx urb
+@@ -1217,7 +1217,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 		 * if (bulk && qh->ring.next != &musb->out_bulk), then
+ 		 * we have a candidate... NAKing is *NOT* an error
+ 		 */
+-		MGC_SelectEnd(mbase, bEnd);
++		MGC_SelectEnd(mbase, epnum);
+ 		musb_writew(epio, MGC_O_HDRC_CSR0,
+ 				MGC_M_TXCSR_H_WZC_BITS
+ 				| MGC_M_TXCSR_TXPKTRDY);
+@@ -1241,7 +1241,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 				| MGC_M_TXCSR_H_NAKTIMEOUT
+ 				);
+ 
+-		MGC_SelectEnd(mbase, bEnd);
++		MGC_SelectEnd(mbase, epnum);
+ 		musb_writew(epio, MGC_O_HDRC_TXCSR, wTxCsrVal);
+ 		/* REVISIT may need to clear FLUSHFIFO ... */
+ 		musb_writew(epio, MGC_O_HDRC_TXCSR, wTxCsrVal);
+@@ -1252,7 +1252,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 
+ 	/* second cppi case */
+ 	if (dma_channel_status(dma) == MGC_DMA_STATUS_BUSY) {
+-		DBG(4, "extra TX%d ready, csr %04x\n", bEnd, wTxCsrVal);
++		DBG(4, "extra TX%d ready, csr %04x\n", epnum, wTxCsrVal);
+ 		goto finish;
+ 
+ 	}
+@@ -1323,7 +1323,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 		musb_write_fifo(hw_ep, wLength, pBuffer);
+ 		qh->segsize = wLength;
+ 
+-		MGC_SelectEnd(mbase, bEnd);
++		MGC_SelectEnd(mbase, epnum);
+ 		musb_writew(epio, MGC_O_HDRC_TXCSR,
+ 				MGC_M_TXCSR_H_WZC_BITS | MGC_M_TXCSR_TXPKTRDY);
+ 	} else
+@@ -1377,10 +1377,10 @@ finish:
+  * Service an RX interrupt for the given IN endpoint; docs cover bulk, iso,
+  * and high-bandwidth IN transfer cases.
+  */
+-void musb_host_rx(struct musb *musb, u8 bEnd)
++void musb_host_rx(struct musb *musb, u8 epnum)
+ {
+ 	struct urb		*pUrb;
+-	struct musb_hw_ep	*hw_ep = musb->endpoints + bEnd;
++	struct musb_hw_ep	*hw_ep = musb->endpoints + epnum;
+ 	void __iomem		*epio = hw_ep->regs;
+ 	struct musb_qh		*qh = hw_ep->in_qh;
+ 	size_t			xfer_len;
+@@ -1392,7 +1392,7 @@ void musb_host_rx(struct musb *musb, u8 
+ 	u32			status;
+ 	struct dma_channel	*dma;
+ 
+-	MGC_SelectEnd(mbase, bEnd);
++	MGC_SelectEnd(mbase, epnum);
+ 
+ 	pUrb = next_urb(qh);
+ 	dma = is_dma_capable() ? hw_ep->rx_channel : NULL;
+@@ -1406,7 +1406,7 @@ void musb_host_rx(struct musb *musb, u8 
+ 		 * usbtest #11 (unlinks) triggers it regularly, sometimes
+ 		 * with fifo full.  (Only with DMA??)
+ 		 */
+-		DBG(3, "BOGUS RX%d ready, csr %04x, count %d\n", bEnd, wVal,
++		DBG(3, "BOGUS RX%d ready, csr %04x, count %d\n", epnum, wVal,
+ 			musb_readw(epio, MGC_O_HDRC_RXCOUNT));
+ 		musb_h_flush_rxfifo(hw_ep, MGC_M_RXCSR_CLRDATATOG);
+ 		return;
+@@ -1415,19 +1415,19 @@ void musb_host_rx(struct musb *musb, u8 
+ 	nPipe = pUrb->pipe;
+ 
+ 	DBG(5, "<== hw %d rxcsr %04x, urb actual %d (+dma %zd)\n",
+-		bEnd, wRxCsrVal, pUrb->actual_length,
++		epnum, wRxCsrVal, pUrb->actual_length,
+ 		dma ? dma->dwActualLength : 0);
+ 
+ 	/* check for errors, concurrent stall & unlink is not really
+ 	 * handled yet! */
+ 	if (wRxCsrVal & MGC_M_RXCSR_H_RXSTALL) {
+-		DBG(3, "RX end %d STALL\n", bEnd);
++		DBG(3, "RX end %d STALL\n", epnum);
+ 
+ 		/* stall; record URB status */
+ 		status = -EPIPE;
+ 
+ 	} else if (wRxCsrVal & MGC_M_RXCSR_H_ERROR) {
+-		DBG(3, "end %d RX proto error\n", bEnd);
++		DBG(3, "end %d RX proto error\n", epnum);
+ 
+ 		status = -EPROTO;
+ 		musb_writeb(epio, MGC_O_HDRC_RXINTERVAL, 0);
+@@ -1442,15 +1442,15 @@ void musb_host_rx(struct musb *musb, u8 
+ 			 * if (bulk && qh->ring.next != &musb->in_bulk), then
+ 			 * we have a candidate... NAKing is *NOT* an error
+ 			 */
+-			DBG(6, "RX end %d NAK timeout\n", bEnd);
+-			MGC_SelectEnd(mbase, bEnd);
++			DBG(6, "RX end %d NAK timeout\n", epnum);
++			MGC_SelectEnd(mbase, epnum);
+ 			musb_writew(epio, MGC_O_HDRC_RXCSR,
+ 					MGC_M_RXCSR_H_WZC_BITS
+ 					| MGC_M_RXCSR_H_REQPKT);
+ 
+ 			goto finish;
+ 		} else {
+-			DBG(4, "RX end %d ISO data error\n", bEnd);
++			DBG(4, "RX end %d ISO data error\n", epnum);
+ 			/* packet error reported later */
+ 			bIsochError = TRUE;
+ 		}
+@@ -1472,7 +1472,7 @@ void musb_host_rx(struct musb *musb, u8 
+ 
+ 	if (unlikely(dma_channel_status(dma) == MGC_DMA_STATUS_BUSY)) {
+ 		/* SHOULD NEVER HAPPEN ... but at least DaVinci has done it */
+-		ERR("RX%d dma busy, csr %04x\n", bEnd, wRxCsrVal);
++		ERR("RX%d dma busy, csr %04x\n", epnum, wRxCsrVal);
+ 		goto finish;
+ 	}
+ 
+@@ -1497,11 +1497,11 @@ void musb_host_rx(struct musb *musb, u8 
+ 			bDone = TRUE;
+ 		}
+ 
+-		DBG(2, "RXCSR%d %04x, reqpkt, len %zd%s\n", bEnd, wRxCsrVal,
++		DBG(2, "RXCSR%d %04x, reqpkt, len %zd%s\n", epnum, wRxCsrVal,
+ 				xfer_len, dma ? ", dma" : "");
+ 		wRxCsrVal &= ~MGC_M_RXCSR_H_REQPKT;
+ 
+-		MGC_SelectEnd(mbase, bEnd);
++		MGC_SelectEnd(mbase, epnum);
+ 		musb_writew(epio, MGC_O_HDRC_RXCSR,
+ 				MGC_M_RXCSR_H_WZC_BITS | wRxCsrVal);
+ 	}
+@@ -1528,7 +1528,7 @@ void musb_host_rx(struct musb *musb, u8 
+ 				MGC_M_RXCSR_H_WZC_BITS | wVal);
+ 		}
+ 
+-		DBG(4, "ep %d dma %s, rxcsr %04x, rxcount %d\n", bEnd,
++		DBG(4, "ep %d dma %s, rxcsr %04x, rxcount %d\n", epnum,
+ 			bDone ? "off" : "reset",
+ 			musb_readw(epio, MGC_O_HDRC_RXCSR),
+ 			musb_readw(epio, MGC_O_HDRC_RXCOUNT));
+@@ -1545,7 +1545,7 @@ void musb_host_rx(struct musb *musb, u8 
+ 
+ // SCRUB (RX)
+ 			/* do the proper sequence to abort the transfer */
+-			MGC_SelectEnd(mbase, bEnd);
++			MGC_SelectEnd(mbase, epnum);
+ 			wVal &= ~MGC_M_RXCSR_H_REQPKT;
+ 			musb_writew(epio, MGC_O_HDRC_RXCSR, wVal);
+ 			goto finish;
+@@ -1561,7 +1561,7 @@ void musb_host_rx(struct musb *musb, u8 
+ 			wRxCount = musb_readw(epio, MGC_O_HDRC_RXCOUNT);
+ 
+ 			DBG(2, "RX%d count %d, buffer 0x%x len %d/%d\n",
+-					bEnd, wRxCount,
++					epnum, wRxCount,
+ 					pUrb->transfer_dma
+ 						+ pUrb->actual_length,
+ 					qh->offset,
+@@ -1634,7 +1634,7 @@ void musb_host_rx(struct musb *musb, u8 
+ 
+ 		if (!dma) {
+ 			bDone = musb_host_packet_rx(musb, pUrb,
+-					bEnd, bIsochError);
++					epnum, bIsochError);
+ 			DBG(6, "read %spacket\n", bDone ? "last " : "");
+ 		}
+ 	}
+Index: linux-2.6.18/drivers/usb/musb/musb_procfs.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_procfs.c
++++ linux-2.6.18/drivers/usb/musb/musb_procfs.c
+@@ -233,14 +233,14 @@ static int dump_ep(struct musb_ep *ep, c
+ #endif
+ 
+ static int
+-dump_end_info(struct musb *musb, u8 bEnd, char *aBuffer, unsigned max)
++dump_end_info(struct musb *musb, u8 epnum, char *aBuffer, unsigned max)
+ {
+ 	int			code = 0;
+ 	char			*buf = aBuffer;
+-	struct musb_hw_ep	*hw_ep = &musb->endpoints[bEnd];
++	struct musb_hw_ep	*hw_ep = &musb->endpoints[epnum];
+ 
+ 	do {
+-		MGC_SelectEnd(musb->mregs, bEnd);
++		MGC_SelectEnd(musb->mregs, epnum);
+ #ifdef CONFIG_USB_MUSB_HDRC_HCD
+ 		if (is_host_active(musb)) {
+ 			int		dump_rx, dump_tx;
+@@ -249,7 +249,7 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 			/* TEMPORARY (!) until we have a real periodic
+ 			 * schedule tree ...
+ 			 */
+-			if (!bEnd) {
++			if (!epnum) {
+ 				/* control is shared, uses RX queue
+ 				 * but (mostly) shadowed tx registers
+ 				 */
+@@ -258,10 +258,10 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 			} else if (hw_ep == musb->bulk_ep) {
+ 				dump_tx = !list_empty(&musb->out_bulk);
+ 				dump_rx = !list_empty(&musb->in_bulk);
+-			} else if (musb->periodic[bEnd]) {
++			} else if (musb->periodic[epnum]) {
+ 				struct usb_host_endpoint	*hep;
+ 
+-				hep = musb->periodic[bEnd]->hep;
++				hep = musb->periodic[epnum]->hep;
+ 				dump_rx = hep->desc.bEndpointAddress
+ 						& USB_ENDPOINT_DIR_MASK;
+ 				dump_tx = !dump_rx;
+@@ -276,7 +276,7 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 					"max %04x type %02x; "
+ 					"dev %d hub %d port %d"
+ 					"\n",
+-					bEnd,
++					epnum,
+ 					hw_ep->rx_double_buffered
+ 						? "2buf" : "1buf",
+ 					musb_readw(regs, MGC_O_HDRC_RXCSR),
+@@ -285,13 +285,13 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 					musb_readb(regs, MGC_O_HDRC_RXTYPE),
+ 					/* FIXME:  assumes multipoint */
+ 					musb_readb(musb->mregs,
+-						MGC_BUSCTL_OFFSET(bEnd,
++						MGC_BUSCTL_OFFSET(epnum,
+ 						MGC_O_HDRC_RXFUNCADDR)),
+ 					musb_readb(musb->mregs,
+-						MGC_BUSCTL_OFFSET(bEnd,
++						MGC_BUSCTL_OFFSET(epnum,
+ 						MGC_O_HDRC_RXHUBADDR)),
+ 					musb_readb(musb->mregs,
+-						MGC_BUSCTL_OFFSET(bEnd,
++						MGC_BUSCTL_OFFSET(epnum,
+ 						MGC_O_HDRC_RXHUBPORT))
+ 					);
+ 				if (code <= 0)
+@@ -301,9 +301,9 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 				max -= code;
+ 
+ 				if (is_cppi_enabled()
+-						&& bEnd
++						&& epnum
+ 						&& hw_ep->rx_channel) {
+-					unsigned	cppi = bEnd - 1;
++					unsigned	cppi = epnum - 1;
+ 					unsigned	off1 = cppi << 2;
+ 					void __iomem	*base;
+ 					void __iomem	*ram;
+@@ -347,8 +347,8 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 					code = min(code, (int) max);
+ 					buf += code;
+ 					max -= code;
+-				} else if (musb->periodic[bEnd]) {
+-					code = dump_qh(musb->periodic[bEnd],
++				} else if (musb->periodic[epnum]) {
++					code = dump_qh(musb->periodic[epnum],
+ 							buf, max);
+ 					if (code <= 0)
+ 						break;
+@@ -364,7 +364,7 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 					"max %04x type %02x; "
+ 					"dev %d hub %d port %d"
+ 					"\n",
+-					bEnd,
++					epnum,
+ 					hw_ep->tx_double_buffered
+ 						? "2buf" : "1buf",
+ 					musb_readw(regs, MGC_O_HDRC_TXCSR),
+@@ -373,13 +373,13 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 					musb_readb(regs, MGC_O_HDRC_TXTYPE),
+ 					/* FIXME:  assumes multipoint */
+ 					musb_readb(musb->mregs,
+-						MGC_BUSCTL_OFFSET(bEnd,
++						MGC_BUSCTL_OFFSET(epnum,
+ 						MGC_O_HDRC_TXFUNCADDR)),
+ 					musb_readb(musb->mregs,
+-						MGC_BUSCTL_OFFSET(bEnd,
++						MGC_BUSCTL_OFFSET(epnum,
+ 						MGC_O_HDRC_TXHUBADDR)),
+ 					musb_readb(musb->mregs,
+-						MGC_BUSCTL_OFFSET(bEnd,
++						MGC_BUSCTL_OFFSET(epnum,
+ 						MGC_O_HDRC_TXHUBPORT))
+ 					);
+ 				if (code <= 0)
+@@ -389,9 +389,9 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 				max -= code;
+ 
+ 				if (is_cppi_enabled()
+-						&& bEnd
++						&& epnum
+ 						&& hw_ep->tx_channel) {
+-					unsigned	cppi = bEnd - 1;
++					unsigned	cppi = epnum - 1;
+ 					void __iomem	*base;
+ 					void __iomem	*ram;
+ 
+@@ -438,8 +438,8 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 					code = min(code, (int) max);
+ 					buf += code;
+ 					max -= code;
+-				} else if (musb->periodic[bEnd]) {
+-					code = dump_qh(musb->periodic[bEnd],
++				} else if (musb->periodic[epnum]) {
++					code = dump_qh(musb->periodic[epnum],
+ 							buf, max);
+ 					if (code <= 0)
+ 						break;
+@@ -454,7 +454,7 @@ dump_end_info(struct musb *musb, u8 bEnd
+ 		if (is_peripheral_active(musb)) {
+ 			code = 0;
+ 
+-			if (hw_ep->ep_in.desc || !bEnd) {
++			if (hw_ep->ep_in.desc || !epnum) {
+ 				code = dump_ep(&hw_ep->ep_in, buf, max);
+ 				if (code <= 0)
+ 					break;
+@@ -785,7 +785,7 @@ static int musb_proc_read(char *page, ch
+ 	int code = 0;
+ 	unsigned long	flags;
+ 	struct musb	*musb = data;
+-	unsigned	bEnd;
++	unsigned	epnum;
+ 
+ 	count -= off;
+ 	count -= 1;		/* for NUL at end */
+@@ -802,9 +802,9 @@ static int musb_proc_read(char *page, ch
+ 
+ 	/* generate the report for the end points */
+ 	// REVISIT ... not unless something's connected!
+-	for (bEnd = 0; count >= 0 && bEnd < musb->nr_endpoints;
+-			bEnd++) {
+-		code = dump_end_info(musb, bEnd, buffer, count);
++	for (epnum = 0; count >= 0 && epnum < musb->nr_endpoints;
++			epnum++) {
++		code = dump_end_info(musb, epnum, buffer, count);
+ 		if (code > 0) {
+ 			buffer += code;
+ 			count -= code;
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -218,19 +218,19 @@ enum musb_g_ep0_state {
+ 
+ /* TUSB mapping: "flat" plus ep0 special cases */
+ #if	defined(CONFIG_USB_TUSB6010)
+-#define MGC_SelectEnd(_mbase, _bEnd) \
+-	musb_writeb((_mbase), MGC_O_HDRC_INDEX, (_bEnd))
++#define MGC_SelectEnd(_mbase, _epnum) \
++	musb_writeb((_mbase), MGC_O_HDRC_INDEX, (_epnum))
+ #define	MGC_END_OFFSET			MGC_TUSB_OFFSET
+ 
+ /* "flat" mapping: each endpoint has its own i/o address */
+ #elif	defined(MUSB_FLAT_REG)
+-#define MGC_SelectEnd(_mbase, _bEnd)	(((void)(_mbase)),((void)(_bEnd)))
++#define MGC_SelectEnd(_mbase, _epnum)	(((void)(_mbase)),((void)(_epnum)))
+ #define	MGC_END_OFFSET			MGC_FLAT_OFFSET
+ 
+ /* "indexed" mapping: INDEX register controls register bank select */
+ #else
+-#define MGC_SelectEnd(_mbase, _bEnd) \
+-	musb_writeb((_mbase), MGC_O_HDRC_INDEX, (_bEnd))
++#define MGC_SelectEnd(_mbase, _epnum) \
++	musb_writeb((_mbase), MGC_O_HDRC_INDEX, (_epnum))
+ #define	MGC_END_OFFSET			MGC_INDEXED_OFFSET
+ #endif
+ 
+Index: linux-2.6.18/drivers/usb/musb/musbhdrc.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbhdrc.h
++++ linux-2.6.18/drivers/usb/musb/musbhdrc.h
+@@ -107,16 +107,16 @@
+ #define MGC_O_HDRC_CONFIGDATA	MGC_O_HDRC_FIFOSIZE	/* re-used for EP0 */
+ 
+ /* offsets to endpoint registers in indexed model (using INDEX register) */
+-#define MGC_INDEXED_OFFSET(_bEnd, _bOffset)	\
++#define MGC_INDEXED_OFFSET(_epnum, _bOffset)	\
+ 	(0x10                   + (_bOffset))
+ 
+ /* offsets to endpoint registers in flat models */
+-#define MGC_FLAT_OFFSET(_bEnd, _bOffset)	\
+-	(0x100 + (0x10*(_bEnd)) + (_bOffset))
++#define MGC_FLAT_OFFSET(_epnum, _bOffset)	\
++	(0x100 + (0x10*(_epnum)) + (_bOffset))
+ 
+ #ifdef CONFIG_USB_TUSB6010
+ /* TUSB6010 EP0 configuration register is special */
+-#define MGC_TUSB_OFFSET(_bEnd, _bOffset)	\
++#define MGC_TUSB_OFFSET(_epnum, _bOffset)	\
+ 	(0x10 + _bOffset)
+ #include "tusb6010.h"		/* needed "only" for TUSB_EP0_CONF */
+ #endif
+@@ -130,8 +130,8 @@
+ #define MGC_O_HDRC_RXHUBADDR	0x06
+ #define MGC_O_HDRC_RXHUBPORT	0x07
+ 
+-#define MGC_BUSCTL_OFFSET(_bEnd, _bOffset) \
+-	(0x80 + (8*(_bEnd)) + (_bOffset))
++#define MGC_BUSCTL_OFFSET(_epnum, _bOffset) \
++	(0x80 + (8*(_epnum)) + (_bOffset))
+ 
+ /*
+  *     MUSBHDRC Register bit masks
+Index: linux-2.6.18/drivers/usb/musb/musbhsdma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbhsdma.c
++++ linux-2.6.18/drivers/usb/musb/musbhsdma.c
+@@ -78,7 +78,7 @@ struct musb_dma_channel {
+ 	u32				len;
+ 	u16				wMaxPacketSize;
+ 	u8				bIndex;
+-	u8				bEnd;
++	u8				epnum;
+ 	u8				bTransmit;
+ };
+ 
+@@ -140,7 +140,7 @@ static struct dma_channel* dma_channel_a
+ 			pImplChannel = &(pController->aChannel[bBit]);
+ 			pImplChannel->pController = pController;
+ 			pImplChannel->bIndex = bBit;
+-			pImplChannel->bEnd = hw_ep->epnum;
++			pImplChannel->epnum = hw_ep->epnum;
+ 			pImplChannel->bTransmit = bTransmit;
+ 			pChannel = &(pImplChannel->Channel);
+ 			pChannel->pPrivateData = pImplChannel;
+@@ -201,7 +201,7 @@ static void configure_channel(struct dma
+ 		}
+ 	}
+ 
+-	wCsr |= (pImplChannel->bEnd << MGC_S_HSDMA_ENDPOINT)
++	wCsr |= (pImplChannel->epnum << MGC_S_HSDMA_ENDPOINT)
+ 		| (1 << MGC_S_HSDMA_ENABLE)
+ 		| (1 << MGC_S_HSDMA_IRQENABLE)
+ 		| (pImplChannel->bTransmit ? (1 << MGC_S_HSDMA_TRANSMIT) : 0);
+@@ -228,7 +228,7 @@ static int dma_channel_program(struct dm
+ 			(struct musb_dma_channel *) pChannel->pPrivateData;
+ 
+ 	DBG(2, "ep%d-%s pkt_sz %d, dma_addr 0x%x length %d, mode %d\n",
+-		pImplChannel->bEnd,
++		pImplChannel->epnum,
+ 		pImplChannel->bTransmit ? "Tx" : "Rx",
+ 		wPacketSize, dma_addr, dwLength, bMode);
+ 
+@@ -263,22 +263,22 @@ static int dma_channel_abort(struct dma_
+ 		if (pImplChannel->bTransmit) {
+ 
+ 			csr = musb_readw(mbase,
+-				MGC_END_OFFSET(pImplChannel->bEnd,MGC_O_HDRC_TXCSR));
++				MGC_END_OFFSET(pImplChannel->epnum,MGC_O_HDRC_TXCSR));
+ 			csr &= ~(MGC_M_TXCSR_AUTOSET |
+ 				 MGC_M_TXCSR_DMAENAB |
+ 				 MGC_M_TXCSR_DMAMODE);
+ 			musb_writew(mbase,
+-					MGC_END_OFFSET(pImplChannel->bEnd,MGC_O_HDRC_TXCSR),
++					MGC_END_OFFSET(pImplChannel->epnum,MGC_O_HDRC_TXCSR),
+ 					csr);
+ 		}
+ 		else {
+ 			csr = musb_readw(mbase,
+-				MGC_END_OFFSET(pImplChannel->bEnd,MGC_O_HDRC_RXCSR));
++				MGC_END_OFFSET(pImplChannel->epnum,MGC_O_HDRC_RXCSR));
+ 			csr &= ~(MGC_M_RXCSR_AUTOCLEAR |
+ 				 MGC_M_RXCSR_DMAENAB |
+ 				 MGC_M_RXCSR_DMAMODE);
+ 			musb_writew(mbase,
+-					MGC_END_OFFSET(pImplChannel->bEnd,MGC_O_HDRC_RXCSR),
++					MGC_END_OFFSET(pImplChannel->epnum,MGC_O_HDRC_RXCSR),
+ 					csr);
+ 		}
+ 
+@@ -354,14 +354,14 @@ static irqreturn_t dma_controller_irq(in
+ 				   ) {
+ 					/* Send out the packet */
+ 					MGC_SelectEnd(mbase,
+-						pImplChannel->bEnd);
++						pImplChannel->epnum);
+ 					musb_writew(mbase,
+-						MGC_END_OFFSET(pImplChannel->bEnd,MGC_O_HDRC_TXCSR),
++						MGC_END_OFFSET(pImplChannel->epnum,MGC_O_HDRC_TXCSR),
+ 						MGC_M_TXCSR_TXPKTRDY);
+ 				} else
+ 					musb_dma_completion(
+ 						pController->pDmaPrivate,
+-						pImplChannel->bEnd,
++						pImplChannel->epnum,
+ 						pImplChannel->bTransmit);
+ 			}
+ 		}
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -662,7 +662,7 @@ static irqreturn_t musb_stage2_irq(struc
+ 	if (bIntrUSB & MGC_M_INTR_SOF) {
+ 		void __iomem *mbase = musb->mregs;
+ 		struct musb_hw_ep	*ep;
+-		u8 bEnd;
++		u8 epnum;
+ 		u16 wFrame;
+ 
+ 		DBG(6, "START_OF_FRAME\n");
+@@ -671,20 +671,20 @@ static irqreturn_t musb_stage2_irq(struc
+ 		/* start any periodic Tx transfers waiting for current frame */
+ 		wFrame = musb_readw(mbase, MGC_O_HDRC_FRAME);
+ 		ep = musb->endpoints;
+-		for (bEnd = 1; (bEnd < musb->nr_endpoints)
+-					&& (musb->wEndMask >= (1 << bEnd));
+-				bEnd++, ep++) {
++		for (epnum = 1; (epnum < musb->nr_endpoints)
++					&& (musb->wEndMask >= (1 << epnum));
++				epnum++, ep++) {
+ 			// FIXME handle framecounter wraps (12 bits)
+ 			// eliminate duplicated StartUrb logic
+ 			if (ep->dwWaitFrame >= wFrame) {
+ 				ep->dwWaitFrame = 0;
+ 				printk("SOF --> periodic TX%s on %d\n",
+ 					ep->tx_channel ? " DMA" : "",
+-					bEnd);
++					epnum);
+ 				if (!ep->tx_channel)
+-					musb_h_tx_start(musb, bEnd);
++					musb_h_tx_start(musb, epnum);
+ 				else
+-					cppi_hostdma_start(musb, bEnd);
++					cppi_hostdma_start(musb, epnum);
+ 			}
+ 		}		/* end of for loop */
+ 	}
+@@ -1178,7 +1178,7 @@ static int __init ep_config_from_table(s
+  */
+ static int __init ep_config_from_hw(struct musb *musb)
+ {
+-	u8 bEnd = 0, reg;
++	u8 epnum = 0, reg;
+ 	struct musb_hw_ep *hw_ep;
+ 	void *mbase = musb->mregs;
+ 
+@@ -1186,9 +1186,9 @@ static int __init ep_config_from_hw(stru
+ 
+ 	/* FIXME pick up ep0 maxpacket size */
+ 
+-	for (bEnd = 1; bEnd < MUSB_C_NUM_EPS; bEnd++) {
+-		MGC_SelectEnd(mbase, bEnd);
+-		hw_ep = musb->endpoints + bEnd;
++	for (epnum = 1; epnum < MUSB_C_NUM_EPS; epnum++) {
++		MGC_SelectEnd(mbase, epnum);
++		hw_ep = musb->endpoints + epnum;
+ 
+ 		/* read from core using indexed model */
+ 		reg = musb_readb(hw_ep->regs, 0x10 + MGC_O_HDRC_FIFOSIZE);
+@@ -1197,7 +1197,7 @@ static int __init ep_config_from_hw(stru
+ 			break;
+ 		}
+ 		musb->nr_endpoints++;
+-		musb->wEndMask |= (1 << bEnd);
++		musb->wEndMask |= (1 << epnum);
+ 
+ 		hw_ep->wMaxPacketSizeTx = 1 << (reg & 0x0f);
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1674.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1674.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1674);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,756 @@
+#! /usr/bin/env bash
+# Patch: -softmac_Fix_WX_and_association_related_races
+# Date: Thu Feb 19 15:07:23 2009
+# MR: 29923
+# From: Michael Buesch <mb@bu3sch.de>
+# Date: Wed, 27 Sep 2006 12:26:33 +0000 (+0300)
+# Subject: [PATCH] softmac: Fix WX and association related races
+# X-Git-Tag: v2.6.19-rc3~13^2~1^2~9
+# X-Git-Url: http://git.kernel.org/?p=linux%2Fkernel%2Fgit%2Ftorvalds%2Flinux-2.6.git;a=commitdiff_plain;h=7c28ad2d83ecc637237fe684659a6afbce0bb2a8
+# 
+# [PATCH] softmac: Fix WX and association related races
+# 
+# This fixes some race conditions in the WirelessExtension
+# handling and association handling code.
+# 
+# Signed-off-by: Michael Buesch <mb@bu3sch.de>
+# Signed-off-by: John W. Linville <linville@tuxdriver.com>
+# 
+
+PATCHNUM=2197
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From: Michael Buesch <mb@bu3sch.de>
+Date: Wed, 27 Sep 2006 12:26:33 +0000 (+0300)
+Subject: [PATCH] softmac: Fix WX and association related races
+X-Git-Tag: v2.6.19-rc3~13^2~1^2~9
+X-Git-Url: http://git.kernel.org/?p=linux%2Fkernel%2Fgit%2Ftorvalds%2Flinux-2.6.git;a=commitdiff_plain;h=7c28ad2d83ecc637237fe684659a6afbce0bb2a8
+
+[PATCH] softmac: Fix WX and association related races
+
+This fixes some race conditions in the WirelessExtension
+handling and association handling code.
+
+Signed-off-by: Michael Buesch <mb@bu3sch.de>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+
+Index: linux-2.6.18/include/net/ieee80211softmac.h
+===================================================================
+--- linux-2.6.18.orig/include/net/ieee80211softmac.h
++++ linux-2.6.18/include/net/ieee80211softmac.h
+@@ -63,13 +63,11 @@ struct ieee80211softmac_wpa {
+ 
+ /*
+  * Information about association
+- *
+- * Do we need a lock for this?
+- * We only ever use this structure inlined
+- * into our global struct. I've used its lock,
+- * but maybe we need a local one here?
+  */
+ struct ieee80211softmac_assoc_info {
++
++	struct mutex mutex;
++
+ 	/*
+ 	 * This is the requested ESSID. It is written
+ 	 * only by the WX handlers.
+@@ -99,12 +97,13 @@ struct ieee80211softmac_assoc_info {
+ 	 *
+ 	 * bssfixed is used for SIOCSIWAP.
+ 	 */
+-	u8 static_essid:1,
+-	   short_preamble_available:1,
+-	   associating:1,
+-	   assoc_wait:1,
+-	   bssvalid:1,
+-	   bssfixed:1;
++	u8 static_essid;
++	u8 short_preamble_available;
++	u8 associating;
++	u8 associated;
++	u8 assoc_wait;
++	u8 bssvalid;
++	u8 bssfixed;
+ 
+ 	/* Scan retries remaining */
+ 	int scan_retry;
+@@ -229,12 +228,10 @@ struct ieee80211softmac_device {
+ 	/* private stuff follows */
+ 	/* this lock protects this structure */
+ 	spinlock_t lock;
+-	
+-	/* couple of flags */
+-	u8 scanning:1, /* protects scanning from being done multiple times at once */
+-	   associated:1,
+-	   running:1;
+-	
++
++	u8 running; /* SoftMAC started? */
++	u8 scanning;
++
+ 	struct ieee80211softmac_scaninfo *scaninfo;
+ 	struct ieee80211softmac_assoc_info associnfo;
+ 	struct ieee80211softmac_bss_info bssinfo;
+@@ -250,7 +247,7 @@ struct ieee80211softmac_device {
+ 
+ 	/* we need to keep a list of network structs we copied */
+ 	struct list_head network_list;
+-	
++
+ 	/* This must be the last item so that it points to the data
+ 	 * allocated beyond this structure by alloc_ieee80211 */
+ 	u8 priv[0];
+@@ -295,7 +292,7 @@ static inline u8 ieee80211softmac_sugges
+ {
+ 	struct ieee80211softmac_txrates *txrates = &mac->txrates;
+ 
+-	if (!mac->associated)
++	if (!mac->associnfo.associated)
+ 		return txrates->mgt_mcast_rate;
+ 
+ 	/* We are associated, sending unicast frame */
+Index: linux-2.6.18/net/ieee80211/softmac/ieee80211softmac_assoc.c
+===================================================================
+--- linux-2.6.18.orig/net/ieee80211/softmac/ieee80211softmac_assoc.c
++++ linux-2.6.18/net/ieee80211/softmac/ieee80211softmac_assoc.c
+@@ -48,7 +48,7 @@ ieee80211softmac_assoc(struct ieee80211s
+ 	dprintk(KERN_INFO PFX "sent association request!\n");
+ 
+ 	spin_lock_irqsave(&mac->lock, flags);
+-	mac->associated = 0; /* just to make sure */
++	mac->associnfo.associated = 0; /* just to make sure */
+ 
+ 	/* Set a timer for timeout */
+ 	/* FIXME: make timeout configurable */
+@@ -62,24 +62,22 @@ ieee80211softmac_assoc_timeout(void *d)
+ {
+ 	struct ieee80211softmac_device *mac = (struct ieee80211softmac_device *)d;
+ 	struct ieee80211softmac_network *n;
+-	unsigned long flags;
+ 
+-	spin_lock_irqsave(&mac->lock, flags);
++	mutex_lock(&mac->associnfo.mutex);
+ 	/* we might race against ieee80211softmac_handle_assoc_response,
+ 	 * so make sure only one of us does something */
+-	if (!mac->associnfo.associating) {
+-		spin_unlock_irqrestore(&mac->lock, flags);
+-		return;
+-	}
++	if (!mac->associnfo.associating)
++		goto out;
+ 	mac->associnfo.associating = 0;
+ 	mac->associnfo.bssvalid = 0;
+-	mac->associated = 0;
++	mac->associnfo.associated = 0;
+ 
+ 	n = ieee80211softmac_get_network_by_bssid_locked(mac, mac->associnfo.bssid);
+-	spin_unlock_irqrestore(&mac->lock, flags);
+ 
+ 	dprintk(KERN_INFO PFX "assoc request timed out!\n");
+ 	ieee80211softmac_call_events(mac, IEEE80211SOFTMAC_EVENT_ASSOCIATE_TIMEOUT, n);
++out:
++	mutex_unlock(&mac->associnfo.mutex);
+ }
+ 
+ void
+@@ -93,7 +91,7 @@ ieee80211softmac_disassoc(struct ieee802
+ 
+ 	netif_carrier_off(mac->dev);
+ 
+-	mac->associated = 0;
++	mac->associnfo.associated = 0;
+ 	mac->associnfo.bssvalid = 0;
+ 	mac->associnfo.associating = 0;
+ 	ieee80211softmac_init_bss(mac);
+@@ -107,7 +105,7 @@ ieee80211softmac_send_disassoc_req(struc
+ {
+ 	struct ieee80211softmac_network *found;
+ 
+-	if (mac->associnfo.bssvalid && mac->associated) {
++	if (mac->associnfo.bssvalid && mac->associnfo.associated) {
+ 		found = ieee80211softmac_get_network_by_bssid(mac, mac->associnfo.bssid);
+ 		if (found)
+ 			ieee80211softmac_send_mgt_frame(mac, found, IEEE80211_STYPE_DISASSOC, reason);
+@@ -196,17 +194,18 @@ ieee80211softmac_assoc_work(void *d)
+ 	int bssvalid;
+ 	unsigned long flags;
+ 
++	mutex_lock(&mac->associnfo.mutex);
++
++	if (!mac->associnfo.associating)
++		goto out;
++
+ 	/* ieee80211_disassoc might clear this */
+ 	bssvalid = mac->associnfo.bssvalid;
+ 
+ 	/* meh */
+-	if (mac->associated)
++	if (mac->associnfo.associated)
+ 		ieee80211softmac_send_disassoc_req(mac, WLAN_REASON_DISASSOC_STA_HAS_LEFT);
+ 
+-	spin_lock_irqsave(&mac->lock, flags);
+-	mac->associnfo.associating = 1;
+-	spin_unlock_irqrestore(&mac->lock, flags);
+-
+ 	/* try to find the requested network in our list, if we found one already */
+ 	if (bssvalid || mac->associnfo.bssfixed)
+ 		found = ieee80211softmac_get_network_by_bssid(mac, mac->associnfo.bssid);	
+@@ -260,10 +259,8 @@ ieee80211softmac_assoc_work(void *d)
+ 
+ 	if (!found) {
+ 		if (mac->associnfo.scan_retry > 0) {
+-			spin_lock_irqsave(&mac->lock, flags);
+ 			mac->associnfo.scan_retry--;
+-			spin_unlock_irqrestore(&mac->lock, flags);
+-		
++
+ 			/* We know of no such network. Let's scan. 
+ 			 * NB: this also happens if we had no memory to copy the network info...
+ 			 * Maybe we can hope to have more memory after scanning finishes ;)
+@@ -272,19 +269,17 @@ ieee80211softmac_assoc_work(void *d)
+ 			ieee80211softmac_notify(mac->dev, IEEE80211SOFTMAC_EVENT_SCAN_FINISHED, ieee80211softmac_assoc_notify_scan, NULL);
+ 			if (ieee80211softmac_start_scan(mac))
+ 				dprintk(KERN_INFO PFX "Associate: failed to initiate scan. Is device up?\n");
+-			return;
++			goto out;
+ 		} else {
+-			spin_lock_irqsave(&mac->lock, flags);
+ 			mac->associnfo.associating = 0;
+-			mac->associated = 0;
+-			spin_unlock_irqrestore(&mac->lock, flags);
++			mac->associnfo.associated = 0;
+ 
+ 			dprintk(KERN_INFO PFX "Unable to find matching network after scan!\n");
+ 			/* reset the retry counter for the next user request since we
+ 			 * break out and don't reschedule ourselves after this point. */
+ 			mac->associnfo.scan_retry = IEEE80211SOFTMAC_ASSOC_SCAN_RETRY_LIMIT;
+ 			ieee80211softmac_call_events(mac, IEEE80211SOFTMAC_EVENT_ASSOCIATE_NET_NOT_FOUND, NULL);
+-			return;
++			goto out;
+ 		}
+ 	}
+ 
+@@ -297,7 +292,7 @@ ieee80211softmac_assoc_work(void *d)
+ 	/* copy the ESSID for displaying it */
+ 	mac->associnfo.associate_essid.len = found->essid.len;
+ 	memcpy(mac->associnfo.associate_essid.data, found->essid.data, IW_ESSID_MAX_SIZE + 1);
+-	
++
+ 	/* we found a network! authenticate (if necessary) and associate to it. */
+ 	if (found->authenticating) {
+ 		dprintk(KERN_INFO PFX "Already requested authentication, waiting...\n");
+@@ -305,7 +300,7 @@ ieee80211softmac_assoc_work(void *d)
+ 			mac->associnfo.assoc_wait = 1;
+ 			ieee80211softmac_notify_internal(mac, IEEE80211SOFTMAC_EVENT_ANY, found, ieee80211softmac_assoc_notify_auth, NULL, GFP_KERNEL);
+ 		}
+-		return;
++		goto out;
+ 	}
+ 	if (!found->authenticated && !found->authenticating) {
+ 		/* This relies on the fact that _auth_req only queues the work,
+@@ -321,11 +316,14 @@ ieee80211softmac_assoc_work(void *d)
+ 			mac->associnfo.assoc_wait = 0;
+ 			ieee80211softmac_call_events(mac, IEEE80211SOFTMAC_EVENT_ASSOCIATE_FAILED, found);
+ 		}
+-		return;
++		goto out;
+ 	}
+ 	/* finally! now we can start associating */
+ 	mac->associnfo.assoc_wait = 0;
+ 	ieee80211softmac_assoc(mac, found);
++
++out:
++	mutex_unlock(&mac->associnfo.mutex);
+ }
+ 
+ /* call this to do whatever is necessary when we're associated */
+@@ -341,7 +339,7 @@ ieee80211softmac_associated(struct ieee8
+ 	mac->bssinfo.supported_rates = net->supported_rates;
+ 	ieee80211softmac_recalc_txrates(mac);
+ 
+-	mac->associated = 1;
++	mac->associnfo.associated = 1;
+ 
+ 	mac->associnfo.short_preamble_available =
+ 		(cap & WLAN_CAPABILITY_SHORT_PREAMBLE) != 0;
+@@ -421,7 +419,7 @@ ieee80211softmac_handle_assoc_response(s
+ 			dprintk(KERN_INFO PFX "associating failed (reason: 0x%x)!\n", status);
+ 			mac->associnfo.associating = 0;
+ 			mac->associnfo.bssvalid = 0;
+-			mac->associated = 0;
++			mac->associnfo.associated = 0;
+ 			ieee80211softmac_call_events_locked(mac, IEEE80211SOFTMAC_EVENT_ASSOCIATE_FAILED, network);
+ 	}
+ 	
+Index: linux-2.6.18/net/ieee80211/softmac/ieee80211softmac_io.c
+===================================================================
+--- linux-2.6.18.orig/net/ieee80211/softmac/ieee80211softmac_io.c
++++ linux-2.6.18/net/ieee80211/softmac/ieee80211softmac_io.c
+@@ -475,8 +475,13 @@ int ieee80211softmac_handle_beacon(struc
+ {
+ 	struct ieee80211softmac_device *mac = ieee80211_priv(dev);
+ 
+-	if (mac->associated && memcmp(network->bssid, mac->associnfo.bssid, ETH_ALEN) == 0)
+-		ieee80211softmac_process_erp(mac, network->erp_value);
++	/* This might race, but we don't really care and it's not worth
++	 * adding heavyweight locking in this fastpath.
++	 */
++	if (mac->associnfo.associated) {
++		if (memcmp(network->bssid, mac->associnfo.bssid, ETH_ALEN) == 0)
++			ieee80211softmac_process_erp(mac, network->erp_value);
++	}
+ 
+ 	return 0;
+ }
+Index: linux-2.6.18/net/ieee80211/softmac/ieee80211softmac_module.c
+===================================================================
+--- linux-2.6.18.orig/net/ieee80211/softmac/ieee80211softmac_module.c
++++ linux-2.6.18/net/ieee80211/softmac/ieee80211softmac_module.c
+@@ -57,6 +57,7 @@ struct net_device *alloc_ieee80211softma
+ 	INIT_LIST_HEAD(&softmac->network_list);
+ 	INIT_LIST_HEAD(&softmac->events);
+ 
++	mutex_init(&softmac->associnfo.mutex);
+ 	INIT_WORK(&softmac->associnfo.work, ieee80211softmac_assoc_work, softmac);
+ 	INIT_WORK(&softmac->associnfo.timeout, ieee80211softmac_assoc_timeout, softmac);
+ 	softmac->start_scan = ieee80211softmac_start_scan_implementation;
+Index: linux-2.6.18/net/ieee80211/softmac/ieee80211softmac_wx.c
+===================================================================
+--- linux-2.6.18.orig/net/ieee80211/softmac/ieee80211softmac_wx.c
++++ linux-2.6.18/net/ieee80211/softmac/ieee80211softmac_wx.c
+@@ -73,13 +73,14 @@ ieee80211softmac_wx_set_essid(struct net
+ 	struct ieee80211softmac_network *n;
+ 	struct ieee80211softmac_auth_queue_item *authptr;
+ 	int length = 0;
+-	unsigned long flags;
++
++	mutex_lock(&sm->associnfo.mutex);
+ 
+ 	/* Check if we're already associating to this or another network
+ 	 * If it's another network, cancel and start over with our new network
+ 	 * If it's our network, ignore the change, we're already doing it!
+ 	 */
+-	if((sm->associnfo.associating || sm->associated) &&
++	if((sm->associnfo.associating || sm->associnfo.associated) &&
+ 	   (data->essid.flags && data->essid.length)) {
+ 		/* Get the associating network */
+ 		n = ieee80211softmac_get_network_by_bssid(sm, sm->associnfo.bssid);
+@@ -87,10 +88,9 @@ ieee80211softmac_wx_set_essid(struct net
+ 		   !memcmp(n->essid.data, extra, n->essid.len)) {
+ 			dprintk(KERN_INFO PFX "Already associating or associated to "MAC_FMT"\n",
+ 				MAC_ARG(sm->associnfo.bssid));
+-			return 0;
++			goto out;
+ 		} else {
+ 			dprintk(KERN_INFO PFX "Canceling existing associate request!\n");
+-			spin_lock_irqsave(&sm->lock,flags);
+ 			/* Cancel assoc work */
+ 			cancel_delayed_work(&sm->associnfo.work);
+ 			/* We don't have to do this, but it's a little cleaner */
+@@ -98,14 +98,13 @@ ieee80211softmac_wx_set_essid(struct net
+ 				cancel_delayed_work(&authptr->work);
+ 			sm->associnfo.bssvalid = 0;
+ 			sm->associnfo.bssfixed = 0;
+-			spin_unlock_irqrestore(&sm->lock,flags);
+ 			flush_scheduled_work();
++			sm->associnfo.associating = 0;
++			sm->associnfo.associated = 0;
+ 		}
+ 	}
+ 
+ 
+-	spin_lock_irqsave(&sm->lock, flags);
+-
+ 	sm->associnfo.static_essid = 0;
+ 	sm->associnfo.assoc_wait = 0;
+ 
+@@ -121,10 +120,12 @@ ieee80211softmac_wx_set_essid(struct net
+ 	 * If applicable, we have already copied the data in */
+ 	sm->associnfo.req_essid.len = length;
+ 
++	sm->associnfo.associating = 1;
+ 	/* queue lower level code to do work (if necessary) */
+ 	schedule_work(&sm->associnfo.work);
++out:
++	mutex_unlock(&sm->associnfo.mutex);
+ 
+-	spin_unlock_irqrestore(&sm->lock, flags);
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(ieee80211softmac_wx_set_essid);
+@@ -136,10 +137,8 @@ ieee80211softmac_wx_get_essid(struct net
+ 			      char *extra)
+ {
+ 	struct ieee80211softmac_device *sm = ieee80211_priv(net_dev);
+-	unsigned long flags;
+ 
+-	/* avoid getting inconsistent information */
+-	spin_lock_irqsave(&sm->lock, flags);
++	mutex_lock(&sm->associnfo.mutex);
+ 	/* If all fails, return ANY (empty) */
+ 	data->essid.length = 0;
+ 	data->essid.flags = 0;  /* active */
+@@ -152,12 +151,13 @@ ieee80211softmac_wx_get_essid(struct net
+ 	}
+ 	
+ 	/* If we're associating/associated, return that */
+-	if (sm->associated || sm->associnfo.associating) {
++	if (sm->associnfo.associated || sm->associnfo.associating) {
+ 		data->essid.length = sm->associnfo.associate_essid.len;
+ 		data->essid.flags = 1;  /* active */
+ 		memcpy(extra, sm->associnfo.associate_essid.data, sm->associnfo.associate_essid.len);
+ 	}
+-	spin_unlock_irqrestore(&sm->lock, flags);
++	mutex_unlock(&sm->associnfo.mutex);
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(ieee80211softmac_wx_get_essid);
+@@ -322,15 +322,15 @@ ieee80211softmac_wx_get_wap(struct net_d
+ {
+ 	struct ieee80211softmac_device *mac = ieee80211_priv(net_dev);
+ 	int err = 0;
+-	unsigned long flags;
+ 
+-	spin_lock_irqsave(&mac->lock, flags);
++	mutex_lock(&mac->associnfo.mutex);
+ 	if (mac->associnfo.bssvalid)
+ 		memcpy(data->ap_addr.sa_data, mac->associnfo.bssid, ETH_ALEN);
+ 	else
+ 		memset(data->ap_addr.sa_data, 0xff, ETH_ALEN);
+ 	data->ap_addr.sa_family = ARPHRD_ETHER;
+-	spin_unlock_irqrestore(&mac->lock, flags);
++	mutex_unlock(&mac->associnfo.mutex);
++
+ 	return err;
+ }
+ EXPORT_SYMBOL_GPL(ieee80211softmac_wx_get_wap);
+@@ -342,28 +342,27 @@ ieee80211softmac_wx_set_wap(struct net_d
+ 			    char *extra)
+ {
+ 	struct ieee80211softmac_device *mac = ieee80211_priv(net_dev);
+-	unsigned long flags;
+ 
+ 	/* sanity check */
+ 	if (data->ap_addr.sa_family != ARPHRD_ETHER) {
+ 		return -EINVAL;
+ 	}
+ 
+-	spin_lock_irqsave(&mac->lock, flags);
++	mutex_lock(&mac->associnfo.mutex);
+ 	if (is_broadcast_ether_addr(data->ap_addr.sa_data)) {
+ 		/* the bssid we have is not to be fixed any longer,
+ 		 * and we should reassociate to the best AP. */
+ 		mac->associnfo.bssfixed = 0;
+ 		/* force reassociation */
+ 		mac->associnfo.bssvalid = 0;
+-		if (mac->associated)
++		if (mac->associnfo.associated)
+ 			schedule_work(&mac->associnfo.work);
+ 	} else if (is_zero_ether_addr(data->ap_addr.sa_data)) {
+ 		/* the bssid we have is no longer fixed */
+ 		mac->associnfo.bssfixed = 0;
+         } else {
+ 		if (!memcmp(mac->associnfo.bssid, data->ap_addr.sa_data, ETH_ALEN)) {
+-			if (mac->associnfo.associating || mac->associated) {
++			if (mac->associnfo.associating || mac->associnfo.associated) {
+ 			/* bssid unchanged and associated or associating - just return */
+ 				goto out;
+ 			}
+@@ -378,7 +377,8 @@ ieee80211softmac_wx_set_wap(struct net_d
+         }
+ 
+  out:
+-	spin_unlock_irqrestore(&mac->lock, flags);
++	mutex_unlock(&mac->associnfo.mutex);
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(ieee80211softmac_wx_set_wap);
+@@ -394,7 +394,8 @@ ieee80211softmac_wx_set_genie(struct net
+ 	int err = 0;
+ 	char *buf;
+ 	int i;
+-	
++
++	mutex_lock(&mac->associnfo.mutex);
+ 	spin_lock_irqsave(&mac->lock, flags);
+ 	/* bleh. shouldn't be locked for that kmalloc... */
+ 
+@@ -432,6 +433,8 @@ ieee80211softmac_wx_set_genie(struct net
+ 
+  out:	
+ 	spin_unlock_irqrestore(&mac->lock, flags);
++	mutex_unlock(&mac->associnfo.mutex);
++
+ 	return err;
+ }
+ EXPORT_SYMBOL_GPL(ieee80211softmac_wx_set_genie);
+@@ -446,7 +449,8 @@ ieee80211softmac_wx_get_genie(struct net
+ 	unsigned long flags;
+ 	int err = 0;
+ 	int space = wrqu->data.length;
+-	
++
++	mutex_lock(&mac->associnfo.mutex);
+ 	spin_lock_irqsave(&mac->lock, flags);
+ 	
+ 	wrqu->data.length = 0;
+@@ -459,6 +463,8 @@ ieee80211softmac_wx_get_genie(struct net
+ 			err = -E2BIG;
+ 	}
+ 	spin_unlock_irqrestore(&mac->lock, flags);
++	mutex_lock(&mac->associnfo.mutex);
++
+ 	return err;
+ }
+ EXPORT_SYMBOL_GPL(ieee80211softmac_wx_get_genie);
+@@ -473,10 +479,13 @@ ieee80211softmac_wx_set_mlme(struct net_
+ 	struct iw_mlme *mlme = (struct iw_mlme *)extra;
+ 	u16 reason = cpu_to_le16(mlme->reason_code);
+ 	struct ieee80211softmac_network *net;
++	int err = -EINVAL;
++
++	mutex_lock(&mac->associnfo.mutex);
+ 
+ 	if (memcmp(mac->associnfo.bssid, mlme->addr.sa_data, ETH_ALEN)) {
+ 		printk(KERN_DEBUG PFX "wx_set_mlme: requested operation on net we don't use\n");
+-		return -EINVAL;
++		goto out;
+ 	}
+ 
+ 	switch (mlme->cmd) {
+@@ -484,14 +493,22 @@ ieee80211softmac_wx_set_mlme(struct net_
+ 		net = ieee80211softmac_get_network_by_bssid_locked(mac, mlme->addr.sa_data);
+ 		if (!net) {
+ 			printk(KERN_DEBUG PFX "wx_set_mlme: we should know the net here...\n");
+-			return -EINVAL;
++			goto out;
+ 		}
+ 		return ieee80211softmac_deauth_req(mac, net, reason);
+ 	case IW_MLME_DISASSOC:
+ 		ieee80211softmac_send_disassoc_req(mac, reason);
+-		return 0;
++		mac->associnfo.associated = 0;
++		mac->associnfo.associating = 0;
++		err = 0;
++		goto out;
+ 	default:
+-		return -EOPNOTSUPP;
++		err = -EOPNOTSUPP;
+ 	}
++
++out:
++	mutex_unlock(&mac->associnfo.mutex);
++
++	return err;
+ }
+ EXPORT_SYMBOL_GPL(ieee80211softmac_wx_set_mlme);
+Index: linux-2.6.18/mvl_patches/pro50-2197.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2197.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2197);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

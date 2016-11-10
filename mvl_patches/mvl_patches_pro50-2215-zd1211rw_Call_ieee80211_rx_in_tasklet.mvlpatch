@@ -1,0 +1,455 @@
+#! /usr/bin/env bash
+# Patch: -zd1211rw_Call_ieee80211_rx_in_tasklet
+# Date: Thu Feb 19 15:08:35 2009
+# MR: 29923
+# From 9270917d80af5ecf6cd90a9c2cf6826b66d32d8b Mon Sep 17 00:00:00 2001
+# From: Ulrich Kunitz <kune@deine-taler.de>
+# Date: Sun, 10 Dec 2006 11:13:12 -0800
+# Subject: [PATCH] [PATCH] zd1211rw: Call ieee80211_rx in tasklet
+# 
+# The driver called ieee80211_rx in hardware interrupt context.  This has
+# been against the intention of the ieee80211_rx function.  It caused a bug
+# in the crypto routines used by WPA.  This patch calls ieee80211_rx in a
+# tasklet.
+# 
+# Signed-off-by: Ulrich Kunitz <kune@deine-taler.de>
+# Signed-off-by: Andrew Morton <akpm@osdl.org>
+# Signed-off-by: John W. Linville <linville@tuxdriver.com>
+# (cherry picked from commit 4d1feabcbf41f875447a392015acd0796f57baf6)
+# 
+
+PATCHNUM=2215
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From 9270917d80af5ecf6cd90a9c2cf6826b66d32d8b Mon Sep 17 00:00:00 2001
+From: Ulrich Kunitz <kune@deine-taler.de>
+Date: Sun, 10 Dec 2006 11:13:12 -0800
+Subject: [PATCH] [PATCH] zd1211rw: Call ieee80211_rx in tasklet
+
+The driver called ieee80211_rx in hardware interrupt context.  This has
+been against the intention of the ieee80211_rx function.  It caused a bug
+in the crypto routines used by WPA.  This patch calls ieee80211_rx in a
+tasklet.
+
+Signed-off-by: Ulrich Kunitz <kune@deine-taler.de>
+Signed-off-by: Andrew Morton <akpm@osdl.org>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+(cherry picked from commit 4d1feabcbf41f875447a392015acd0796f57baf6)
+
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+@@ -41,6 +41,8 @@ static void housekeeping_disable(struct 
+ 
+ static void set_multicast_hash_handler(void *mac_ptr);
+ 
++static void do_rx(unsigned long mac_ptr);
++
+ int zd_mac_init(struct zd_mac *mac,
+ 	        struct net_device *netdev,
+ 	        struct usb_interface *intf)
+@@ -53,6 +55,10 @@ int zd_mac_init(struct zd_mac *mac,
+ 	INIT_WORK(&mac->set_rts_cts_work, set_rts_cts_work, mac);
+ 	INIT_WORK(&mac->set_basic_rates_work, set_basic_rates_work, mac);
+ 
++	skb_queue_head_init(&mac->rx_queue);
++	tasklet_init(&mac->rx_tasklet, do_rx, (unsigned long)mac);
++	tasklet_disable(&mac->rx_tasklet);
++
+ 	ieee_init(ieee);
+ 	softmac_init(ieee80211_priv(netdev));
+ 	zd_chip_init(&mac->chip, netdev, intf);
+@@ -141,6 +147,8 @@ out:
+ void zd_mac_clear(struct zd_mac *mac)
+ {
+ 	flush_workqueue(zd_workqueue);
++	skb_queue_purge(&mac->rx_queue);
++	tasklet_kill(&mac->rx_tasklet);
+ 	zd_chip_clear(&mac->chip);
+ 	ZD_ASSERT(!spin_is_locked(&mac->lock));
+ 	ZD_MEMCLEAR(mac, sizeof(struct zd_mac));
+@@ -169,6 +177,8 @@ int zd_mac_open(struct net_device *netde
+ 	struct zd_chip *chip = &mac->chip;
+ 	int r;
+ 
++	tasklet_enable(&mac->rx_tasklet);
++
+ 	r = zd_chip_enable_int(chip);
+ 	if (r < 0)
+ 		goto out;
+@@ -219,6 +229,8 @@ int zd_mac_stop(struct net_device *netde
+ 	 */
+ 
+ 	zd_chip_disable_rx(chip);
++	skb_queue_purge(&mac->rx_queue);
++	tasklet_disable(&mac->rx_tasklet);
+ 	housekeeping_disable(mac);
+ 	ieee80211softmac_stop(netdev);
+ 
+@@ -468,13 +480,13 @@ static void bssinfo_change(struct net_de
+ 
+ 	if (changes & IEEE80211SOFTMAC_BSSINFOCHG_RATES) {
+ 		/* Set RTS rate to highest available basic rate */
+-		u8 rate = ieee80211softmac_highest_supported_rate(softmac,
++		u8 hi_rate = ieee80211softmac_highest_supported_rate(softmac,
+ 			&bssinfo->supported_rates, 1);
+-		rate = rate_to_zd_rate(rate);
++		hi_rate = rate_to_zd_rate(hi_rate);
+ 
+ 		spin_lock_irqsave(&mac->lock, flags);
+-		if (rate != mac->rts_rate) {
+-			mac->rts_rate = rate;
++		if (hi_rate != mac->rts_rate) {
++			mac->rts_rate = hi_rate;
+ 			need_set_rts_cts = 1;
+ 		}
+ 		spin_unlock_irqrestore(&mac->lock, flags);
+@@ -1069,43 +1081,75 @@ static int fill_rx_stats(struct ieee8021
+ 	return 0;
+ }
+ 
+-int zd_mac_rx(struct zd_mac *mac, const u8 *buffer, unsigned int length)
++static void zd_mac_rx(struct zd_mac *mac, struct sk_buff *skb)
+ {
+ 	int r;
+ 	struct ieee80211_device *ieee = zd_mac_to_ieee80211(mac);
+ 	struct ieee80211_rx_stats stats;
+ 	const struct rx_status *status;
+-	struct sk_buff *skb;
+ 
+-	if (length < ZD_PLCP_HEADER_SIZE + IEEE80211_1ADDR_LEN +
+-	             IEEE80211_FCS_LEN + sizeof(struct rx_status))
+-		return -EINVAL;
++	if (skb->len < ZD_PLCP_HEADER_SIZE + IEEE80211_1ADDR_LEN +
++	               IEEE80211_FCS_LEN + sizeof(struct rx_status))
++	{
++		dev_dbg_f(zd_mac_dev(mac), "Packet with length %u to small.\n",
++			 skb->len);
++		goto free_skb;
++	}
+ 
+-	r = fill_rx_stats(&stats, &status, mac, buffer, length);
+-	if (r)
+-		return r;
++	r = fill_rx_stats(&stats, &status, mac, skb->data, skb->len);
++	if (r) {
++		/* Only packets with rx errors are included here. */
++		goto free_skb;
++	}
+ 
+-	length -= ZD_PLCP_HEADER_SIZE+IEEE80211_FCS_LEN+
+-		  sizeof(struct rx_status);
+-	buffer += ZD_PLCP_HEADER_SIZE;
++	__skb_pull(skb, ZD_PLCP_HEADER_SIZE);
++	__skb_trim(skb, skb->len -
++		        (IEEE80211_FCS_LEN + sizeof(struct rx_status)));
+ 
+-	update_qual_rssi(mac, buffer, length, stats.signal, stats.rssi);
++	update_qual_rssi(mac, skb->data, skb->len, stats.signal,
++		         status->signal_strength);
+ 
+-	r = filter_rx(ieee, buffer, length, &stats);
+-	if (r <= 0)
+-		return r;
++	r = filter_rx(ieee, skb->data, skb->len, &stats);
++	if (r <= 0) {
++		if (r < 0)
++			dev_dbg_f(zd_mac_dev(mac), "Error in packet.\n");
++		goto free_skb;
++	}
+ 
+-	skb = dev_alloc_skb(sizeof(struct zd_rt_hdr) + length);
+-	if (!skb)
+-		return -ENOMEM;
+ 	if (ieee->iw_mode == IW_MODE_MONITOR)
+-		fill_rt_header(skb_put(skb, sizeof(struct zd_rt_hdr)), mac,
++		fill_rt_header(skb_push(skb, sizeof(struct zd_rt_hdr)), mac,
+ 			       &stats, status);
+-	memcpy(skb_put(skb, length), buffer, length);
+ 
+ 	r = ieee80211_rx(ieee, skb, &stats);
+-	if (!r)
+-		dev_kfree_skb_any(skb);
++	if (r)
++		return;
++free_skb:
++	/* We are always in a soft irq. */
++	dev_kfree_skb(skb);
++}
++
++static void do_rx(unsigned long mac_ptr)
++{
++	struct zd_mac *mac = (struct zd_mac *)mac_ptr;
++	struct sk_buff *skb;
++
++	while ((skb = skb_dequeue(&mac->rx_queue)) != NULL)
++		zd_mac_rx(mac, skb);
++}
++
++int zd_mac_rx_irq(struct zd_mac *mac, const u8 *buffer, unsigned int length)
++{
++	struct sk_buff *skb;
++
++	skb = dev_alloc_skb(sizeof(struct zd_rt_hdr) + length);
++	if (!skb) {
++		dev_warn(zd_mac_dev(mac), "Could not allocate skb.\n");
++		return -ENOMEM;
++	}
++	skb_reserve(skb, sizeof(struct zd_rt_hdr));
++	memcpy(__skb_put(skb, length), buffer, length);
++	skb_queue_tail(&mac->rx_queue, skb);
++	tasklet_schedule(&mac->rx_tasklet);
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.h
+@@ -138,6 +138,9 @@ struct zd_mac {
+ 	struct work_struct set_rts_cts_work;
+ 	struct work_struct set_basic_rates_work;
+ 
++	struct tasklet_struct rx_tasklet;
++	struct sk_buff_head rx_queue;
++
+ 	unsigned int stats_count;
+ 	u8 qual_buffer[ZD_MAC_STATS_BUFFER_SIZE];
+ 	u8 rssi_buffer[ZD_MAC_STATS_BUFFER_SIZE];
+@@ -193,7 +196,7 @@ int zd_mac_stop(struct net_device *netde
+ int zd_mac_set_mac_address(struct net_device *dev, void *p);
+ void zd_mac_set_multicast_list(struct net_device *netdev);
+ 
+-int zd_mac_rx(struct zd_mac *mac, const u8 *buffer, unsigned int length);
++int zd_mac_rx_irq(struct zd_mac *mac, const u8 *buffer, unsigned int length);
+ 
+ int zd_mac_set_regdomain(struct zd_mac *zd_mac, u8 regdomain);
+ u8 zd_mac_get_regdomain(struct zd_mac *zd_mac);
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_usb.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_usb.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_usb.c
+@@ -598,13 +598,13 @@ static void handle_rx_packet(struct zd_u
+ 			n = l+k;
+ 			if (n > length)
+ 				return;
+-			zd_mac_rx(mac, buffer+l, k);
++			zd_mac_rx_irq(mac, buffer+l, k);
+ 			if (i >= 2)
+ 				return;
+ 			l = (n+3) & ~3;
+ 		}
+ 	} else {
+-		zd_mac_rx(mac, buffer, length);
++		zd_mac_rx_irq(mac, buffer, length);
+ 	}
+ }
+ 
+Index: linux-2.6.18/mvl_patches/pro50-2215.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2215.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2215);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

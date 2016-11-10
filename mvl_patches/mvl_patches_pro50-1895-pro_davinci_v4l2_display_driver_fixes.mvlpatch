@@ -1,0 +1,463 @@
+#! /usr/bin/env bash
+# Patch: -pro_davinci_v4l2_display_driver_fixes
+# Date: Fri Sep 19 14:29:52 2008
+# Source: Texas Instruments Inc.
+# MR: 29655
+# Type: Defect Fix
+# Disposition: local
+# Signed-off-by: Murali Karicheri <m-karicheri2@ti.com>
+# Signed-off-by: Philby John <pjohn@in.mvista.com>
+# Description:
+#         This v4l2 patch fixes the following issues with DaVinci v4l2 display
+# 	driver:
+# 	1. Lock not released when REQBUF ioctl is called during streaming
+# 	2. try format checks for hardware capability and update the input
+# 	   parameters accordingly
+# 	3. Fixing incorrect config variable used for THS8200
+# 
+
+PATCHNUM=1895
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Texas Instruments Inc.
+MR: 29655
+Type: Defect Fix
+Disposition: local
+Signed-off-by: Murali Karicheri <m-karicheri2@ti.com>
+Signed-off-by: Philby John <pjohn@in.mvista.com>
+Description:
+        This v4l2 patch fixes the following issues with DaVinci v4l2 display
+	driver:
+	1. Lock not released when REQBUF ioctl is called during streaming
+	2. try format checks for hardware capability and update the input
+	   parameters accordingly
+	3. Fixing incorrect config variable used for THS8200
+
+Index: linux-2.6.18/drivers/media/video/davinci/davinci_display.c
+===================================================================
+--- linux-2.6.18.orig/drivers/media/video/davinci/davinci_display.c
++++ linux-2.6.18/drivers/media/video/davinci/davinci_display.c
+@@ -45,7 +45,7 @@ static u32 video3_numbuffers = 3;
+ #define DAVINCI_DISPLAY_HD_BUF_SIZE (1920*1088*2)
+ #define DAVINCI_DISPLAY_SD_BUF_SIZE (720*576*2)
+ 
+-#ifdef FB_DAVINCI_THS8200_ENCODER
++#ifdef CONFIG_DAVINCI_THS8200_ENCODER
+ static u32 video2_bufsize = DAVINCI_DISPLAY_HD_BUF_SIZE;
+ #else
+ static u32 video2_bufsize = DAVINCI_DISPLAY_SD_BUF_SIZE;
+@@ -485,32 +485,10 @@ static int davinci_check_format(struct d
+ 		dev_err(davinci_display_dev, "invalid frame format\n");
+ 		return -EINVAL;
+ 	}
+-	if (temp_width && ((temp_width % 16) != 0)) {
+-		/* must be a mutliple of 32 */
+-		dev_err(davinci_display_dev,
+-			"width should be a multiple of 16\n");
+-		return -EINVAL;
+-	}
+-
+-	if ((temp_height & 0x1) && (field == V4L2_FIELD_INTERLACED)) {
+-		dev_err(davinci_display_dev,
+-			"height should be even for interlaced mode\n");
+-		return -EINVAL;
+-	}
+ 
+ 	/* get the current video display mode from encoder manager */
+ 	mode_info = &davinci_dm.mode_info;
+-	if (davinci_enc_get_mode(0, mode_info)) {
+-		dev_err(davinci_display_dev,
+-			"Error in getting current display mode from enc mngr\n");
+-		return -1;
+-	}
+-
+-	if ((0 == temp_width) || (temp_width > mode_info->xres) ||
+-	    (0 == temp_height) || (temp_height > mode_info->yres)) {
+-		dev_err(davinci_display_dev, "Invalid width or height\n");
+-		return -EINVAL;
+-	}
++	davinci_enc_get_mode(0, mode_info);
+ 
+ 	if (field == V4L2_FIELD_ANY) {
+ 		field = (mode_info->interlaced) ? V4L2_FIELD_INTERLACED :
+@@ -668,6 +646,46 @@ static int davinci_disp_check_window_par
+ 	}
+ 	return 0;
+ }
++static void davinci_disp_adjust_frame_size(struct display_obj *layer,
++					   struct v4l2_pix_format *pixfmt)
++{
++	struct vid_enc_mode_info *mode_info;
++	mode_info = &davinci_dm.mode_info;
++
++	davinci_enc_get_mode(0, mode_info);
++	if (pixfmt->field == V4L2_FIELD_ANY)
++		pixfmt->field = (mode_info->interlaced) ?
++		    V4L2_FIELD_INTERLACED : V4L2_FIELD_NONE;
++	if (layer->memory == V4L2_MEMORY_USERPTR) {
++		if (pixfmt->bytesperline == 0)
++			pixfmt->bytesperline = 32;
++		pixfmt->width = pixfmt->bytesperline / 2;
++		pixfmt->height = pixfmt->sizeimage / pixfmt->bytesperline;
++		if (pixfmt->height == 0)
++			pixfmt->height = 1;
++	} else {
++		/* minimum width is 16 pixels */
++		if (pixfmt->width == 0)
++			pixfmt->width = 16;
++		/* minimum height is 1 line */
++		if (pixfmt->height == 0)
++			pixfmt->height = 1;
++	}
++	/* for interlaced, height should be even */
++	if (mode_info->interlaced)
++		pixfmt->height = (((pixfmt->height + 1) / 2) * 2);
++	/* width should be a multiple of 16 pixels */
++	pixfmt->width = (((pixfmt->width + 15) / 16) * 16);
++	/* If requesting a size higher than supported by display
++	   truncate it to maximum */
++	if (pixfmt->width > mode_info->xres)
++		pixfmt->width = mode_info->xres;
++	if (pixfmt->height > mode_info->yres)
++		pixfmt->height = mode_info->yres;
++	pixfmt->bytesperline = pixfmt->width * 2;
++	pixfmt->sizeimage = pixfmt->bytesperline * pixfmt->height;
++	return;
++}
+ 
+ /*
+  * ======== davinci_doioctl ========*
+@@ -949,6 +967,7 @@ static int davinci_doioctl(struct inode 
+ 
+ 				if (ret)
+ 					return ret;
++				davinci_disp_adjust_frame_size(layer, pixfmt);
+ 
+ 				down_interruptible(&davinci_dm.lock);
+ 				/* store the pixel format in the layer
+@@ -959,14 +978,7 @@ static int davinci_doioctl(struct inode 
+ 							      layer_info.
+ 							      config);
+ 
+-				if (davinci_enc_get_mode
+-				    (0, &davinci_dm.mode_info)) {
+-					dev_err(davinci_display_dev,
+-						"couldn't get current display mode from enc mngr\n");
+-					up(&davinci_dm.lock);
+-					return -EINVAL;
+-				}
+-
++				davinci_enc_get_mode(0, &davinci_dm.mode_info);
+ 				/* For user ptr io, we calculate image size from bytes
+ 				   perline and sizeimage as per DaVinciHD
+ 				 */
+@@ -995,7 +1007,7 @@ static int davinci_doioctl(struct inode 
+ 				    (layer->layer_info.id,
+ 				     &layer->layer_info.config)) {
+ 					dev_err(davinci_display_dev,
+-						"Error in S_FMT params\n");
++					    "Error in S_FMT params:- field\n");
+ 					up(&davinci_dm.lock);
+ 					return -EINVAL;
+ 				}
+@@ -1041,9 +1053,9 @@ static int davinci_doioctl(struct inode 
+ 				struct v4l2_pix_format *pixfmt = &fmt->fmt.pix;
+ 				/* Check for valid field format */
+ 				ret = davinci_check_format(layer, pixfmt);
+-				if (ret) {
+-					*pixfmt = layer->pix_fmt;
+-				}
++				if (ret)
++					return ret;
++				davinci_disp_adjust_frame_size(layer, pixfmt);
+ 			} else {
+ 				dev_err(davinci_display_dev, "invalid type\n");
+ 				ret = -EINVAL;
+@@ -1342,12 +1354,53 @@ static int davinci_ioctl(struct inode *i
+ 			 unsigned int cmd, unsigned long arg)
+ {
+ 	int ret;
++	char sbuf[128];
++	void *mbuf = NULL;
++	void *parg = NULL;
++
+ 	dev_dbg(davinci_display_dev, "Start of davinci ioctl\n");
+-	ret = video_usercopy(inode, file, cmd, arg, (void *)davinci_doioctl);
+-	if ((ret >= 0) && (VIDIOC_S_FMT == cmd || VIDIOC_TRY_FMT == cmd)) {
+-		ret = video_usercopy(inode, file, VIDIOC_G_FMT,
+-				     arg, (void *)davinci_doioctl);
++
++	/*  Copy arguments into temp kernel buffer  */
++	switch (_IOC_DIR(cmd)) {
++	case _IOC_NONE:
++		parg = NULL;
++		break;
++	case _IOC_READ:
++	case _IOC_WRITE:
++	case (_IOC_WRITE | _IOC_READ):
++		if (_IOC_SIZE(cmd) <= sizeof(sbuf)) {
++			parg = sbuf;
++		} else {
++			/* too big to allocate from stack */
++			mbuf = kmalloc(_IOC_SIZE(cmd), GFP_KERNEL);
++			if (NULL == mbuf)
++				return -ENOMEM;
++			parg = mbuf;
++		}
++
++		ret = -EFAULT;
++		if (_IOC_DIR(cmd) & _IOC_WRITE)
++			if (copy_from_user(parg, (void __user *)arg,
++					   _IOC_SIZE(cmd)))
++				goto out;
++		break;
+ 	}
++
++	/* call driver */
++	ret = davinci_doioctl(inode, file, cmd, (unsigned long)parg);
++	if (ret == -ENOIOCTLCMD)
++		ret = -EINVAL;
++
++	/*  Copy results into user buffer  */
++	switch (_IOC_DIR(cmd)) {
++	case _IOC_READ:
++	case (_IOC_WRITE | _IOC_READ):
++		if (copy_to_user((void __user *)arg, parg, _IOC_SIZE(cmd)))
++			ret = -EFAULT;
++		break;
++	}
++out:
++	kfree(mbuf);
+ 	dev_dbg(davinci_display_dev, "</davinci_ioctl>\n");
+ 	return ret;
+ }
+@@ -1432,6 +1485,7 @@ static int davinci_open(struct inode *in
+ 	int i = 0;
+ 	struct display_obj *layer;
+ 	struct davinci_fh *fh = NULL;
++
+ 	/* Check for valid minor number */
+ 	for (i = 0; i < DAVINCI_DISPLAY_MAX_DEVICES; i++) {
+ 		/* Get the pointer to the layer object */
+@@ -1610,15 +1664,6 @@ static __init int davinci_probe(struct d
+ 		/* Initialize field of the layer objects */
+ 		layer->usrs = layer->io_usrs = 0;
+ 		layer->started = 0;
+-#if 0
+-		if (j < 2)
+-			layer->numbuffers
+-			    =
+-			    display_buf_config_params.numbuffers[layer->
+-								 layer_id];
+-		else
+-			layer->numbuffers = 0;
+-#endif
+ 
+ 		/* Initialize prio member of layer object */
+ 		v4l2_prio_init(&layer->prio);
+Index: linux-2.6.18/mvl_patches/pro50-1895.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1895.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1895);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

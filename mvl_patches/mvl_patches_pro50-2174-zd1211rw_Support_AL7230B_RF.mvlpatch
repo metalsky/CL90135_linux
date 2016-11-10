@@ -1,0 +1,585 @@
+#! /usr/bin/env bash
+# Patch: -zd1211rw_Support_AL7230B_RF
+# Date: Thu Feb 19 15:05:50 2009
+# MR: 29923
+# From 0076761f2e7ffb97d07f3a31190ad6dcdd656683 Mon Sep 17 00:00:00 2001
+# From: Daniel Drake <dsd@gentoo.org>
+# Date: Sat, 12 Aug 2006 17:59:46 +0100
+# Subject: [PATCH] [PATCH] zd1211rw: Support AL7230B RF
+# 
+# This patch adds support for another Airoha RF which is present in some
+# ZD1211 adapters. This RF supports 802.11a as well as 802.11b/g, but 802.11a
+# connectivity is not yet supported by this driver.
+# 
+# Signed-off-by: Daniel Drake <dsd@gentoo.org>
+# Signed-off-by: John W. Linville <linville@tuxdriver.com>
+# (cherry picked from commit ec62bd91bbb58254dfddca3d290f5fe4aa1cb769)
+# 
+
+PATCHNUM=2174
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From 0076761f2e7ffb97d07f3a31190ad6dcdd656683 Mon Sep 17 00:00:00 2001
+From: Daniel Drake <dsd@gentoo.org>
+Date: Sat, 12 Aug 2006 17:59:46 +0100
+Subject: [PATCH] [PATCH] zd1211rw: Support AL7230B RF
+
+This patch adds support for another Airoha RF which is present in some
+ZD1211 adapters. This RF supports 802.11a as well as 802.11b/g, but 802.11a
+connectivity is not yet supported by this driver.
+
+Signed-off-by: Daniel Drake <dsd@gentoo.org>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+(cherry picked from commit ec62bd91bbb58254dfddca3d290f5fe4aa1cb769)
+
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/Makefile
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/Makefile
+@@ -3,6 +3,7 @@ obj-$(CONFIG_ZD1211RW) += zd1211rw.o
+ zd1211rw-objs := zd_chip.o zd_ieee80211.o \
+ 		zd_mac.o zd_netdev.o \
+ 		zd_rf_al2230.o zd_rf_rf2959.o \
++		zd_rf_al7230b.o \
+ 		zd_rf.o zd_usb.o zd_util.o
+ 
+ ifeq ($(CONFIG_ZD1211RW_DEBUG),y)
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_chip.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.c
+@@ -1624,7 +1624,7 @@ int zd_rfwritev_locked(struct zd_chip *c
+  * We can optionally program the RF directly through CR regs, if supported by
+  * the hardware. This is much faster than the older method.
+  */
+-static int zd_rfwrite_cr_locked(struct zd_chip *chip, u32 value)
++int zd_rfwrite_cr_locked(struct zd_chip *chip, u32 value)
+ {
+ 	struct zd_ioreq16 ioreqs[] = {
+ 		{ CR244, (value >> 16) & 0xff },
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_chip.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+@@ -747,6 +747,8 @@ static inline int zd_rfwrite_locked(stru
+ 	return zd_usb_rfwrite(&chip->usb, value, bits);
+ }
+ 
++int zd_rfwrite_cr_locked(struct zd_chip *chip, u32 value);
++
+ int zd_rfwritev_locked(struct zd_chip *chip,
+ 	               const u32* values, unsigned int count, u8 bits);
+ int zd_rfwritev_cr_locked(struct zd_chip *chip,
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_rf.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_rf.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_rf.c
+@@ -76,6 +76,11 @@ int zd_rf_init_hw(struct zd_rf *rf, u8 t
+ 		if (r)
+ 			return r;
+ 		break;
++	case AL7230B_RF:
++		r = zd_rf_init_al7230b(rf);
++		if (r)
++			return r;
++		break;
+ 	default:
+ 		dev_err(zd_chip_dev(chip),
+ 			"RF %s %#x is not supported\n", zd_rf_name(type), type);
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_rf.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_rf.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_rf.h
+@@ -78,5 +78,6 @@ int zd_switch_radio_off(struct zd_rf *rf
+ 
+ int zd_rf_init_rf2959(struct zd_rf *rf);
+ int zd_rf_init_al2230(struct zd_rf *rf);
++int zd_rf_init_al7230b(struct zd_rf *rf);
+ 
+ #endif /* _ZD_RF_H */
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_rf_al7230b.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_rf_al7230b.c
+@@ -0,0 +1,274 @@
++/* zd_rf_al7230b.c: Functions for the AL7230B RF controller
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#include <linux/kernel.h>
++
++#include "zd_rf.h"
++#include "zd_usb.h"
++#include "zd_chip.h"
++
++static const u32 chan_rv[][2] = {
++	RF_CHANNEL( 1) = { 0x09ec00, 0x8cccc8 },
++	RF_CHANNEL( 2) = { 0x09ec00, 0x8cccd8 },
++	RF_CHANNEL( 3) = { 0x09ec00, 0x8cccc0 },
++	RF_CHANNEL( 4) = { 0x09ec00, 0x8cccd0 },
++	RF_CHANNEL( 5) = { 0x05ec00, 0x8cccc8 },
++	RF_CHANNEL( 6) = { 0x05ec00, 0x8cccd8 },
++	RF_CHANNEL( 7) = { 0x05ec00, 0x8cccc0 },
++	RF_CHANNEL( 8) = { 0x05ec00, 0x8cccd0 },
++	RF_CHANNEL( 9) = { 0x0dec00, 0x8cccc8 },
++	RF_CHANNEL(10) = { 0x0dec00, 0x8cccd8 },
++	RF_CHANNEL(11) = { 0x0dec00, 0x8cccc0 },
++	RF_CHANNEL(12) = { 0x0dec00, 0x8cccd0 },
++	RF_CHANNEL(13) = { 0x03ec00, 0x8cccc8 },
++	RF_CHANNEL(14) = { 0x03ec00, 0x866660 },
++};
++
++static const u32 std_rv[] = {
++	0x4ff821,
++	0xc5fbfc,
++	0x21ebfe,
++	0xafd401, /* freq shift 0xaad401 */
++	0x6cf56a,
++	0xe04073,
++	0x193d76,
++	0x9dd844,
++	0x500007,
++	0xd8c010,
++};
++
++static int al7230b_init_hw(struct zd_rf *rf)
++{
++	int i, r;
++	struct zd_chip *chip = zd_rf_to_chip(rf);
++
++	/* All of these writes are identical to AL2230 unless otherwise
++	 * specified */
++	static const struct zd_ioreq16 ioreqs_1[] = {
++		/* This one is 7230-specific, and happens before the rest */
++		{ CR240,  0x57 },
++		{ },
++
++		{ CR15,   0x20 }, { CR23,   0x40 }, { CR24,  0x20 },
++		{ CR26,   0x11 }, { CR28,   0x3e }, { CR29,  0x00 },
++		{ CR44,   0x33 },
++		/* This value is different for 7230 (was: 0x2a) */
++		{ CR106,  0x22 },
++		{ CR107,  0x1a }, { CR109,  0x09 }, { CR110,  0x27 },
++		{ CR111,  0x2b }, { CR112,  0x2b }, { CR119,  0x0a },
++		/* This happened further down in AL2230,
++		 * and the value changed (was: 0xe0) */
++		{ CR122,  0xfc },
++		{ CR10,   0x89 },
++		/* for newest (3rd cut) AL2300 */
++		{ CR17,   0x28 },
++		{ CR26,   0x93 }, { CR34,   0x30 },
++		/* for newest (3rd cut) AL2300 */
++		{ CR35,   0x3e },
++		{ CR41,   0x24 }, { CR44,   0x32 },
++		/* for newest (3rd cut) AL2300 */
++		{ CR46,   0x96 },
++		{ CR47,   0x1e }, { CR79,   0x58 }, { CR80,  0x30 },
++		{ CR81,   0x30 }, { CR87,   0x0a }, { CR89,  0x04 },
++		{ CR92,   0x0a }, { CR99,   0x28 },
++		/* This value is different for 7230 (was: 0x00) */
++		{ CR100,  0x02 },
++		{ CR101,  0x13 }, { CR102,  0x27 },
++		/* This value is different for 7230 (was: 0x24) */
++		{ CR106,  0x22 },
++		/* This value is different for 7230 (was: 0x2a) */
++		{ CR107,  0x3f },
++		{ CR109,  0x09 },
++		/* This value is different for 7230 (was: 0x13) */
++		{ CR110,  0x1f },
++		{ CR111,  0x1f }, { CR112,  0x1f }, { CR113, 0x27 },
++		{ CR114,  0x27 },
++		/* for newest (3rd cut) AL2300 */
++		{ CR115,  0x24 },
++		/* This value is different for 7230 (was: 0x24) */
++		{ CR116,  0x3f },
++		/* This value is different for 7230 (was: 0xf4) */
++		{ CR117,  0xfa },
++		{ CR118,  0xfc }, { CR119,  0x10 }, { CR120, 0x4f },
++		{ CR121,  0x77 }, { CR137,  0x88 },
++		/* This one is 7230-specific */
++		{ CR138,  0xa8 },
++		/* This value is different for 7230 (was: 0xff) */
++		{ CR252,  0x34 },
++		/* This value is different for 7230 (was: 0xff) */
++		{ CR253,  0x34 },
++
++		/* PLL_OFF */
++		{ CR251, 0x2f },
++	};
++
++	static const struct zd_ioreq16 ioreqs_2[] = {
++		/* PLL_ON */
++		{ CR251, 0x3f },
++		{ CR128, 0x14 }, { CR129, 0x12 }, { CR130, 0x10 },
++		{ CR38, 0x38 }, { CR136, 0xdf },
++	};
++
++	r = zd_iowrite16a_locked(chip, ioreqs_1, ARRAY_SIZE(ioreqs_1));
++	if (r)
++		return r;
++
++	r = zd_rfwrite_cr_locked(chip, 0x09ec04);
++	if (r)
++		return r;
++	r = zd_rfwrite_cr_locked(chip, 0x8cccc8);
++	if (r)
++		return r;
++
++	for (i = 0; i < ARRAY_SIZE(std_rv); i++) {
++		r = zd_rfwrite_cr_locked(chip, std_rv[i]);
++		if (r)
++			return r;
++	}
++
++	r = zd_rfwrite_cr_locked(chip, 0x3c9000);
++	if (r)
++		return r;
++	r = zd_rfwrite_cr_locked(chip, 0xbfffff);
++	if (r)
++		return r;
++	r = zd_rfwrite_cr_locked(chip, 0x700000);
++	if (r)
++		return r;
++	r = zd_rfwrite_cr_locked(chip, 0xf15d58);
++	if (r)
++		return r;
++
++	r = zd_iowrite16a_locked(chip, ioreqs_2, ARRAY_SIZE(ioreqs_2));
++	if (r)
++		return r;
++
++	r = zd_rfwrite_cr_locked(chip, 0xf15d59);
++	if (r)
++		return r;
++	r = zd_rfwrite_cr_locked(chip, 0xf15d5c);
++	if (r)
++		return r;
++	r = zd_rfwrite_cr_locked(chip, 0xf15d58);
++	if (r)
++		return r;
++
++	r = zd_iowrite16_locked(chip, 0x06, CR203);
++	if (r)
++		return r;
++	r = zd_iowrite16_locked(chip, 0x80, CR240);
++	if (r)
++		return r;
++
++	return 0;
++}
++
++static int al7230b_set_channel(struct zd_rf *rf, u8 channel)
++{
++	int i, r;
++	const u32 *rv = chan_rv[channel-1];
++	struct zd_chip *chip = zd_rf_to_chip(rf);
++
++	struct zd_ioreq16 ioreqs_1[] = {
++		{ CR128, 0x14 }, { CR129, 0x12 }, { CR130, 0x10 },
++		{ CR38,  0x38 }, { CR136, 0xdf },
++	};
++
++	struct zd_ioreq16 ioreqs_2[] = {
++		/* PLL_ON */
++		{ CR251, 0x3f },
++		{ CR203, 0x06 }, { CR240, 0x08 },
++	};
++
++	r = zd_iowrite16_locked(chip, 0x57, CR240);
++	if (r)
++		return r;
++
++	/* PLL_OFF */
++	r = zd_iowrite16_locked(chip, 0x2f, CR251);
++	if (r)
++		return r;
++
++	for (i = 0; i < ARRAY_SIZE(std_rv); i++) {
++		r = zd_rfwrite_cr_locked(chip, std_rv[i]);
++		if (r)
++			return r;
++	}
++
++	r = zd_rfwrite_cr_locked(chip, 0x3c9000);
++	if (r)
++		return r;
++	r = zd_rfwrite_cr_locked(chip, 0xf15d58);
++	if (r)
++		return r;
++
++	r = zd_iowrite16a_locked(chip, ioreqs_1, ARRAY_SIZE(ioreqs_1));
++	if (r)
++		return r;
++
++	for (i = 0; i < 2; i++) {
++		r = zd_rfwrite_cr_locked(chip, rv[i]);
++		if (r)
++			return r;
++	}
++
++	r = zd_rfwrite_cr_locked(chip, 0x3c9000);
++	if (r)
++		return r;
++
++	return zd_iowrite16a_locked(chip, ioreqs_2, ARRAY_SIZE(ioreqs_2));
++}
++
++static int al7230b_switch_radio_on(struct zd_rf *rf)
++{
++	struct zd_chip *chip = zd_rf_to_chip(rf);
++	static const struct zd_ioreq16 ioreqs[] = {
++		{ CR11,  0x00 },
++		{ CR251, 0x3f },
++	};
++
++	return zd_iowrite16a_locked(chip, ioreqs, ARRAY_SIZE(ioreqs));
++}
++
++static int al7230b_switch_radio_off(struct zd_rf *rf)
++{
++	struct zd_chip *chip = zd_rf_to_chip(rf);
++	static const struct zd_ioreq16 ioreqs[] = {
++		{ CR11,  0x04 },
++		{ CR251, 0x2f },
++	};
++
++	return zd_iowrite16a_locked(chip, ioreqs, ARRAY_SIZE(ioreqs));
++}
++
++int zd_rf_init_al7230b(struct zd_rf *rf)
++{
++	struct zd_chip *chip = zd_rf_to_chip(rf);
++
++	if (chip->is_zd1211b) {
++		dev_err(zd_chip_dev(chip), "AL7230B is currently not "
++			"supported for ZD1211B devices\n");
++		return -ENODEV;
++	}
++
++	rf->init_hw = al7230b_init_hw;
++	rf->set_channel = al7230b_set_channel;
++	rf->switch_radio_on = al7230b_switch_radio_on;
++	rf->switch_radio_off = al7230b_switch_radio_off;
++	rf->patch_6m_band_edge = 1;
++	return 0;
++}
+Index: linux-2.6.18/mvl_patches/pro50-2174.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2174.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2174);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

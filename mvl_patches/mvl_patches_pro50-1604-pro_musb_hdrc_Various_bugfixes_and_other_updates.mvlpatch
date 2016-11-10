@@ -1,0 +1,836 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Various_bugfixes_and_other_updates
+# Date: Fri Sep 19 14:02:49 2008
+# From 52775ea7bcf121521aa1edf98f063bd4161a6098 Mon Sep 17 00:00:00 2001
+# From: David Brownell <dbrownell@users.sourceforge.net>
+# Date: Fri, 27 Oct 2006 15:52:38 +0300
+# Subject: [PATCH] musb_hdrc: Various bugfixes and other updates
+# 
+# Various bugfixes:
+#     - gadget side does dma_sync_single_for_*() if the buffer
+#       was mapped by the gadget driver (none do that just yet)
+#     - host side rx, always force dma request off "just in case",
+#       instead of just for Mentor's DMA (i.e. not just OMAP2430)
+#     - complain louder about the board needing different driver config
+#     - iounmap() registers on rmmod
+#     - fault handling fixes in tusb_start()
+#     - (from TI) save dma mask so modprobe after use_dma=n can use dma
+#     - (from TI) gadget side zero-length IN likes TXPKTRDY before status stage
+# 
+# Other updates:
+#     - catch up to pt_regs finally leaving the irq path, other build fixes
+#     - remove pointless headers like <linux/pci.h>
+#     - RemoveMoreCamelCaseNastiness
+#     - resolve some config-specific compiler warning/error messages
+#     - dump tusb irq status register too
+#     - remove that MIN_DMA thing; dma logic must now handle zlps
+#       in all cases, not just to terminate a transfer
+#     - comment fixes
+# 
+# Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+# (cherry picked from commit 8db67e15c108c116dbee3bbef9a37472e0721f85)
+
+PATCHNUM=1604
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 52775ea7bcf121521aa1edf98f063bd4161a6098 Mon Sep 17 00:00:00 2001
+From: David Brownell <dbrownell@users.sourceforge.net>
+Date: Fri, 27 Oct 2006 15:52:38 +0300
+Subject: [PATCH] musb_hdrc: Various bugfixes and other updates
+
+Various bugfixes:
+    - gadget side does dma_sync_single_for_*() if the buffer
+      was mapped by the gadget driver (none do that just yet)
+    - host side rx, always force dma request off "just in case",
+      instead of just for Mentor's DMA (i.e. not just OMAP2430)
+    - complain louder about the board needing different driver config
+    - iounmap() registers on rmmod
+    - fault handling fixes in tusb_start()
+    - (from TI) save dma mask so modprobe after use_dma=n can use dma
+    - (from TI) gadget side zero-length IN likes TXPKTRDY before status stage
+
+Other updates:
+    - catch up to pt_regs finally leaving the irq path, other build fixes
+    - remove pointless headers like <linux/pci.h>
+    - RemoveMoreCamelCaseNastiness
+    - resolve some config-specific compiler warning/error messages
+    - dump tusb irq status register too
+    - remove that MIN_DMA thing; dma logic must now handle zlps
+      in all cases, not just to terminate a transfer
+    - comment fixes
+
+Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+(cherry picked from commit 8db67e15c108c116dbee3bbef9a37472e0721f85)
+Index: linux-2.6.18/drivers/usb/musb/davinci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/davinci.c
++++ linux-2.6.18/drivers/usb/musb/davinci.c
+@@ -22,7 +22,6 @@
+  */
+ 
+ #include <linux/module.h>
+-#include <linux/pci.h>
+ #include <linux/kernel.h>
+ #include <linux/sched.h>
+ #include <linux/slab.h>
+@@ -246,7 +245,7 @@ static void davinci_set_vbus(struct musb
+ 	return davinci_vbus_power(musb, is_on, 0);
+ }
+ 
+-static irqreturn_t davinci_interrupt(int irq, void *__hci, struct pt_regs *r)
++static irqreturn_t davinci_interrupt(int irq, void *__hci)
+ {
+ 	unsigned long	flags;
+ 	irqreturn_t	retval = IRQ_NONE;
+@@ -289,7 +288,6 @@ static irqreturn_t davinci_interrupt(int
+ 			>> DAVINCI_USB_TXINT_SHIFT;
+ 	musb->int_usb = (tmp & DAVINCI_USB_USBINT_MASK)
+ 			>> DAVINCI_USB_USBINT_SHIFT;
+-	musb->int_regs = r;
+ 
+ 	/* treat DRVVBUS irq like an ID change IRQ (for now) */
+ 	if (tmp & (1 << (8 + DAVINCI_USB_USBINT_SHIFT))) {
+@@ -317,7 +315,6 @@ static irqreturn_t davinci_interrupt(int
+ 	/* irq stays asserted until EOI is written */
+ 	musb_writel(tibase, DAVINCI_USB_EOI_REG, 0);
+ 
+-	musb->int_regs = NULL;
+ 	spin_unlock_irqrestore(&musb->Lock, flags);
+ 
+ 	/* REVISIT we sometimes get unhandled IRQs
+Index: linux-2.6.18/drivers/usb/musb/g_ep0.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/g_ep0.c
++++ linux-2.6.18/drivers/usb/musb/g_ep0.c
+@@ -556,9 +556,11 @@ musb_read_setup(struct musb *pThis, stru
+ 	 */
+ 	pThis->bSetAddress = FALSE;
+ 	pThis->ackpend = MGC_M_CSR0_P_SVDRXPKTRDY;
+-	if (req->wLength == 0)
++	if (req->wLength == 0) {
++		if (req->bRequestType & USB_DIR_IN)
++			pThis->ackpend |= MGC_M_CSR0_TXPKTRDY;
+ 		pThis->ep0_state = MGC_END0_STAGE_ACKWAIT;
+-	else if (req->bRequestType & USB_DIR_IN) {
++	} else if (req->bRequestType & USB_DIR_IN) {
+ 		pThis->ep0_state = MGC_END0_STAGE_TX;
+ 		musb_writew(regs, MGC_O_HDRC_CSR0, MGC_M_CSR0_P_SVDRXPKTRDY);
+ 		while ((musb_readw(regs, MGC_O_HDRC_CSR0)
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -118,15 +118,23 @@ __acquires(ep->musb->Lock)
+ 
+ 	ep->busy = 1;
+ 	spin_unlock(&musb->Lock);
+-	if (is_dma_capable() && req->mapped) {
+-		dma_unmap_single(musb->controller,
+-				req->request.dma,
+-				req->request.length,
+-				req->bTx
+-					? DMA_TO_DEVICE
+-					: DMA_FROM_DEVICE);
+-		req->request.dma = DMA_ADDR_INVALID;
+-		req->mapped = 0;
++	if (is_dma_capable()) {
++		if (req->mapped) {
++			dma_unmap_single(musb->controller,
++					req->request.dma,
++					req->request.length,
++					req->bTx
++						? DMA_TO_DEVICE
++						: DMA_FROM_DEVICE);
++			req->request.dma = DMA_ADDR_INVALID;
++			req->mapped = 0;
++		} else
++			dma_sync_single_for_cpu(musb->controller,
++					req->request.dma,
++					req->request.length,
++					req->bTx
++						? DMA_TO_DEVICE
++						: DMA_FROM_DEVICE);
+ 	}
+ 	if (pRequest->status == 0)
+ 		DBG(5, "%s done request %p,  %d/%d\n",
+@@ -1135,7 +1143,7 @@ static int musb_gadget_queue(struct usb_
+ {
+ 	struct musb_ep		*pEnd;
+ 	struct musb_request	*pRequest;
+-	struct musb		*pThis;
++	struct musb		*musb;
+ 	int			status = 0;
+ 	unsigned long		lockflags;
+ 
+@@ -1143,10 +1151,10 @@ static int musb_gadget_queue(struct usb_
+ 		return -EINVAL;
+ 
+ 	pEnd = to_musb_ep(ep);
+-	pThis = pEnd->pThis;
++	musb = pEnd->pThis;
+ 
+ 	pRequest = to_musb_request(req);
+-	pRequest->musb = pThis;
++	pRequest->musb = musb;
+ 
+ 	if (pRequest->ep != pEnd)
+ 		return -EINVAL;
+@@ -1159,23 +1167,31 @@ static int musb_gadget_queue(struct usb_
+ 	pRequest->bEnd = pEnd->bEndNumber;
+ 	pRequest->bTx = pEnd->is_in;
+ 
+-	if (is_dma_capable()
+-			&& pRequest->request.dma == DMA_ADDR_INVALID
+-			&& pRequest->request.length >= MIN_DMA_REQUEST
+-			&& pEnd->dma) {
+-		pRequest->request.dma = dma_map_single(pThis->controller,
+-				pRequest->request.buf,
+-				pRequest->request.length,
+-				pRequest->bTx
+-					? DMA_TO_DEVICE
+-					: DMA_FROM_DEVICE);
+-		pRequest->mapped = 1;
++	if (is_dma_capable() && pEnd->dma) {
++		if (pRequest->request.dma == DMA_ADDR_INVALID) {
++			pRequest->request.dma = dma_map_single(
++					musb->controller,
++					pRequest->request.buf,
++					pRequest->request.length,
++					pRequest->bTx
++						? DMA_TO_DEVICE
++						: DMA_FROM_DEVICE);
++			pRequest->mapped = 1;
++		} else {
++			dma_sync_single_for_device(musb->controller,
++					pRequest->request.dma,
++					pRequest->request.length,
++					pRequest->bTx
++						? DMA_TO_DEVICE
++						: DMA_FROM_DEVICE);
++			pRequest->mapped = 0;
++		}
+ 	} else if (!req->buf) {
+ 		return -ENODATA;
+ 	} else
+ 		pRequest->mapped = 0;
+ 
+-	spin_lock_irqsave(&pThis->Lock, lockflags);
++	spin_lock_irqsave(&musb->Lock, lockflags);
+ 
+ 	/* don't queue if the ep is down */
+ 	if (!pEnd->desc) {
+@@ -1190,10 +1206,10 @@ static int musb_gadget_queue(struct usb_
+ 
+ 	/* it this is the head of the queue, start i/o ... */
+ 	if (!pEnd->busy && &pRequest->request.list == pEnd->req_list.next)
+-		musb_ep_restart(pThis, pRequest);
++		musb_ep_restart(musb, pRequest);
+ 
+ cleanup:
+-	spin_unlock_irqrestore(&pThis->Lock, lockflags);
++	spin_unlock_irqrestore(&musb->Lock, lockflags);
+ 	return status;
+ }
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.h
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.h
+@@ -74,6 +74,7 @@ struct musb_ep {
+ 	/* later things are modified based on usage */
+ 	struct list_head		req_list;
+ 
++	/* true if lock must be dropped but req_list may not be advanced */
+ 	u8				busy;
+ };
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -33,7 +33,6 @@
+  ******************************************************************/
+ 
+ #include <linux/module.h>
+-#include <linux/pci.h>
+ #include <linux/kernel.h>
+ #include <linux/delay.h>
+ #include <linux/sched.h>
+@@ -284,7 +283,7 @@ __acquires(musb->Lock)
+ 			);
+ 
+ 	spin_unlock(&musb->Lock);
+-	usb_hcd_giveback_urb(musb_to_hcd(musb), urb, musb->int_regs);
++	usb_hcd_giveback_urb(musb_to_hcd(musb), urb);
+ 	spin_lock(&musb->Lock);
+ }
+ 
+@@ -1485,8 +1484,8 @@ void musb_host_rx(struct musb *pThis, u8
+ 	}
+ 
+ 	if (unlikely(dma_channel_status(dma) == MGC_DMA_STATUS_BUSY)) {
+-		/* SHOULD NEVER HAPPEN */
+-		ERR("RX%d dma busy\n", bEnd);
++		/* SHOULD NEVER HAPPEN ... but at least DaVinci has done it */
++		ERR("RX%d dma busy, csr %04x\n", bEnd, wRxCsrVal);
+ 		goto finish;
+ 	}
+ 
+@@ -1521,9 +1520,15 @@ void musb_host_rx(struct musb *pThis, u8
+ 	}
+ #endif
+ 	if (dma && (wRxCsrVal & MGC_M_RXCSR_DMAENAB)) {
++		xfer_len = dma->dwActualLength;
++
++		wVal &= ~(MGC_M_RXCSR_DMAENAB
++			| MGC_M_RXCSR_H_AUTOREQ
++			| MGC_M_RXCSR_AUTOCLEAR
++			| MGC_M_RXCSR_RXPKTRDY);
++		musb_writew(pEnd->regs, MGC_O_HDRC_RXCSR, wVal);
+ 
+ #ifdef CONFIG_USB_INVENTRA_DMA
+-		xfer_len = dma->dwActualLength;
+ 		pUrb->actual_length += xfer_len;
+ 		qh->offset += xfer_len;
+ 
+@@ -1531,14 +1536,6 @@ void musb_host_rx(struct musb *pThis, u8
+ 		bDone = (pUrb->actual_length >= pUrb->transfer_buffer_length)
+ 			|| (dma->dwActualLength & (qh->maxpacket - 1));
+ 
+-		wVal &= ~(MGC_M_RXCSR_DMAENAB
+-			| MGC_M_RXCSR_H_AUTOREQ
+-			| MGC_M_RXCSR_AUTOCLEAR
+-			| MGC_M_RXCSR_RXPKTRDY);
+-
+-		MGC_WriteCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd, wVal);
+-		MGC_WriteCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd, wVal);
+-
+ 		/* send IN token for next packet, without AUTOREQ */
+ 		if (!bDone) {
+ 			wVal |= MGC_M_RXCSR_H_REQPKT;
+@@ -1552,7 +1549,6 @@ void musb_host_rx(struct musb *pThis, u8
+ 			MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCOUNT, bEnd));
+ #else
+ 		bDone = TRUE;
+-		xfer_len = dma->dwActualLength;
+ #endif
+ 	} else if (pUrb->status == -EINPROGRESS) {
+ 		/* if no errors, be sure a packet is ready for unloading */
+@@ -1682,7 +1678,7 @@ static int musb_schedule(
+ 	int			idle;
+ 	int			wBestDiff;
+ 	int			nBestEnd, nEnd;
+-	struct musb_hw_ep	*hw_ep;
++	struct musb_hw_ep	*hw_ep = NULL;
+ 	struct list_head	*head = NULL;
+ 
+ 	/* use fixed hardware for control and bulk */
+Index: linux-2.6.18/drivers/usb/musb/musb_procfs.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_procfs.c
++++ linux-2.6.18/drivers/usb/musb/musb_procfs.c
+@@ -558,7 +558,7 @@ static int dump_header_stats(struct musb
+ 	code = sprintf(buffer,
+ 			"TUSB6010: devconf %08x, phy enable %08x drive %08x"
+ 			"\n\totg %03x timer %08x"
+-			"\n\tprcm conf %08x mgmt %08x; intmask %08x"
++			"\n\tprcm conf %08x mgmt %08x; int src %08x mask %08x"
+ 			"\n",
+ 			musb_readl(pThis->ctrl_base, TUSB_DEV_CONF),
+ 			musb_readl(pThis->ctrl_base, TUSB_PHY_OTG_CTRL_ENABLE),
+@@ -567,6 +567,7 @@ static int dump_header_stats(struct musb
+ 			musb_readl(pThis->ctrl_base, TUSB_DEV_OTG_TIMER),
+ 			musb_readl(pThis->ctrl_base, TUSB_PRCM_CONF),
+ 			musb_readl(pThis->ctrl_base, TUSB_PRCM_MNGMT),
++			musb_readl(pThis->ctrl_base, TUSB_INT_SRC),
+ 			musb_readl(pThis->ctrl_base, TUSB_INT_MASK));
+ 	if (code <= 0)
+ 		goto done;
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -43,7 +43,7 @@
+ #include <linux/usb_ch9.h>
+ #include <linux/usb_gadget.h>
+ #include <linux/usb.h>
+-#include <linux/usb_otg.h>
++#include <linux/usb/otg.h>
+ #include <linux/usb/musb.h>
+ 
+ struct musb;
+@@ -75,9 +75,6 @@ struct musb_ep;
+ #include "otg.h"
+ 
+ 
+-/* REVISIT tune this */
+-#define	MIN_DMA_REQUEST		1	/* use PIO below this xfer size */
+-
+ 
+ #ifdef CONFIG_USB_MUSB_OTG
+ 
+@@ -374,7 +371,7 @@ static inline struct usb_request *next_o
+ struct musb {
+ 	spinlock_t		Lock;
+ 	struct clk		*clock;
+-	irqreturn_t		(*isr)(int, void *, struct pt_regs *);
++	irqreturn_t		(*isr)(int, void *);
+ 	struct work_struct	irq_work;
+ 
+ #ifdef CONFIG_USB_MUSB_HDRC_HCD
+@@ -418,7 +415,6 @@ struct musb {
+ 	u8			int_usb;
+ 	u16			int_rx;
+ 	u16			int_tx;
+-	struct pt_regs		*int_regs;
+ 
+ 	struct otg_transceiver	xceiv;
+ 
+Index: linux-2.6.18/drivers/usb/musb/omap2430.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/omap2430.c
++++ linux-2.6.18/drivers/usb/musb/omap2430.c
+@@ -21,7 +21,6 @@
+  *
+  */
+ #include <linux/module.h>
+-#include <linux/pci.h>
+ #include <linux/kernel.h>
+ #include <linux/sched.h>
+ #include <linux/slab.h>
+@@ -29,9 +28,6 @@
+ #include <linux/list.h>
+ #include <linux/clk.h>
+ 
+-#include <linux/module.h>
+-#include <linux/kernel.h>
+-#include <linux/init.h>
+ #include <asm/io.h>
+ #include <asm/mach-types.h>
+ #include <asm/arch/hardware.h>
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -94,7 +94,6 @@
+  */
+ 
+ #include <linux/module.h>
+-#include <linux/pci.h>
+ #include <linux/kernel.h>
+ #include <linux/sched.h>
+ #include <linux/slab.h>
+@@ -665,6 +664,7 @@ void musb_start(struct musb *musb)
+ 	musb_writeb(regs, MGC_O_HDRC_POWER, MGC_M_POWER_ISOUPDATE
+ 						| MGC_M_POWER_SOFTCONN
+ 						| MGC_M_POWER_HSENAB
++						/* ENSUSPEND wedges tusb */
+ 						// | MGC_M_POWER_ENSUSPEND
+ 						);
+ 
+@@ -672,7 +672,7 @@ void musb_start(struct musb *musb)
+ 	devctl = musb_readb(regs, MGC_O_HDRC_DEVCTL);
+ 	devctl &= ~MGC_M_DEVCTL_SESSION;
+ 
+-	if (is_otg_enabled(pThis)) {
++	if (is_otg_enabled(musb)) {
+ 		/* session started after:
+ 		 * (a) ID-grounded irq, host mode;
+ 		 * (b) vbus present/connect IRQ, peripheral mode;
+@@ -683,7 +683,7 @@ void musb_start(struct musb *musb)
+ 		else
+ 			devctl |= MGC_M_DEVCTL_SESSION;
+ 
+-	} else if (is_host_enabled(pThis)) {
++	} else if (is_host_enabled(musb)) {
+ 		/* assume ID pin is hard-wired to ground */
+ 		devctl |= MGC_M_DEVCTL_SESSION;
+ 
+@@ -1276,7 +1276,7 @@ static int __devinit musb_core_init(u16 
+ 
+ #ifdef CONFIG_ARCH_OMAP243X
+ 
+-static irqreturn_t generic_interrupt(int irq, void *__hci, struct pt_regs *r)
++static irqreturn_t generic_interrupt(int irq, void *__hci)
+ {
+ 	unsigned long	flags;
+ 	irqreturn_t	retval = IRQ_NONE;
+@@ -1287,7 +1287,6 @@ static irqreturn_t generic_interrupt(int
+ 	musb->int_usb = musb_readb(musb->pRegs, MGC_O_HDRC_INTRUSB);
+ 	musb->int_tx = musb_readw(musb->pRegs, MGC_O_HDRC_INTRTX);
+ 	musb->int_rx = musb_readw(musb->pRegs, MGC_O_HDRC_INTRRX);
+-	musb->int_regs = r;
+ 
+ 	if (musb->int_usb || musb->int_tx || musb->int_rx)
+ 		retval = musb_interrupt(musb);
+@@ -1604,7 +1603,6 @@ static void musb_free(struct musb *musb)
+ 	if (is_dma_capable() && musb->pDmaController) {
+ 		struct dma_controller	*c = musb->pDmaController;
+ 
+-//
+ 		(void) c->stop(c->pPrivateData);
+ 		dma_controller_factory.destroy(c);
+ 	}
+@@ -1667,7 +1665,7 @@ musb_init_controller(struct device *dev,
+ 	bad_config:
+ #endif
+ 	default:
+-		dev_dbg(dev, "incompatible Kconfig role setting\n");
++		dev_err(dev, "incompatible Kconfig role setting\n");
+ 		return -EINVAL;
+ 	}
+ 
+@@ -1811,8 +1809,9 @@ fail:
+ 	INIT_WORK(&pThis->irq_work, musb_irq_work, pThis);
+ 
+ #ifdef CONFIG_SYSFS
+-	device_create_file(dev, &dev_attr_mode);
+-	device_create_file(dev, &dev_attr_cable);
++	status = device_create_file(dev, &dev_attr_mode);
++	status = device_create_file(dev, &dev_attr_cable);
++	status = 0;
+ #endif
+ 
+ 	return status;
+@@ -1828,6 +1827,10 @@ fail2:
+  * bridge to a platform device; this driver then suffices.
+  */
+ 
++#ifndef CONFIG_USB_INVENTRA_FIFO
++static u64	*orig_dma_mask;
++#endif
++
+ static int __devinit musb_probe(struct platform_device *pdev)
+ {
+ 	struct device	*dev = &pdev->dev;
+@@ -1845,12 +1848,17 @@ static int __devinit musb_probe(struct p
+ 		return -ENOMEM;
+ 	}
+ 
++#ifndef CONFIG_USB_INVENTRA_FIFO
++	/* clobbered by use_dma=n */
++	orig_dma_mask = dev->dma_mask;
++#endif
+ 	return musb_init_controller(dev, irq, base);
+ }
+ 
+ static int __devexit musb_remove(struct platform_device *pdev)
+ {
+ 	struct musb	*musb = dev_to_musb(&pdev->dev);
++	void __iomem	*ctrl_base = musb->ctrl_base;
+ 
+ 	/* this gets called on rmmod.
+ 	 *  - Host mode: host may still be active
+@@ -1864,7 +1872,11 @@ static int __devexit musb_remove(struct 
+ 		usb_remove_hcd(musb_to_hcd(musb));
+ #endif
+ 	musb_free(musb);
++	iounmap(ctrl_base);
+ 	device_init_wakeup(&pdev->dev, 0);
++#ifndef CONFIG_USB_INVENTRA_FIFO
++	dev->dma_mask = orig_dma_mask;
++#endif
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/drivers/usb/musb/tusb6010.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010.c
++++ linux-2.6.18/drivers/usb/musb/tusb6010.c
+@@ -146,6 +146,7 @@ void musb_read_fifo(struct musb_hw_ep *h
+  * at most mA current to be drawn from VBUS during a Default-B session
+  * (that is, while VBUS exceeds 4.4V).  In Default-A (including pure host
+  * mode), or low power Default-B sessions, something else supplies power.
++ * Caller must take care of locking.
+  */
+ static int tusb_set_power(struct otg_transceiver *x, unsigned mA)
+ {
+@@ -178,7 +179,7 @@ static int tusb_set_power(struct otg_tra
+  * (to be fixed in rev3 silicon) ... symptoms include disconnect
+  * or looping suspend/resume cycles
+  */
+-static void tusb_set_clock_source(struct musb *musb, int mode)
++static void tusb_set_clock_source(struct musb *musb, unsigned mode)
+ {
+ 	void __iomem	*base = musb->ctrl_base;
+ 	u32		reg;
+@@ -186,10 +187,17 @@ static void tusb_set_clock_source(struct
+ 	reg = musb_readl(base, TUSB_PRCM_CONF);
+ 	reg &= ~TUSB_PRCM_CONF_SYS_CLKSEL(0x3);
+ 
++	/* 0 = refclk (clkin, XI)
++	 * 1 = PHY 60 MHz (internal PLL)
++	 * 2 = not supported
++	 * 3 = NOR clock (huh?)
++	 */
+ 	if (mode > 0)
+ 		reg |= TUSB_PRCM_CONF_SYS_CLKSEL(mode & 0x3);
+ 
+ 	musb_writel(base, TUSB_PRCM_CONF, reg);
++
++	// FIXME tusb6010_platform_retime(mode == 0);
+ }
+ 
+ /*
+@@ -477,7 +485,7 @@ tusb_otg_ints(struct musb *musb, u32 int
+ 	}
+ }
+ 
+-static irqreturn_t tusb_interrupt(int irq, void *__hci, struct pt_regs *r)
++static irqreturn_t tusb_interrupt(int irq, void *__hci)
+ {
+ 	struct musb	*musb = __hci;
+ 	void __iomem	*base = musb->ctrl_base;
+@@ -489,7 +497,6 @@ static irqreturn_t tusb_interrupt(int ir
+ 	int_src = musb_readl(base, TUSB_INT_SRC) & ~TUSB_INT_SRC_RESERVED_BITS;
+ 	DBG(3, "TUSB IRQ %08x\n", int_src);
+ 
+-	musb->int_regs = r;
+ 	musb->int_usb = (u8) int_src;
+ 
+ 	/* Acknowledge wake-up source interrupts */
+@@ -570,7 +577,6 @@ static irqreturn_t tusb_interrupt(int ir
+ 	musb_writel(base, TUSB_INT_SRC_CLEAR,
+ 		int_src & ~TUSB_INT_MASK_RESERVED_BITS);
+ 
+-	musb->int_regs = NULL;
+ 	musb_platform_try_idle(musb);
+ 	spin_unlock_irqrestore(&musb->Lock, flags);
+ 
+@@ -690,10 +696,10 @@ static int tusb_print_revision(struct mu
+ 	return TUSB_REV_MAJOR(musb_readl(base, TUSB_INT_CTRL_REV));
+ }
+ 
+-static int tusb_start(struct musb *musb)
++static int __devinit tusb_start(struct musb *musb)
+ {
+ 	void __iomem	*base = musb->ctrl_base;
+-	int		ret = -1;
++	int		ret = 0;
+ 	unsigned long	flags;
+ 	u32		reg;
+ 
+@@ -701,7 +707,7 @@ static int tusb_start(struct musb *musb)
+ 		ret = musb->board_set_power(1);
+ 	if (ret != 0) {
+ 		printk(KERN_ERR "tusb: Cannot enable TUSB6010\n");
+-		goto err;
++		return ret;
+ 	}
+ 
+ 	spin_lock_irqsave(&musb->Lock, flags);
+@@ -752,6 +758,8 @@ static int tusb_start(struct musb *musb)
+ 	return 0;
+ 
+ err:
++	spin_unlock_irqrestore(&musb->Lock, flags);
++
+ 	if (musb->board_set_power)
+ 		musb->board_set_power(0);
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1604.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1604.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1604);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

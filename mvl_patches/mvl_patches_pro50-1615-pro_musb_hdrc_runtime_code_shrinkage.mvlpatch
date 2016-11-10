@@ -1,0 +1,564 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_runtime_code_shrinkage
+# Date: Fri Sep 19 14:03:34 2008
+# From 243a16a5a3f23ba3a542c2c8d74881df1ba3b79f Mon Sep 17 00:00:00 2001
+# From: David Brownell <dbrownell@users.sourceforge.net>
+# Date: Wed, 17 Jan 2007 14:11:25 -0800
+# Subject: [PATCH] musb_hdrc runtime code shrinkage
+# 
+# Move musb_hdrc driver init into the init section, by switching over to use
+# platform_driver_probe().  Shrinks this driver's run-time footprint by about
+# 5KB ... pretty good for linker level tweaks to just one (big) driver, and
+# there's a bit more shrinkage yet to be had (for DMA init).
+# 
+# Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+# (cherry picked from commit b82a9fd2e3de4a00244e0d5bf50433feb509eba7)
+
+PATCHNUM=1615
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 243a16a5a3f23ba3a542c2c8d74881df1ba3b79f Mon Sep 17 00:00:00 2001
+From: David Brownell <dbrownell@users.sourceforge.net>
+Date: Wed, 17 Jan 2007 14:11:25 -0800
+Subject: [PATCH] musb_hdrc runtime code shrinkage
+
+Move musb_hdrc driver init into the init section, by switching over to use
+platform_driver_probe().  Shrinks this driver's run-time footprint by about
+5KB ... pretty good for linker level tweaks to just one (big) driver, and
+there's a bit more shrinkage yet to be had (for DMA init).
+
+Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+(cherry picked from commit b82a9fd2e3de4a00244e0d5bf50433feb509eba7)
+Index: linux-2.6.18/drivers/usb/musb/cppi_dma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/cppi_dma.c
++++ linux-2.6.18/drivers/usb/musb/cppi_dma.c
+@@ -91,7 +91,7 @@ static void cppi_reset_rx(struct cppi_rx
+ 	musb_writel(CAST &rx->byteCount, 0, 0);
+ }
+ 
+-static void __devinit cppi_pool_init(struct cppi *cppi, struct cppi_channel *c)
++static void __init cppi_pool_init(struct cppi *cppi, struct cppi_channel *c)
+ {
+ 	int	j;
+ 
+@@ -137,7 +137,7 @@ static void cppi_pool_free(struct cppi_c
+ 	c->lastHwBDProcessed = NULL;
+ }
+ 
+-static int __devinit cppi_controller_start(struct dma_controller *c)
++static int __init cppi_controller_start(struct dma_controller *c)
+ {
+ 	struct cppi	*pController;
+ 	void		*__iomem regBase;
+Index: linux-2.6.18/drivers/usb/musb/davinci.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/davinci.c
++++ linux-2.6.18/drivers/usb/musb/davinci.c
+@@ -376,7 +376,7 @@ static irqreturn_t davinci_interrupt(int
+ 	return IRQ_HANDLED;
+ }
+ 
+-int __devinit musb_platform_init(struct musb *musb)
++int __init musb_platform_init(struct musb *musb)
+ {
+ 	void	*__iomem tibase = musb->ctrl_base;
+ 	u32	revision;
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -1589,7 +1589,7 @@ static void musb_gadget_release(struct d
+ }
+ 
+ 
+-static void __devinit
++static void __init
+ init_peripheral_ep(struct musb *musb, struct musb_ep *ep, u8 bEnd, int is_in)
+ {
+ 	struct musb_hw_ep	*hw_ep = musb->aLocalEnd + bEnd;
+@@ -1626,7 +1626,7 @@ init_peripheral_ep(struct musb *musb, st
+  * Initialize the endpoints exposed to peripheral drivers, with backlinks
+  * to the rest of the driver state.
+  */
+-static inline void __devinit musb_g_init_endpoints(struct musb *pThis)
++static inline void __init musb_g_init_endpoints(struct musb *pThis)
+ {
+ 	u8			bEnd;
+ 	struct musb_hw_ep	*hw_ep;
+@@ -1659,7 +1659,7 @@ static inline void __devinit musb_g_init
+ /* called once during driver setup to initialize and link into
+  * the driver model; memory is zeroed.
+  */
+-int __devinit musb_gadget_setup(struct musb *pThis)
++int __init musb_gadget_setup(struct musb *pThis)
+ {
+ 	int status;
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_procfs.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_procfs.c
++++ linux-2.6.18/drivers/usb/musb/musb_procfs.c
+@@ -813,7 +813,7 @@ void __devexit musb_debug_delete(char *n
+ 		remove_proc_entry(name, NULL);
+ }
+ 
+-struct proc_dir_entry *__devinit
++struct proc_dir_entry *__init
+ musb_debug_create(char *name, struct musb *data)
+ {
+ 	struct proc_dir_entry	*pde;
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -525,7 +525,7 @@ extern int musb_platform_get_vbus_status
+ #define musb_platform_get_vbus_status(x)	0
+ #endif
+ 
+-extern int __devinit musb_platform_init(struct musb *musb);
++extern int __init musb_platform_init(struct musb *musb);
+ extern int musb_platform_exit(struct musb *musb);
+ 
+ /*-------------------------- ProcFS definitions ---------------------*/
+Index: linux-2.6.18/drivers/usb/musb/omap2430.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/omap2430.c
++++ linux-2.6.18/drivers/usb/musb/omap2430.c
+@@ -61,7 +61,7 @@ static void omap_vbus_power(struct musb 
+ {
+ }
+ 
+-int __devinit musb_platform_init(struct musb *musb)
++int __init musb_platform_init(struct musb *musb)
+ {
+ 	/* Erratum - reset value of STP has pull-down.
+ 	   Change it to pull-up. */
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -807,9 +807,9 @@ static void musb_shutdown(struct platfor
+ #endif
+ 
+ #ifdef CONFIG_USB_TUSB6010
+-static ushort __devinitdata fifo_mode = 4;
++static ushort __initdata fifo_mode = 4;
+ #else
+-static ushort __devinitdata fifo_mode = 2;
++static ushort __initdata fifo_mode = 2;
+ #endif
+ 
+ /* "modprobe ... fifo_mode=1" etc */
+@@ -835,7 +835,7 @@ struct fifo_cfg {
+  */
+ 
+ /* mode 0 - fits in 2KB */
+-static const struct fifo_cfg __devinitdata mode_0_cfg[] = {
++static struct fifo_cfg __initdata mode_0_cfg[] = {
+ { .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, },
+ { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, },
+ { .hw_ep_num = 2, .style = FIFO_RXTX, .maxpacket = 512, },
+@@ -844,7 +844,7 @@ static const struct fifo_cfg __devinitda
+ };
+ 
+ /* mode 1 - fits in 4KB */
+-static const struct fifo_cfg __devinitdata mode_1_cfg[] = {
++static struct fifo_cfg __initdata mode_1_cfg[] = {
+ { .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
+ { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
+ { .hw_ep_num = 2, .style = FIFO_RXTX, .maxpacket = 512, .mode = BUF_DOUBLE, },
+@@ -853,7 +853,7 @@ static const struct fifo_cfg __devinitda
+ };
+ 
+ /* mode 2 - fits in 4KB */
+-static const struct fifo_cfg __devinitdata mode_2_cfg[] = {
++static struct fifo_cfg __initdata mode_2_cfg[] = {
+ { .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, },
+ { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, },
+ { .hw_ep_num = 2, .style = FIFO_TX,   .maxpacket = 512, },
+@@ -863,7 +863,7 @@ static const struct fifo_cfg __devinitda
+ };
+ 
+ /* mode 3 - fits in 4KB */
+-static const struct fifo_cfg __devinitdata mode_3_cfg[] = {
++static struct fifo_cfg __initdata mode_3_cfg[] = {
+ { .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
+ { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
+ { .hw_ep_num = 2, .style = FIFO_TX,   .maxpacket = 512, },
+@@ -873,7 +873,7 @@ static const struct fifo_cfg __devinitda
+ };
+ 
+ /* mode 4 - fits in 16KB */
+-static const struct fifo_cfg __devinitdata mode_4_cfg[] = {
++static struct fifo_cfg __initdata mode_4_cfg[] = {
+ { .hw_ep_num =  1, .style = FIFO_TX,   .maxpacket = 512, },
+ { .hw_ep_num =  1, .style = FIFO_RX,   .maxpacket = 512, },
+ { .hw_ep_num =  2, .style = FIFO_TX,   .maxpacket = 512, },
+@@ -911,7 +911,7 @@ static const struct fifo_cfg __devinitda
+  *
+  * returns negative errno or offset for next fifo.
+  */
+-static int __devinit
++static int __init
+ fifo_setup(struct musb *musb, struct musb_hw_ep  *hw_ep,
+ 		const struct fifo_cfg *cfg, u16 offset)
+ {
+@@ -983,11 +983,11 @@ fifo_setup(struct musb *musb, struct mus
+ 	return offset + (maxpacket << ((c_size & MGC_M_FIFOSZ_DPB) ? 1 : 0));
+ }
+ 
+-static const struct fifo_cfg __devinitdata ep0_cfg = {
++static struct fifo_cfg __initdata ep0_cfg = {
+ 	.style = FIFO_RXTX, .maxpacket = 64,
+ };
+ 
+-static int __devinit ep_config_from_table(struct musb *musb)
++static int __init ep_config_from_table(struct musb *musb)
+ {
+ 	const struct fifo_cfg	*cfg;
+ 	unsigned		i, n;
+@@ -1069,7 +1069,7 @@ static int __devinit ep_config_from_tabl
+  * ep_config_from_hw - when MUSB_C_DYNFIFO_DEF is false
+  * @param pThis the controller
+  */
+-static int __devinit ep_config_from_hw(struct musb *musb)
++static int __init ep_config_from_hw(struct musb *musb)
+ {
+ 	u8 bEnd = 0, reg;
+ 	struct musb_hw_ep *pEnd;
+@@ -1136,7 +1136,7 @@ enum { MUSB_CONTROLLER_MHDRC, MUSB_CONTR
+ /* Initialize MUSB (M)HDRC part of the USB hardware subsystem;
+  * configure endpoints, or take their config from silicon
+  */
+-static int __devinit musb_core_init(u16 wType, struct musb *pThis)
++static int __init musb_core_init(u16 wType, struct musb *pThis)
+ {
+ #ifdef MUSB_AHB_ID
+ 	u32 dwData;
+@@ -1422,7 +1422,7 @@ irqreturn_t musb_interrupt(struct musb *
+ 
+ 
+ #ifndef CONFIG_USB_INVENTRA_FIFO
+-static int __devinitdata use_dma = is_dma_capable();
++static int __initdata use_dma = 1;
+ 
+ /* "modprobe ... use_dma=0" etc */
+ module_param(use_dma, bool, 0);
+@@ -1468,7 +1468,7 @@ void musb_dma_completion(struct musb *mu
+ }
+ 
+ #else
+-#define use_dma			is_dma_capable()
++#define use_dma			0
+ #endif
+ 
+ /*-------------------------------------------------------------------------*/
+@@ -1560,7 +1560,7 @@ static void musb_irq_work(struct work_st
+  * Init support
+  */
+ 
+-static struct musb *__devinit
++static struct musb *__init
+ allocate_instance(struct device *dev, void __iomem *mbase)
+ {
+ 	struct musb		*musb;
+@@ -1656,7 +1656,7 @@ static void musb_free(struct musb *musb)
+  * @pRegs: virtual address of controller registers,
+  *	not yet corrected for platform-specific offsets
+  */
+-static int __devinit
++static int __init
+ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
+ {
+ 	int			status;
+@@ -1723,6 +1723,9 @@ musb_init_controller(struct device *dev,
+ 	if (use_dma && dev->dma_mask) {
+ 		struct dma_controller	*c;
+ 
++// FIXME get rid of dma_controller_factory and just call the methods
++// directly ... then create() can be in the init section, etc
++
+ 		c = dma_controller_factory.create(pThis, pThis->pRegs);
+ 		pThis->pDmaController = c;
+ 		if (c)
+@@ -1750,6 +1753,7 @@ musb_init_controller(struct device *dev,
+ 		goto fail2;
+ 	}
+ 	pThis->nIrq = nIrq;
++// FIXME this handles wakeup irqs wrong
+ 	if (enable_irq_wake(nIrq) == 0)
+ 		device_init_wakeup(dev, 1);
+ 
+@@ -1849,7 +1853,7 @@ fail2:
+ static u64	*orig_dma_mask;
+ #endif
+ 
+-static int __devinit musb_probe(struct platform_device *pdev)
++static int __init musb_probe(struct platform_device *pdev)
+ {
+ 	struct device	*dev = &pdev->dev;
+ 	int		irq = platform_get_irq(pdev, 0);
+@@ -1954,7 +1958,6 @@ static struct platform_driver musb_drive
+ 		.bus		= &platform_bus_type,
+ 		.owner		= THIS_MODULE,
+ 	},
+-	.probe		= musb_probe,
+ 	.remove		= __devexit_p(musb_remove),
+ 	.shutdown	= musb_shutdown,
+ 	.suspend	= musb_suspend,
+@@ -1992,7 +1995,7 @@ static int __init musb_init(void)
+ #endif
+ 		", debug=%d\n",
+ 		musb_driver_name, debug);
+-	return platform_driver_register(&musb_driver);
++	return platform_driver_probe(&musb_driver, musb_probe);
+ }
+ 
+ /* make us init after usbcore and before usb
+Index: linux-2.6.18/drivers/usb/musb/tusb6010.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010.c
++++ linux-2.6.18/drivers/usb/musb/tusb6010.c
+@@ -682,7 +682,7 @@ void musb_platform_disable(struct musb *
+  * Sets up TUSB6010 CPU interface specific signals and registers
+  * Note: Settings optimized for OMAP24xx
+  */
+-static void tusb_setup_cpu_interface(struct musb *musb)
++static void __init tusb_setup_cpu_interface(struct musb *musb)
+ {
+ 	void __iomem	*base = musb->ctrl_base;
+ 
+@@ -708,7 +708,7 @@ static void tusb_setup_cpu_interface(str
+ #define TUSB_REV_MAJOR(reg_val)		((reg_val >> 4) & 0xf)
+ #define TUSB_REV_MINOR(reg_val)		(reg_val & 0xf)
+ 
+-static int tusb_print_revision(struct musb *musb)
++static int __init tusb_print_revision(struct musb *musb)
+ {
+ 	void __iomem	*base = musb->ctrl_base;
+ 
+@@ -729,7 +729,7 @@ static int tusb_print_revision(struct mu
+ 	return TUSB_REV_MAJOR(musb_readl(base, TUSB_INT_CTRL_REV));
+ }
+ 
+-static int __devinit tusb_start(struct musb *musb)
++static int __init tusb_start(struct musb *musb)
+ {
+ 	void __iomem	*base = musb->ctrl_base;
+ 	int		ret = 0;
+@@ -798,7 +798,7 @@ err:
+ 	return -ENODEV;
+ }
+ 
+-int __devinit musb_platform_init(struct musb *musb)
++int __init musb_platform_init(struct musb *musb)
+ {
+ 	struct platform_device	*pdev;
+ 	struct resource		*mem;
+Index: linux-2.6.18/mvl_patches/pro50-1615.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1615.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1615);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,1708 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_da8xx_lcd
+# Date: Thu Feb 19 14:59:54 2009
+# Source: MontaVista Software, Inc.
+# MR: 28760
+# Type: Integration
+# Disposition: backported from TI Avalanche LCD driver.
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description:
+#     Character LCD driver support for TI DA8x. Ported Avalanche 
+# 	character lcd driver.
+# 
+#  drivers/char/Kconfig                 |    7 
+#  drivers/char/Makefile                |    2 
+#  drivers/char/da8xx_lcd/Makefile      |   10 
+#  drivers/char/da8xx_lcd/hd44780_hal.c |  209 ++++++++++++++++
+#  drivers/char/da8xx_lcd/hd44780_hal.h |   75 ++++++
+#  drivers/char/da8xx_lcd/lcd.h         |   31 ++
+#  drivers/char/da8xx_lcd/lcd_drv.c     |  411 ++++++++++++++++++++++++++++++++
+#  drivers/char/da8xx_lcd/lidd_cmd.h    |   48 +++
+#  drivers/char/da8xx_lcd/lidd_hal.c    |  436 +++++++++++++++++++++++++++++++++++
+#  drivers/char/da8xx_lcd/lidd_hal.h    |  162 +++++++++++++
+#  10 files changed, 1391 insertions(+)
+# 
+
+PATCHNUM=2092
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28760
+Type: Integration
+Disposition: backported from TI Avalanche LCD driver.
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description:
+    Character LCD driver support for TI DA8x. Ported Avalanche 
+	character lcd driver.
+
+ drivers/char/Kconfig                 |    7 
+ drivers/char/Makefile                |    2 
+ drivers/char/da8xx_lcd/Makefile      |   10 
+ drivers/char/da8xx_lcd/hd44780_hal.c |  209 ++++++++++++++++
+ drivers/char/da8xx_lcd/hd44780_hal.h |   75 ++++++
+ drivers/char/da8xx_lcd/lcd.h         |   31 ++
+ drivers/char/da8xx_lcd/lcd_drv.c     |  411 ++++++++++++++++++++++++++++++++
+ drivers/char/da8xx_lcd/lidd_cmd.h    |   48 +++
+ drivers/char/da8xx_lcd/lidd_hal.c    |  436 +++++++++++++++++++++++++++++++++++
+ drivers/char/da8xx_lcd/lidd_hal.h    |  162 +++++++++++++
+ mvl_patches/pro50-2092.c             |   16 +
+ 11 files changed, 1407 insertions(+)
+
+Index: linux-2.6.18/drivers/char/da8xx_lcd/hd44780_hal.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/da8xx_lcd/hd44780_hal.c
+@@ -0,0 +1,209 @@
++/*
++ * Copyright (C) 2008 MontaVista Software Inc.
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++/*
++ * A single HD47780 can be set in the following modes.
++ *
++ *  8 x 1, 16 x 1, 16 x 2, 16 x 4, 20 x 1, 20 x 2, 20 X 4, 24 x 1, 24 x 2
++ *
++ * Different display set up affects the way we deal with the data location
++ * in the intenal data buffer (i.e. address in the data buffer).
++ *
++ */
++
++#include <linux/slab.h>
++#include <linux/delay.h>
++#include <linux/io.h>
++#include "hd44780_hal.h"
++#include "lidd_cmd.h"
++
++struct hd47780 {
++	unsigned int cntl_reg;
++	unsigned int data_reg;
++	unsigned char disp_row;
++	unsigned char disp_col;
++	unsigned char disp_cntl;
++	unsigned char entry_mode;
++};
++
++static int hd47780_p_set_to_xy(struct hd47780 *p, int x, int y);
++
++static inline void lidd_udelay(unsigned int delay, unsigned int addr)
++{
++	unsigned int i, val;
++	for (i = 0; i < delay; i++) {
++		val = readl(addr);
++		if (!(val & HD47780_BUSY))
++			break;
++		udelay(1);
++	}
++}
++
++int hd47780_p_set_to_xy(struct hd47780 *p, int x, int y)
++{
++	unsigned int cursor_offset = x + (y % 2) * HD47780_ROW_SIZE;
++	if (p->disp_row == 1)
++		cursor_offset += (x % 8) * (HD47780_ROW_SIZE - 8);
++						/* reqd for 1x16 */
++	if ((y % 4) >= 2)
++		cursor_offset += p->disp_col;
++
++	/* load this offset into the lcd. */
++	writel(cursor_offset | 0x80, p->cntl_reg);
++	lidd_udelay(50, p->cntl_reg);
++
++	return 0;
++}
++
++struct hd47780 *hd47780_init(unsigned int cntl_reg,
++			     unsigned int data_reg,
++			     unsigned char disp_row, unsigned char disp_col)
++{
++	struct hd47780 *p_hd = NULL;
++	char func_set = 0x20;
++
++	p_hd = kzalloc(sizeof(struct hd47780), GFP_KERNEL);
++	if (!p_hd)
++		return NULL;
++	p_hd->cntl_reg = cntl_reg;
++	p_hd->data_reg = data_reg;
++	p_hd->disp_row = disp_row;
++	p_hd->disp_col = disp_col;
++
++	if (!(p_hd->disp_row % 2))
++		func_set |= 0x08;
++
++	lidd_udelay(200, p_hd->cntl_reg);
++
++	if (readl(p_hd->cntl_reg) & HD47780_BUSY) {
++		kfree(p_hd);
++		return 0;
++	}
++
++	writel(func_set | 0x10, p_hd->cntl_reg);
++	lidd_udelay(50, p_hd->cntl_reg);
++
++	return p_hd;
++}
++
++int hd47780_cleanup(struct hd47780 *p_obj)
++{
++	kfree(p_obj);
++	return 0;
++}
++
++int hd47780_ioctl(struct hd47780 *p_obj, unsigned int cmd, unsigned int val)
++{
++	switch (cmd) {
++	case LIDD_CLEAR_SCREEN:
++		writel(HD47780_CLR_SCR, p_obj->cntl_reg);
++		lidd_udelay(2000, p_obj->cntl_reg);
++		break;
++
++	case LIDD_CURSOR_HOME:
++		writel(HD47780_DRAM_0, p_obj->cntl_reg);
++		lidd_udelay(2000, p_obj->cntl_reg);
++		break;
++
++	case LIDD_GOTO_XY:
++		hd47780_p_set_to_xy(p_obj, (val & 0xff00) >> 8, (val & 0xff));
++		break;
++
++	case LIDD_DISPLAY:
++		if (val)
++			p_obj->disp_cntl |= HD47780_DISP_ON;
++		else
++			p_obj->disp_cntl &= ~HD47780_DISP_ON;
++		writel(p_obj->disp_cntl | HD47780_SET_DCB, p_obj->cntl_reg);
++		lidd_udelay(50, p_obj->cntl_reg);
++		break;
++
++	case LIDD_BLINK:	/* Blink ON/OFF */
++		if (val)
++			p_obj->disp_cntl |= HD47780_BLINK_ON;
++		else
++			p_obj->disp_cntl &= ~HD47780_BLINK_ON;
++		writel(p_obj->disp_cntl | HD47780_SET_DCB, p_obj->cntl_reg);
++		lidd_udelay(50, p_obj->cntl_reg);
++		break;
++
++	case LIDD_CURSOR_STATE:	/* Cursor State ON/OFF */
++		if (val)
++			p_obj->disp_cntl |= HD47780_CURSOR_ON;
++		else
++			p_obj->disp_cntl &= ~HD47780_CURSOR_ON;
++		writel(p_obj->disp_cntl | HD47780_SET_DCB, p_obj->cntl_reg);
++		lidd_udelay(50, p_obj->cntl_reg);
++		break;
++
++	case LIDD_DISPLAY_SHIFT:	/* controls whether display
++					   will be shifted when
++					   characters are read/written */
++		if (val)
++			p_obj->entry_mode |= HD47780_SHIFT_ON;
++		else
++			p_obj->entry_mode &= ~HD47780_SHIFT_ON;
++		writel(p_obj->entry_mode | HD47780_SET_IDS, p_obj->cntl_reg);
++		lidd_udelay(50, p_obj->cntl_reg);
++		break;
++
++	case LIDD_CURSOR_SHIFT:
++		if (val)
++			p_obj->entry_mode |= HD47780_CSR_INC;
++		else
++			p_obj->entry_mode &= ~HD47780_CSR_INC;
++		writel(p_obj->entry_mode | HD47780_SET_IDS, p_obj->cntl_reg);
++		lidd_udelay(50, p_obj->cntl_reg);
++		break;
++
++	case LIDD_CURSOR_MOVE:
++		if (val)
++			val = HD47780_RGHT_DIR;
++		writel(val | HD47780_SET_SCRL, p_obj->cntl_reg);
++		lidd_udelay(50, p_obj->cntl_reg);
++		break;
++
++	case LIDD_DISPLAY_MOVE:	/* moves the display LEFT/RIGHT */
++		if (val)
++			val = HD47780_RGHT_DIR;
++		writel(val | HD47780_DISP_MOV, p_obj->cntl_reg);
++		lidd_udelay(50, p_obj->cntl_reg);
++		break;
++
++	case LIDD_WR_CHAR:
++		writeb((char)val, p_obj->data_reg);
++		lidd_udelay(50, p_obj->cntl_reg);
++		break;
++
++	case LIDD_RD_CHAR:
++		*((unsigned char *)val) = readb(p_obj->data_reg);
++		lidd_udelay(50, p_obj->cntl_reg);
++		break;
++
++	case LIDD_RD_CMD:
++		*((unsigned int *)val) = readl(p_obj->cntl_reg);
++		break;
++
++	default:
++		break;
++
++	}
++
++	return 0;
++}
+Index: linux-2.6.18/drivers/char/da8xx_lcd/hd44780_hal.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/da8xx_lcd/hd44780_hal.h
+@@ -0,0 +1,75 @@
++/*
++ * Copyright (C) 2008 MontaVista Software Inc.
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#define _HD47780_HAL_H_
++
++#define HD47780_CLR_SCR    0x1  /* Clears entire display */
++#define HD47780_DRAM_0     0x2  /* Sets DRAM address 0 in address counter */
++
++#define HD47780_SET_IDS    0x4  /* Cursor move direction, display Shift setup */
++#define HD47780_SHIFT_ON   0x1  /* Sets display shift */
++#define HD47780_CSR_INC    0x2  /* Sets cursor move direction to Increment */
++
++#define HD47780_SET_DCB    0x8  /* ON/OFF setup for display, cursor and blink*/
++#define HD47780_BLINK_ON   0x1  /* Sets blink ON */
++#define HD47780_CURSOR_ON  0x2  /* Sets cursor ON */
++#define HD47780_DISP_ON    0x4  /* Sets display ON */
++
++#define HD47780_SET_SCRL  0x10  /* Cursor move and display move setup */
++#define HD47780_DISP_MOV  0x18  /* Selects display move mode */
++#define HD47780_RGHT_DIR   0x4  /* Selects disp. shift/cursor move to right */
++
++#define HD47780_BUSY      0x80  /* Busy flag - internal operation in progress */
++
++#define HD47780_ROW_SIZE  0x40  /* Bytes per row in DDRAM */
++/**********************************************************************
++ * Returns: NULL in case of error, otherwise a handle to be used in sub-
++ * sequent calls.
++ *********************************************************************/
++struct hd47780 *hd47780_init(unsigned int cntl_reg,
++			     unsigned int data_reg,
++			     unsigned char row,
++			     unsigned char col);
++
++/**********************************************************************
++ * Returns: -1 for error otherwise 0 for success.
++ *********************************************************************/
++int hd47780_cleanup(struct hd47780 *p);
++
++/**********************************************************************
++ * Returns: -1 for error, other 0 for success.
++ *
++ *     cmd                                  val
++ *
++ *     LIDD_CLEAR_SCREEN                 none
++ *     LIDD_CURSOR_HOME                  none
++ *     LIDD_DISPLAY                      0 - off, 1 - on
++ *     LIDD_GOTO_XY                      [row - 2 bytes][col - 2 bytes]
++ *     LIDD_BLINK                        0 - off, 1 - on
++ *     LIDD_CURSOR_STATE                 0 - not visible, 1 - visible.
++ *     LIDD_SHIFT                        1 - Right shift, 0 - left shift.
++ *     LIDD_CURSOR_SHIFT                 1 - Right, 0 - left
++ *     LIDD_WR_CHAR                      character.
++ *     LIDD_RD_CHAR                      place holder for character.
++ *     LIDD_CURSOR_MOVE                  1 - Right, 0 - Left
++ *     LIDD_DISPLAY_MOVE                 1 - Right, 0 - Left.
++ *     LIDD_LINE_WRAP                    0 - off, 1 - on.
++ *
++ *********************************************************************/
++int hd47780_ioctl(struct hd47780 *p, unsigned int cmd, unsigned int val);
+Index: linux-2.6.18/drivers/char/da8xx_lcd/lcd_drv.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/da8xx_lcd/lcd_drv.c
+@@ -0,0 +1,411 @@
++/*
++ * Copyright (C) 2008 MontaVista Software Inc.
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++/*******************************************************************************
++ * FILE PURPOSE:    LCD Module Driver Source
++ *******************************************************************************
++ * FILE DESCRIPTION:     Source code for Linux LCD Driver
++ *
++ * REVISION HISTORY:
++ *
++ * Date           Description                               Author
++ *-----------------------------------------------------------------------------
++ * 27 Aug 2003    Initial Creation                          Sharath Kumar
++ *
++ * 16 Dec 2003    Updates for 5.7                           Sharath Kumar
++ *
++ * (C) Copyright 2003, Texas Instruments, Inc
++ ******************************************************************************/
++#include <linux/config.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/types.h>
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/slab.h>
++#include <linux/ioport.h>
++#include <linux/fcntl.h>
++#include <linux/interrupt.h>
++#include <linux/sched.h>
++#include <linux/proc_fs.h>
++#include <linux/mm.h>
++#include <linux/version.h>
++#include <linux/io.h>
++#include <linux/uaccess.h>
++#include <asm/system.h>
++#include <linux/delay.h>
++#include <linux/wait.h>
++#include <linux/platform_device.h>
++#include <linux/clk.h>
++#include "lcd.h"
++
++#include <linux/moduleparam.h>
++#include <linux/cdev.h>
++#include <linux/device.h>
++#include <linux/miscdevice.h>
++#include <asm/arch/da8xx_lcdc.h>
++#include "lidd_hal.h"
++
++#define    LCD_VERSION                 "0.2"
++#define    MAX_LCD_SIZE                 ((MAX_ROWS)*(MAX_COLS))
++
++/* LCD seek origin positions*/
++#define  SEEK_CUR    1
++#define  SEEK_END    2
++#define  SEEK_SET    0
++
++#define DA8XX_LCD_NAME "lcd_da8xx"
++
++struct lcd_dev {
++	void *hal_handle;
++	char devname[10];
++	struct semaphore sem;
++	int rows;
++	int columns;
++	struct resource *lcd_res;
++	struct clk *clk;
++};
++
++static struct lcd_dev *lcd_dev;
++static int rows = DEFAULT_ROWS;
++static int columns = DEFAULT_COLS;
++
++static ssize_t tilcd_read(struct file *file, char *buf,
++			  size_t count, loff_t *ppos)
++{
++	struct lcd_dev *lcd_dev = file->private_data;
++	int ret = -1, max = lcd_dev->columns * lcd_dev->rows;
++	char temp_buf[MAX_LCD_SIZE];
++	int x_pos, y_pos;
++
++	if (*ppos >= max)
++		return 0;
++
++	memset(temp_buf, 0, max);
++
++	/* Limit the count to max LCD size if it is greater than that */
++	count = (count > max) ? max : count;
++
++	if (down_interruptible(&lcd_dev->sem))
++		return -ERESTARTSYS;
++
++	/* syncing file offset and cursor position */
++	x_pos = ((long)*ppos) / lcd_dev->columns;
++	y_pos = ((long)*ppos) % lcd_dev->columns;
++	ti_lidd_hal_ioctl(lcd_dev->hal_handle, LIDD_GOTO_XY, (y_pos << 8) |
++			  x_pos);
++
++	ret = ti_lidd_hal_read(lcd_dev->hal_handle, temp_buf, count);
++
++	if (ret > 0) {
++		if (copy_to_user(buf, temp_buf, ret))
++			ret = -EFAULT;
++	}
++
++	if (ret >= 0) {
++		*ppos += ret;
++
++		/* syncing file offset and cursor position */
++		x_pos = ((long)*ppos) / lcd_dev->columns;
++		y_pos = ((long)*ppos) % lcd_dev->columns;
++		ti_lidd_hal_ioctl(lcd_dev->hal_handle, LIDD_GOTO_XY,
++				  (y_pos << 8) | x_pos);
++	}
++
++	up(&lcd_dev->sem);
++	return ret;
++}
++
++static ssize_t tilcd_write(struct file *file, const char *buf,
++			   size_t count, loff_t *ppos)
++{
++	struct lcd_dev *lcd_dev = file->private_data;
++	int ret = -1, max = lcd_dev->columns * lcd_dev->rows;
++	char temp_buf[MAX_LCD_SIZE];
++	int x_pos, y_pos;
++
++	if (down_interruptible(&lcd_dev->sem))
++		return -ERESTARTSYS;
++
++	/* Limit the count to max LCD size if it is greater than that */
++	count = (count > max) ? max : count;
++
++	/* syncing file offset and cursor position */
++	x_pos = ((long)*ppos) / lcd_dev->columns;
++	y_pos = ((long)*ppos) % lcd_dev->columns;
++	ti_lidd_hal_ioctl(lcd_dev->hal_handle, LIDD_GOTO_XY, (y_pos << 8) |
++			  x_pos);
++
++	if (copy_from_user(temp_buf, buf, count))
++		ret = -EFAULT;
++	else
++		ret = ti_lidd_hal_write(lcd_dev->hal_handle, temp_buf, count);
++
++	if (ret >= 0) {
++		*ppos += ret;
++
++		/* syncing file offset and cursor position */
++		x_pos = (((long)*ppos) / lcd_dev->columns);
++		y_pos = ((long)*ppos) % lcd_dev->columns;
++		ti_lidd_hal_ioctl(lcd_dev->hal_handle, LIDD_GOTO_XY,
++				  (y_pos << 8) | x_pos);
++	}
++
++	up(&lcd_dev->sem);
++	return ret;
++}
++
++static int tilcd_ioctl(struct inode *inode, struct file *file,
++		       unsigned int cmd, unsigned long arg)
++{
++	struct lcd_dev *lcd_dev = file->private_data;
++	int ret = 0;
++	struct lcd_pos_arg lcd_pos;
++	unsigned long hal_arg = arg;
++	unsigned int read_val;
++
++	if (down_interruptible(&lcd_dev->sem))
++		return -ERESTARTSYS;
++
++	if (cmd == LIDD_GOTO_XY) {
++		if (copy_from_user
++		    (&lcd_pos, (char *)arg, sizeof(struct lcd_pos_arg)))
++			ret = -EFAULT;
++		/* syncing file offset and cursor position */
++		file->f_pos = lcd_pos.row * lcd_dev->columns + lcd_pos.column;
++		hal_arg = lcd_pos.row | (lcd_pos.column << 8);
++	}
++
++	/* The commands below require something to be written to user buffer */
++	if (cmd == LIDD_RD_CMD || cmd == LIDD_RD_CHAR)
++		hal_arg = (unsigned long)&read_val;
++
++	ret = ti_lidd_hal_ioctl(lcd_dev->hal_handle, cmd, hal_arg);
++
++	switch (cmd) {
++	case LIDD_RD_CMD:
++	case LIDD_RD_CHAR:
++		if (copy_to_user((char *)arg, &read_val, sizeof(int)))
++			ret = -EFAULT;
++		break;
++
++	default:
++		break;
++	}
++
++	up(&lcd_dev->sem);
++	return ret;
++}
++
++static int tilcd_open(struct inode *inode, struct file *file)
++{
++	/* Set the private data. cannot be done in init through cdev */
++	file->private_data = lcd_dev;
++
++	ti_lidd_hal_open(lcd_dev->hal_handle);
++
++	return 0;
++}
++
++static int tilcd_release(struct inode *inode, struct file *file)
++{
++	ti_lidd_hal_close(lcd_dev->hal_handle);
++	return 0;
++}
++
++static loff_t tilcd_lseek(struct file *file, loff_t offset, int orig)
++{
++
++	struct lcd_dev *lcd_dev = file->private_data;
++	int max = lcd_dev->columns * lcd_dev->rows;
++	int x_pos, y_pos;
++
++	if (down_interruptible(&lcd_dev->sem))
++		return -ERESTARTSYS;
++
++	switch (orig) {
++	case SEEK_END:
++		offset += max;
++		break;
++
++	case SEEK_CUR:
++		offset += file->f_pos;
++	case SEEK_SET:
++		break;
++
++	default:
++		up(&lcd_dev->sem);
++		return -EINVAL;
++	}
++
++	offset = (long)offset % (long)max;
++
++	file->f_pos = offset;
++
++	x_pos = (((long)offset) / lcd_dev->columns);
++	y_pos = ((long)offset) % lcd_dev->columns;
++	ti_lidd_hal_ioctl(lcd_dev->hal_handle, LIDD_GOTO_XY, (y_pos << 8) |
++			  x_pos);
++
++	up(&lcd_dev->sem);
++	return file->f_pos;
++}
++
++struct file_operations tilcd_fops = {
++	.owner = THIS_MODULE,
++	.read = tilcd_read,
++	.write = tilcd_write,
++	.ioctl = tilcd_ioctl,
++	.open = tilcd_open,
++	.release = tilcd_release,
++	.llseek = tilcd_lseek
++};
++
++static struct miscdevice da8xx_lcd_miscdev = {
++	.minor = 0,
++	.name = DA8XX_LCD_NAME,
++	.fops = &tilcd_fops,
++};
++
++static int __devinit da8xx_lcd_probe(struct platform_device *device)
++{
++	struct ti_lidd_info lcd_info;
++	struct resource *lcdc_regs;
++	struct da8xx_lcdc_platform_data *lcd_pdata = device->dev.platform_data;
++	int ret = 0;
++
++	if (lcd_pdata == NULL) {
++		dev_err(&device->dev, "Can not get platform data\n");
++		return -ENOENT;
++	}
++
++	lcd_dev = kzalloc(sizeof(struct lcd_dev), GFP_KERNEL);
++	if (!lcd_dev) {
++		dev_err(&device->dev, "Can't allocate memory for device\n");
++		return -ENOMEM;
++	}
++
++	lcdc_regs = platform_get_resource(device, IORESOURCE_MEM, 0);
++	if (!lcdc_regs) {
++		dev_err(&device->dev,
++			"Can not get memory resource for LCD controller\n");
++		ret = -ENOENT;
++		goto err_get_resource;
++	}
++
++	lcd_dev->lcd_res = request_mem_region(lcdc_regs->start,
++					      lcdc_regs->end -
++					      lcdc_regs->start + 1,
++					      device->name);
++	if (lcd_dev->lcd_res == NULL) {
++		dev_err(&device->dev, "Request memory for registers failed\n");
++		ret = -ENOENT;
++		goto err_get_resource;
++	}
++
++	lcd_info.base_addr = IO_ADDRESS(lcdc_regs->start);
++	lcd_dev->clk = clk_get(&device->dev, lcd_pdata->lcdc_clk_name);
++	if (IS_ERR(lcd_dev->clk)) {
++		printk(KERN_ERR "Can not get LCD clock\n");
++		ret = -ENOENT;
++		goto err_clk_get;
++	}
++	clk_enable(lcd_dev->clk);
++	lcd_dev->rows = lcd_info.disp_row = rows;
++	lcd_dev->columns = lcd_info.disp_col = columns;
++	lcd_info.line_wrap = 1;
++	lcd_info.cursor_blink = 1;
++	lcd_info.cursor_show = 1;
++	lcd_info.lcd_type = 4;	/* HITACHI */
++	lcd_info.num_lcd = 1;
++
++	lcd_dev->hal_handle = ti_lidd_hal_init(&lcd_info);
++	if (!lcd_dev->hal_handle) {
++		printk(KERN_ERR "LCD: hal not initialized\n");
++		ret = -EIO;
++		goto err_hal_init;
++	}
++
++	sprintf(lcd_dev->devname, DA8XX_LCD_NAME);
++
++	ret = misc_register(&da8xx_lcd_miscdev);
++	if (ret < 0) {
++		printk(KERN_ERR "LCD: misc_register failed\n");
++		ret = -EIO;
++		goto err_misc_register;
++	}
++
++	sema_init(&lcd_dev->sem, 1);
++
++	platform_set_drvdata(device, lcd_dev);
++
++	return 0;
++
++err_misc_register:
++	ti_lidd_hal_cleanup(lcd_dev->hal_handle);
++err_hal_init:
++	clk_disable(lcd_dev->clk);
++	clk_put(lcd_dev->clk);
++err_clk_get:
++	release_resource(lcd_dev->lcd_res);
++err_get_resource:
++	kfree(lcd_dev);
++	return ret;
++}
++
++static int da8xx_lcd_remove(struct platform_device *dev)
++{
++	misc_deregister(&da8xx_lcd_miscdev);
++	ti_lidd_hal_cleanup(lcd_dev->hal_handle);
++	clk_disable(lcd_dev->clk);
++	clk_put(lcd_dev->clk);
++	release_resource(lcd_dev->lcd_res);
++	kfree(lcd_dev);
++	return 0;
++}
++
++static struct platform_driver da8xx_lcd_driver = {
++	.probe	= da8xx_lcd_probe,
++	.remove = da8xx_lcd_remove,
++	.driver = {
++		   .name = "da8xx_lcdc",
++		   .owner = THIS_MODULE,
++	},
++};
++
++static int __init da8xx_lcd_init(void)
++{
++	return platform_driver_register(&da8xx_lcd_driver);
++}
++
++static void __exit da8xx_lcd_cleanup(void)
++{
++	platform_driver_unregister(&da8xx_lcd_driver);
++}
++
++module_init(da8xx_lcd_init);
++module_exit(da8xx_lcd_cleanup);
++
++module_param(rows, int, 0);
++module_param(columns, int, 0);
++
++MODULE_DESCRIPTION("Driver for TI CHARACTER LCD");
++MODULE_AUTHOR("Maintainer: Sharath Kumar <krs@ti.com>");
++MODULE_LICENSE("GPL");
++MODULE_VERSION(LCD_VERSION);
+Index: linux-2.6.18/drivers/char/da8xx_lcd/lidd_hal.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/da8xx_lcd/lidd_hal.c
+@@ -0,0 +1,436 @@
++/*
++ * Copyright (C) 2008 MontaVista Software Inc.
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++/**************************************************************************
++ * FILE PURPOSE :   HAL code for LCD LIDD controller.
++ **************************************************************************
++ *
++ *  FILE DESCRIPTION  :
++ *  HAL code for LCD LIDD controller.
++ *
++ *************************************************************************/
++
++#include <linux/slab.h>
++#include "hd44780_hal.h"
++#include "lidd_hal.h"
++
++struct ti_lidd_regs {
++	unsigned int config;
++	unsigned int addr;
++	unsigned int data;
++};
++
++struct ti_lcd_cntl_regs {
++	unsigned int revision;
++	unsigned int cntl;
++	unsigned int status;
++	unsigned int lidd_cntl;
++	struct ti_lidd_regs cs[2];
++	unsigned int raster_cntl;
++	unsigned int raster_timing_0;
++	unsigned int raster_timing_1;
++	unsigned int raster_timing_2;
++	unsigned int subpanel_disp;
++	unsigned int reserved;
++	unsigned int dma_cntl;
++	unsigned int frame0_base_addr;
++	unsigned int frame0_ceiling;
++	unsigned int frame1_base_addr;
++	unsigned int frame1_ceiling;
++};
++
++struct lidd_hal_obj {
++	unsigned char num_lcd_inst;
++	void *lcd_inst[2];
++	struct ti_lcd_cntl_regs *regs;
++	unsigned int active_inst;
++	unsigned int disp_row;
++	unsigned int disp_col;
++	unsigned int line_wrap;
++	unsigned int cursor_state;
++	unsigned int cursor_shift;
++	unsigned int row;
++	unsigned int col;
++
++};
++
++static int ti_lidd_p_set_to_xy(struct lidd_hal_obj *, int, int);
++static int ti_lidd_p_update_properties(struct lidd_hal_obj *);
++static int ti_lidd_p_lwrap_cursor_move(struct lidd_hal_obj *,
++				       unsigned int direction);
++static int ti_lidd_p_wr_or_rd(struct lidd_hal_obj *, unsigned int cmd,
++			      unsigned int data);
++
++/*-----------------------------------------------------------------------------
++ * Updates the properties of the LCD.
++ *
++ * Returns 0 on success or -1 on failure.
++ *---------------------------------------------------------------------------*/
++int ti_lidd_p_update_properties(struct lidd_hal_obj *p)
++{
++	unsigned int passive_inst = !p->active_inst;
++
++	if (p->num_lcd_inst > 1)
++		hd47780_ioctl(p->lcd_inst[passive_inst],
++			      LIDD_CURSOR_STATE, p->cursor_state);
++
++	hd47780_ioctl(p->lcd_inst[p->active_inst], LIDD_CURSOR_STATE,
++		      p->cursor_state);
++
++	return 0;
++}
++
++/*---------------------------------------------------------
++ * Sets the cursor at the specified location.
++ * x is the column, y is the row.
++ *
++ * Returns 0 on success otherwise -1.
++ *-------------------------------------------------------*/
++int ti_lidd_p_set_to_xy(struct lidd_hal_obj *p, int x, int y)
++{
++	int update = 0;
++
++	if (p->line_wrap) {
++		/* wrap the row and col if required. */
++		p->col = x = x % p->disp_col;
++		p->row = y = y % p->disp_row;
++	}
++
++	/* Figure out if this causes a moving to lcd 0 to lcd 1. */
++	if ((p->num_lcd_inst == 2) && (y > p->disp_row / 2 - 1)) {
++		y = y % 2;
++
++		if (p->active_inst == 0)
++			update = 1;
++
++		p->active_inst = 1;
++	} else {
++		/* Figure out if this causes a moving to lcd 1 to lcd 0. */
++		if (p->active_inst == 1)
++			update = 1;
++
++		p->active_inst = 0;
++	}
++
++	if (update)
++		ti_lidd_p_update_properties(p);
++
++	hd47780_ioctl(p->lcd_inst[p->active_inst], LIDD_GOTO_XY, x << 8 | y);
++
++	return 0;
++}
++
++/*-----------------------------------------------------------------------------
++ * Wraps a line i.e. when the last of column of the row is reached, the cursor
++ * is moved to the next row, first col. When the last row and last col is
++ *  reached the cursor is moved to the first row.
++ *
++ * Returns: 0 if now wrap was done. 1, if a wrap was carried out.
++ *---------------------------------------------------------------------------*/
++int ti_lidd_p_lwrap_cursor_move(struct lidd_hal_obj *p, unsigned int direction)
++{
++	int ret_val = 0;
++
++	if (direction) {	/* move right. */
++		p->col = (++p->col) % (p->disp_col);
++		if (!p->col) {
++			/* line wrapped. */
++			p->row = (++p->row) % p->disp_row;
++
++			/* Indicate the lcd of the line wrapping. */
++			ti_lidd_p_set_to_xy(p, p->col, p->row);
++
++			ret_val = 1;
++		}
++	} else {		/* move left. */
++
++		if (!p->col) {
++			/* line wrapped. */
++			p->col = p->disp_col - 1;
++			p->row = (!p->row) ? p->disp_row - 1 : --p->row;
++
++			/* Indicate the lcd of the line wrapping. */
++			ti_lidd_p_set_to_xy(p, p->col, p->row);
++
++			ret_val = 1;
++		} else {
++			p->col--;
++		}
++	}
++	return ret_val;
++}
++
++/*-----------------------------------------------------------------------------
++ * Writes or reads a character to/from LCD.
++ *
++ * Returns 0 on success or -1 on failure.
++ *---------------------------------------------------------------------------*/
++int ti_lidd_p_wr_or_rd(struct lidd_hal_obj *p, unsigned int cmd,
++		       unsigned int data)
++{
++
++	/* Write the character on the active hd47780 instance. */
++	hd47780_ioctl(p->lcd_inst[p->active_inst], cmd, data);
++
++	/* Update the rows and columns for the next read or write,
++	   only if enabled for line wrap. */
++
++	if (p->line_wrap)
++		ti_lidd_p_lwrap_cursor_move(p, p->cursor_shift);
++
++	return 0;
++}
++
++struct lidd_hal_obj *ti_lidd_hal_init(struct ti_lidd_info *p_lidd_info)
++{
++	static int g_lcd_inst;
++	struct lidd_hal_obj *p = NULL;
++	struct ti_lcd_cntl_regs *p_regs = NULL;
++
++	int i;
++
++	/* Initialize the controller, if not done already. */
++
++	p = kzalloc(sizeof(struct lidd_hal_obj), GFP_KERNEL);
++	if (!p)
++		return NULL;
++
++	p->regs = (struct ti_lcd_cntl_regs *)p_lidd_info->base_addr;
++
++	if (g_lcd_inst == 2) {
++		kfree(p);
++		return NULL;
++	}
++	if (g_lcd_inst == 0) {
++		p_regs = p->regs;
++		p_regs->cntl &= ~1;	/* Sets it in the HD47780 mode. */
++		p_regs->cntl &= ~(LCD_CLK_DIVISOR_MASK);
++		p_regs->cntl |= LCD_CLK_DIVISOR(0x7f);	/* modify the code here
++					for instance where mclk is required. */
++		p_regs->cs[0].config |= LCD_RS_SETUP(LCD_LIDD_P0_RS_SETUP_CYC)
++		    | LCD_RS_WIDTH(LCD_LIDD_P0_RS_DUR_CYC)
++		    | LCD_RS_HOLD(LCD_LIDD_P0_RS_HOLD_CYC);
++		p_regs->cs[1].config |= LCD_RS_SETUP(LCD_LIDD_P1_RS_SETUP_CYC)
++		    | LCD_RS_WIDTH(LCD_LIDD_P1_RS_DUR_CYC)
++		    | LCD_RS_HOLD(LCD_LIDD_P1_RS_HOLD_CYC);
++		p_regs->cs[0].config |= LCD_WS_SETUP(LCD_LIDD_P0_WS_SETUP_CYC)
++		    | LCD_WS_WIDTH(LCD_LIDD_P0_WS_DUR_CYC)
++		    | LCD_WS_HOLD(LCD_LIDD_P0_WS_HOLD_CYC);
++		p_regs->cs[1].config |= LCD_WS_SETUP(LCD_LIDD_P1_WS_SETUP_CYC)
++		    | LCD_WS_WIDTH(LCD_LIDD_P1_WS_DUR_CYC)
++		    | LCD_WS_HOLD(LCD_LIDD_P1_WS_HOLD_CYC);
++	}
++
++	p->active_inst = 0;
++	p->num_lcd_inst = p_lidd_info->num_lcd;
++	p->disp_row = p_lidd_info->disp_row;
++	p->disp_col = p_lidd_info->disp_col;
++	p->cursor_state = p_lidd_info->cursor_show;
++	p->line_wrap = p_lidd_info->line_wrap;
++	p->row = 0;
++	p->col = 0;
++	p->cursor_shift = RIGHT;
++
++	if (p_lidd_info->lcd_type == 4) {
++		p_regs->lidd_cntl &= 0xfffffff8;
++		p_regs->lidd_cntl |= 0x4;
++
++		for (i = 0; i < p->num_lcd_inst; i++) {
++			p->lcd_inst[i] =
++				hd47780_init((unsigned int)(&p_regs->cs[i +
++							g_lcd_inst].addr),
++					     (unsigned int)(&p_regs->cs[i +
++							g_lcd_inst].data),
++					  (p->disp_row / p->num_lcd_inst),
++					  (p->disp_col / p->num_lcd_inst));
++
++			if (!p->lcd_inst[i])
++				goto hd47780_init_error;
++
++			hd47780_ioctl(p->lcd_inst[i], LIDD_CURSOR_SHIFT,
++				      p->cursor_shift);
++			hd47780_ioctl(p->lcd_inst[i], LIDD_DISPLAY, ON);
++			hd47780_ioctl(p->lcd_inst[i], LIDD_CURSOR_STATE,
++				      (p->cursor_state && i == 0) ? ON : OFF);
++			hd47780_ioctl(p->lcd_inst[i], LIDD_DISPLAY_MOVE, OFF);
++			hd47780_ioctl(p->lcd_inst[i], LIDD_BLINK,
++				      (p_lidd_info->cursor_blink
++				       && i == 0) ? ON : OFF);
++			hd47780_ioctl(p->lcd_inst[i], LIDD_CLEAR_SCREEN, 0);
++
++		}
++	}
++
++	g_lcd_inst += p->num_lcd_inst;
++
++	return p;
++
++hd47780_init_error:
++	while (i > 0) {
++		hd47780_cleanup(p->lcd_inst[--i]);
++		p->num_lcd_inst--;
++	}
++	kfree(p);
++	return NULL;
++}
++
++int ti_lidd_hal_ioctl(struct lidd_hal_obj *p, unsigned int cmd,
++		      unsigned int val)
++{
++	switch (cmd) {
++	case LIDD_CLEAR_SCREEN:
++		hd47780_ioctl(p->lcd_inst[0], cmd, val);
++		if (p->num_lcd_inst > 1)
++			hd47780_ioctl(p->lcd_inst[1], cmd, val);
++		p->row = 0;
++		p->col = 0;
++		break;
++
++	case LIDD_LINE_WRAP:
++		p->line_wrap = val ? 1 : 0;
++		if (p->line_wrap) {
++			p->active_inst = 0;
++			ti_lidd_p_update_properties(p);
++
++			/* disable display shift */
++			if (p->num_lcd_inst > 1)
++				hd47780_ioctl(p->lcd_inst[1],
++					      LIDD_DISPLAY_MOVE, val);
++			hd47780_ioctl(p->lcd_inst[0], LIDD_DISPLAY_MOVE, val);
++		}
++		break;
++
++	case LIDD_CURSOR_HOME:
++		if (p->num_lcd_inst > 1) {
++			hd47780_ioctl(p->lcd_inst[1], cmd, 0);
++			hd47780_ioctl(p->lcd_inst[1], LIDD_CURSOR_STATE, 0);
++		}
++		hd47780_ioctl(p->lcd_inst[0], cmd, 0);
++		p->row = 0;
++		p->col = 0;
++		break;
++
++	case LIDD_DISPLAY:
++		if (p->num_lcd_inst > 1)
++			hd47780_ioctl(p->lcd_inst[1], cmd, val);
++		hd47780_ioctl(p->lcd_inst[0], cmd, val);
++		break;
++
++	case LIDD_GOTO_XY:
++		ti_lidd_p_set_to_xy(p, (val & 0xff00) >> 8, val & 0xff);
++		break;
++
++	case LIDD_BLINK:
++		if (p->num_lcd_inst > 1)
++			hd47780_ioctl(p->lcd_inst[1], cmd, val);
++		hd47780_ioctl(p->lcd_inst[0], cmd, val);
++		break;
++
++	case LIDD_CURSOR_STATE:
++		hd47780_ioctl(p->lcd_inst[p->active_inst], cmd, val);
++		p->cursor_state = val ? 1 : 0;
++		break;
++
++	case LIDD_CURSOR_SHIFT:
++		if (p->num_lcd_inst > 1)
++			hd47780_ioctl(p->lcd_inst[1], cmd, val);
++		hd47780_ioctl(p->lcd_inst[0], cmd, val);
++		p->cursor_shift = (val) ? 1 : 0;
++		break;
++
++	case LIDD_CURSOR_MOVE:
++		{
++			if (!p->line_wrap
++			    && !ti_lidd_p_lwrap_cursor_move(p, val))
++				hd47780_ioctl(p->lcd_inst[p->active_inst],
++					      cmd, val);
++		}
++		break;
++
++	case LIDD_DISPLAY_SHIFT:
++		if (p->num_lcd_inst > 1)
++			hd47780_ioctl(p->lcd_inst[1], cmd, val);
++		hd47780_ioctl(p->lcd_inst[0], cmd, val);
++		p->line_wrap = 0;	/* p->row = 0; p->col = 0; */
++		break;
++
++	case LIDD_DISPLAY_MOVE:
++		hd47780_ioctl(p->lcd_inst[p->active_inst], cmd, val);
++		break;
++
++	case LIDD_WR_CHAR:
++	case LIDD_RD_CHAR:
++		ti_lidd_p_wr_or_rd(p, cmd, val);
++		break;
++
++	case LIDD_RD_CMD:
++		hd47780_ioctl(p->lcd_inst[p->active_inst], cmd, val);
++		break;
++
++	default:
++		break;
++
++	}
++
++	return 0;
++}
++
++int ti_lidd_hal_open(struct lidd_hal_obj *p)
++{
++	return 0;
++}
++
++int ti_lidd_hal_close(struct lidd_hal_obj *p)
++{
++	return 0;
++}
++
++int ti_lidd_hal_write(struct lidd_hal_obj *p, char *data, unsigned int len)
++{
++	int i = 0;
++	for (i = 0; i < len; i++) {
++		/* Ignore NULLs and NLs */
++		if (!data[i] || data[i] == 0xa)
++			continue;
++		if (ti_lidd_p_wr_or_rd(p, LIDD_WR_CHAR, data[i]))
++			break;
++	}
++	return i;
++}
++
++int ti_lidd_hal_read(struct lidd_hal_obj *p, char *data, unsigned int len)
++{
++	int i = 0;
++	for (i = 0; i < len; i++) {
++		if (ti_lidd_p_wr_or_rd
++		    (p, LIDD_RD_CHAR, (unsigned int)&(data[i])))
++			break;
++	}
++	return i;
++}
++
++int ti_lidd_hal_cleanup(struct lidd_hal_obj *p)
++{
++	while (p->num_lcd_inst--)
++		hd47780_cleanup(p->lcd_inst[p->num_lcd_inst]);
++
++	kfree(p);
++
++	return 0;
++}
+Index: linux-2.6.18/drivers/char/da8xx_lcd/lidd_hal.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/da8xx_lcd/lidd_hal.h
+@@ -0,0 +1,162 @@
++/*
++ * Copyright (C) 2008 MontaVista Software Inc.
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++/**************************************************************************
++ * FILE PURPOSE :   HAL header for LCD LIDD controller.
++ **************************************************************************
++ * FILE NAME    :   lidd_hal.h
++ *
++ * DESCRIPTION  :
++ *  HAL code for LCD LIDD controller.
++ *
++ *************************************************************************/
++#ifndef _LIDD_HAL_H_
++#define _LIDD_HAL_H_
++
++#include "lidd_cmd.h"
++
++/* LCD controller configuration */
++
++#define LCD_LIDD_P0_RS_SETUP_CYC     1
++#define LCD_LIDD_P0_RS_HOLD_CYC      1
++#define LCD_LIDD_P0_RS_DUR_CYC       4
++
++#define LCD_LIDD_P1_RS_SETUP_CYC     1
++#define LCD_LIDD_P1_RS_HOLD_CYC      1
++#define LCD_LIDD_P1_RS_DUR_CYC       4
++
++#define LCD_LIDD_P0_WS_SETUP_CYC     1
++#define LCD_LIDD_P0_WS_HOLD_CYC      1
++#define LCD_LIDD_P0_WS_DUR_CYC       4
++
++#define LCD_LIDD_P1_WS_SETUP_CYC     1
++#define LCD_LIDD_P1_WS_HOLD_CYC      1
++#define LCD_LIDD_P1_WS_DUR_CYC       4
++
++#define LCD_CLK_DIVISOR(x)          ((x) << 8)
++#define LCD_CLK_DIVISOR_MASK        LCD_CLK_DIVISOR(0xFF)
++#define LCD_MODE_SEL_MASK           0x01
++
++#define LCD_CS1_E1_POL_INV          0x80
++#define LCD_CS0_E0_POL_INV          0x40
++#define LCD_WE_RW_POL_INV           0x20
++#define LCD_OE_E_POL_INV            0x10
++#define LCD_ALE_POL_INV             0x08
++#define LCD_LIDD_MODE(x)            ((x) << 0)
++
++#define LCD_HITACHI_MODE            0x04
++#define LCD_MPU80_ASYNC_MODE        0x03
++#define LCD_MPU80_SYNC_MODE         0x02
++#define LCD_MPU68_ASYNC_MODE        0x01
++#define LCD_MPU68_SYNC_MODE         0x00
++
++#define LCD_LIDD_MODE_MASK          LCD_LIDD_MODE(0x07)
++
++#define LCD_WS_SETUP(x)             ((x) << 27)
++#define LCD_WS_WIDTH(x)             ((x) << 21)
++#define LCD_WS_HOLD(x)              ((x) << 17)
++#define LCD_RS_SETUP(x)             ((x) << 12)
++#define LCD_RS_WIDTH(x)             ((x) << 6)
++#define LCD_RS_HOLD(x)              ((x) << 2)
++#define LCD_LIDD_DELAY(x)           ((x) << 0)
++
++#define LCD_WS_SETUP_MASK           LCD_WS_SETUP(0x1F)
++#define LCD_WS_WIDTH_MASK           LCD_WS_WIDTH(0x3F)
++#define LCD_WS_HOLD_MASK            LCD_WS_HOLD(0x0F)
++#define LCD_RS_SETUP_MASK           LCD_RS_SETUP(0x1F)
++#define LCD_RS_WIDTH_MASK           LCD_RS_WIDTH(0x3F)
++#define LCD_RS_HOLD_MASK            LCD_RS_HOLD(0x0F)
++
++#define LCD_LIDD_DELAY_MASK         LCD_LIDD_DELAY(0x03)
++
++struct ti_lidd_info {
++	unsigned int base_addr;
++	unsigned int disp_row;	/* total number of row. */
++	unsigned int disp_col;	/* total number of col. */
++	unsigned int line_wrap;	/* whether to wrap the line. */
++	unsigned int cursor_blink;
++	unsigned int cursor_show;
++	unsigned int lcd_type;	/* 0 = Sync MPU68,
++				   1 = Async MPU68,
++				   2 = Sync MPU80,
++				   3 = Aync MPU80,
++				   4 = Hitachi (Async) */
++	unsigned int num_lcd;	/* num of hd44780 or equivalnet lcd.
++				   The valid values are 1 or 2. */
++};
++
++/**********************************************************************
++ * Returns: NULL in case of error, otherwise a handle to be used in sub-
++ * sequent calls.
++ *********************************************************************/
++struct lidd_hal_obj *ti_lidd_hal_init(struct ti_lidd_info *);
++
++/**********************************************************************
++ * Returns: -1 for error otherwise 0 for success.
++ *********************************************************************/
++int ti_lidd_hal_open(struct lidd_hal_obj *);
++int ti_lidd_hal_close(struct lidd_hal_obj *);
++int ti_lidd_hal_cleanup(struct lidd_hal_obj *);
++
++/***********************************************************************
++ * Returns: -1 for error, otherwise the number of bytes that were
++ *          actually written.
++ *
++ *          The write begins at the current address location.
++ *
++ * Note: Here, the character array is not assumed to be NULL terminted.
++ *
++ **********************************************************************/
++int ti_lidd_hal_write(struct lidd_hal_obj *, char *, unsigned int size);
++
++/***********************************************************************
++ * Returns: -1 for error, otherwise the number of bytes that were
++ *          read.
++ *
++ *          The read begins at the current address location.
++ *
++ * Note: Here, the character array is not assumed to be NULL terminted.
++ *
++ **********************************************************************/
++int ti_lidd_hal_read(struct lidd_hal_obj *, char *, unsigned int size);
++
++/**********************************************************************
++ * Returns: -1 for error, other 0 for success.
++ *
++ *     cmd                                  val
++ *
++ *     TI_LIDD_CLEAR_SCREEN                 none
++ *     TI_LIDD_CURSOR_HOME                  none
++ *     TI_LIDD_DISPLAY                      0 - off, 1 - on
++ *     TI_LIDD_GOTO_XY                      [row - 2 bytes][col - 2 bytes]
++ *     TI_LIDD_BLINK                        0 - off, 1 - on
++ *     TI_LIDD_CURSOR_STATE                 0 - not visible, 1 - visible.
++ *     TI_LIDD_SHIFT                        1 - Right shift, 0 - left shift.
++ *     TI_LIDD_CURSOR_SHIFT                 1 - Right, 0 - left
++ *     TI_LIDD_WR_CHAR                      character.
++ *     TI_LIDD_RD_CHAR                      place holder for character.
++ *     TI_LIDD_CURSOR_MOVE                  1 - Right, 0 - Left
++ *     TI_LIDD_DISPLAY_MOVE                 1 - Right, 0 - Left.
++ *     TI_LIDD_LINE_WRAP                    0 - off, 1 - on.
++ *
++ *********************************************************************/
++int ti_lidd_hal_ioctl(struct lidd_hal_obj *, unsigned int cmd,
++		      unsigned int val);
++
++#endif				/* _LIDD_HAL_H_ */
+Index: linux-2.6.18/drivers/char/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Kconfig
++++ linux-2.6.18/drivers/char/Kconfig
+@@ -1215,5 +1215,12 @@ config  DAVINCI_DM646X_TSIF
+ 	default n
+ 	depends on MACH_DAVINCI_DM6467_EVM
+ 
++config  DA8XX_LCD
++	tristate "DA8xx Character LCD Support"
++	default n
++	depends on MACH_DA8XX_EVM && !FB_DA8XX
++	help
++	  DA8xx Character LCD support.
++
+ endmenu
+ 
+Index: linux-2.6.18/drivers/char/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Makefile
++++ linux-2.6.18/drivers/char/Makefile
+@@ -126,6 +126,8 @@ obj-$(CONFIG_DAVINCI_PCI)	+= pcimodule.o
+ 
+ obj-$(CONFIG_DAVINCI_DM646X_TSIF)	+= tsif_control.o tsif_data.o
+ 
++obj-$(CONFIG_DA8XX_LCD) += da8xx_lcd/
++
+ # Files generated that shall be removed upon make clean
+ clean-files := consolemap_deftbl.c defkeymap.c qtronixmap.c
+ 
+Index: linux-2.6.18/drivers/char/da8xx_lcd/Makefile
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/da8xx_lcd/Makefile
+@@ -0,0 +1,10 @@
++#
++# Makefile for the Linux lcd driver.
++#
++
++obj-$(CONFIG_DA8XX_LCD) += da8xx_lcd.o
++
++da8xx_lcd-objs := lcd_drv.o  lidd_hal.o  hd44780_hal.o
++
++da8xx_lcd.o:      $(da8xx_lcd-objs)
++	$(LD) -r -o $@ $(da8xx_lcd-objs)
+Index: linux-2.6.18/drivers/char/da8xx_lcd/lcd.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/da8xx_lcd/lcd.h
+@@ -0,0 +1,31 @@
++/*
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#ifndef _LCD_H_
++#define _LCD_H_
++#define DEFAULT_ROWS 2		/*HANTRONIX HDM24216-2*/
++#define DEFAULT_COLS 24		/*HANTRONIX HDM24216-2*/
++#define MAX_ROWS 4
++#define MAX_COLS 48
++
++struct lcd_pos_arg {
++	u32 row;
++	u32 column;
++};
++
++#endif
+Index: linux-2.6.18/drivers/char/da8xx_lcd/lidd_cmd.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/da8xx_lcd/lidd_cmd.h
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++/**************************************************************************
++ *
++ *  FILE DESCRIPTION  :
++ *  IOCTL commands for LCD LIDD controller.
++ *
++ *************************************************************************/
++
++#ifndef _LIDD_CMD_H_
++#define _LIDD_CMD_H_
++
++#define LIDD_CLEAR_SCREEN   1
++#define LIDD_CURSOR_HOME    2
++#define LIDD_GOTO_XY        3
++#define LIDD_DISPLAY        4
++#define LIDD_BLINK          5
++#define LIDD_CURSOR_STATE   6
++#define LIDD_DISPLAY_SHIFT  7
++#define LIDD_CURSOR_SHIFT   8
++#define LIDD_CURSOR_MOVE    9
++#define LIDD_DISPLAY_MOVE   10
++#define LIDD_WR_CHAR        11
++#define LIDD_RD_CHAR        12
++#define LIDD_LINE_WRAP      13
++#define LIDD_RD_CMD         14
++
++#define RIGHT                1
++#define LEFT                 0
++#define ON                   1
++#define OFF                  0
++
++#endif				/* _LIDD_CMD_H_ */
+Index: linux-2.6.18/mvl_patches/pro50-2092.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2092.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2092);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

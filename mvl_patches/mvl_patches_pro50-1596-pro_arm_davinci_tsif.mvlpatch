@@ -1,0 +1,3886 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_tsif
+# Date: Fri Sep 19 14:02:14 2008
+# Source: Texas Instruments Inc.
+# MR: 28494
+# Type: Enhancement
+# Disposition: port from pro 4.0
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+#     TSIF support for pro 5.0
+# 
+#  drivers/char/Kconfig                |    5 
+#  drivers/char/Makefile               |    2 
+#  drivers/char/tsif_control.c         | 1515 ++++++++++++++++++++++++++++++++++++
+#  drivers/char/tsif_data.c            | 1105 ++++++++++++++++++++++++++
+#  include/asm-arm/arch-davinci/tsif.h |  979 +++++++++++++++++++++++
+#  5 files changed, 3606 insertions(+)
+# 
+
+PATCHNUM=1596
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Texas Instruments Inc.
+MR: 28494
+Type: Enhancement
+Disposition: port from pro 4.0
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+    TSIF support for pro 5.0
+
+ drivers/char/Kconfig                |    5 
+ drivers/char/Makefile               |    2 
+ drivers/char/tsif_control.c         | 1515 ++++++++++++++++++++++++++++++++++++
+ drivers/char/tsif_data.c            | 1105 ++++++++++++++++++++++++++
+ include/asm-arm/arch-davinci/tsif.h |  979 +++++++++++++++++++++++
+ mvl_patches/pro50-1596.c            |   16 
+ 6 files changed, 3622 insertions(+)
+
+Index: linux-2.6.18/drivers/char/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Kconfig
++++ linux-2.6.18/drivers/char/Kconfig
+@@ -1210,5 +1210,10 @@ config DAVINCI_PCI
+ 	help
+ 	  DaVinci PCI Module
+ 
++config  DAVINCI_DM646X_TSIF
++	tristate "DM646x Transport Stream Interface Support"
++	default n
++	depends on MACH_DAVINCI_DM6467_EVM
++
+ endmenu
+ 
+Index: linux-2.6.18/drivers/char/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Makefile
++++ linux-2.6.18/drivers/char/Makefile
+@@ -124,6 +124,8 @@ obj-$(CONFIG_DM6446_CIR)	+= cir_6446.o
+ 
+ obj-$(CONFIG_DAVINCI_PCI)	+= pcimodule.o
+ 
++obj-$(CONFIG_DAVINCI_DM646X_TSIF)	+= tsif_control.o tsif_data.o
++
+ # Files generated that shall be removed upon make clean
+ clean-files := consolemap_deftbl.c defkeymap.c qtronixmap.c
+ 
+Index: linux-2.6.18/drivers/char/tsif_control.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/tsif_control.c
+@@ -0,0 +1,1515 @@
++/*
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#include <linux/config.h>
++#include <linux/delay.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/fs.h>
++#include <linux/errno.h>
++#include <linux/types.h>
++#include <linux/cdev.h>
++#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++#include <linux/device.h>
++#include <linux/platform_device.h>
++#include <linux/miscdevice.h>
++#include <linux/semaphore.h>
++#include <linux/clk.h>
++#include <asm/arch/i2c-client.h>
++#include <asm/arch/mux.h>
++#include <asm/arch/tsif.h>
++#include <asm/arch/clock.h>
++
++#define DRIVER_NAME     "tsif_control"
++
++struct tsif_control_dev {
++	struct cdev c_dev;
++	dev_t devno;
++	unsigned int base;
++	unsigned long tx_offset;
++	unsigned long rx_offset;
++	struct clk *tsif_clk;
++};
++
++static u8 tsif_tx_enable;	/* Transmit Enable Flag */
++static u8 tsif_tx_ats_init;	/* tx_ats_init Flag */
++static u8 tsif_rx_enable;	/* Receive Enable Flag */
++static u32 tsif_int_status;	/* Interrupt Status */
++static unsigned int tsif_control_major;
++static DEFINE_SPINLOCK(tsif_control_dev_array_lock);
++static unsigned int tsif_control_minor_start;
++unsigned int tsif_control_minor_count = 3;
++static struct tsif_control_dev *tsif_control_dev_array[TSIF_MAJORS];
++
++static struct platform_device *tsif_control_device[2][3];
++
++struct tsif_irq_data tsif_isr_data;
++
++char *control_dev_name[] = { "rxcontrol",
++	"txcontrol",
++	"ats"
++};
++
++char *tsif_clk_name[] = { "TSIF0_CLK", "TSIF1_CLK" };
++
++static unsigned char tsif_output_clk_freq[5][5] = {
++	{8, 0x00, 0x40, 0x02, 0x08}, /* 13.5 MHz */
++	{8, 0x9F, 0xB0, 0x02, 0x89}, /* 16.875 MHz */
++	{4, 0x00, 0x40, 0x02, 0x08}, /* 27 MHz */
++	{4, 0xFF, 0x80, 0x02, 0x07}, /* 54 MHz */
++	{2, 0xBF, 0xA0, 0x03, 0x0A}, /* 81 MHz */
++};
++
++struct tsif_control_dev *tsif_control_dev_get_by_major(unsigned int index)
++{
++	struct tsif_control_dev *tsif_dev;
++
++	spin_lock(&tsif_control_dev_array_lock);
++	tsif_dev = tsif_control_dev_array[index];
++	spin_unlock(&tsif_control_dev_array_lock);
++	return tsif_dev;
++}
++EXPORT_SYMBOL(tsif_control_dev_get_by_major);
++
++int tsif_stop_rx(struct inode *inode)
++{
++	unsigned int index, minor = iminor(inode);
++	struct tsif_control_dev *tsif_dev;
++	unsigned int ctrl0;
++
++	index = minor / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++	ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++	ctrl0 &= ~(TSIF_CTRL0_RCV_DMA_CTL | TSIF_CTRL0_RCV_CTL);
++	davinci_writel(ctrl0, tsif_dev->base + CTRL0);
++	tsif_rx_enable = 0;
++
++	return 0;
++}
++EXPORT_SYMBOL(tsif_stop_rx);
++
++int tsif_set_pat_config(struct inode *inode, unsigned long arg)
++{
++	char *pat_cfg_buff_ptr;
++	u32 inten;
++	struct tsif_control_dev *tsif_dev;
++	unsigned int index, minor = iminor(inode);
++
++	index = minor / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++
++	davinci_writel(TSIF_PAT_SENSE_CFG_RESETVAL,
++		       tsif_dev->base + PAT_SENSE_CFG);
++
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten &= ~TSIF_INTEN_PAT_DETECT_INTEN;
++	davinci_writel(inten, tsif_dev->base + INTEN);
++
++	pat_cfg_buff_ptr = (char *)virt_to_phys(kmalloc(192, GFP_KERNEL));
++
++	if (pat_cfg_buff_ptr == NULL)
++		return -1;
++
++	davinci_writel((u32) pat_cfg_buff_ptr, tsif_dev->base + PAT_STORE_ADD);
++
++	/* Clear PAT_detect */
++	davinci_writel(TSIF_INTEN_CLR_PAT_DETECT_INTEN_CLR,
++		       tsif_dev->base + INT_STATUS_CLR);
++
++	davinci_writel(TSIF_PAT_SENSE_CFG_PAT_SENSE_EN,
++		       tsif_dev->base + PAT_SENSE_CFG);
++
++	/* PAT_detect_inten<-1 */
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten |= TSIF_INTEN_SET_PAT_DETECT_INTEN_SET;
++	davinci_writel(inten, tsif_dev->base + INTEN);
++
++	/* PAT_detect_inten_set<-1 */
++	inten = davinci_readl(tsif_dev->base + INTEN_SET);
++	inten |= TSIF_INTEN_SET_PAT_DETECT_INTEN_SET;
++	davinci_writel(inten, tsif_dev->base + INTEN_SET);
++
++	init_completion(&tsif_isr_data.pat_complete);
++	tsif_isr_data.pat_complete.done = 0;
++
++	return 0;
++}
++
++int tsif_set_pmt_config(struct inode *inode, unsigned long arg)
++{
++	struct tsif_pmt_config pmt_cfg;
++	char *pmt_cfg_buff_ptr;
++	u32 inten;
++	struct tsif_control_dev *tsif_dev;
++	unsigned int index, minor = iminor(inode);
++
++	index = minor / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++
++	/* copy the parameters to the configuration */
++	if (copy_from_user(&pmt_cfg,
++			   (struct tsif_pmt_config *)arg,
++			   sizeof(struct tsif_pmt_config)))
++		return -EFAULT;
++
++	davinci_writel(TSIF_PMT_SENSE_CFG_RESETVAL,
++		       tsif_dev->base + PMT_SENSE_CFG);
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten &= ~TSIF_INTEN_PMT_DETECT_INTEN;
++	davinci_writel(inten, tsif_dev->base + INTEN);
++
++	pmt_cfg_buff_ptr = (char *)virt_to_phys(kmalloc(4096, GFP_KERNEL));
++
++	if (pmt_cfg_buff_ptr == NULL)
++		return -1;
++
++	davinci_writel((u32) pmt_cfg_buff_ptr, tsif_dev->base + PMT_STORE_ADD);
++	davinci_writel((TSIF_PMT_SENSE_CFG_PMT_SENSE_EN | (u32) pmt_cfg.
++			pmt_pid), tsif_dev->base + PMT_SENSE_CFG);
++	/* Clear PMT_detect */
++	davinci_writel(TSIF_INTEN_CLR_PMT_DETECT_INTEN_CLR,
++		       tsif_dev->base + INT_STATUS_CLR);
++
++	/* PMT_detect_inten<-1 */
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten |= TSIF_INTEN_SET_PMT_DETECT_INTEN_SET;
++	davinci_writel(inten, tsif_dev->base + INTEN);
++
++	/* PAT_detect_inten_set<-1 */
++	inten = davinci_readl(tsif_dev->base + INTEN_SET);
++	inten |= TSIF_INTEN_SET_PMT_DETECT_INTEN_SET;
++	davinci_writel(inten, tsif_dev->base + INTEN_SET);
++
++	init_completion(&tsif_isr_data.pmt_complete);
++	tsif_isr_data.pmt_complete.done = 0;
++
++	return 0;
++}
++
++int tsif_set_pcr_config(struct inode *inode, unsigned long arg)
++{
++	struct tsif_pcr_config pcr_cfg;
++	struct tsif_control_dev *tsif_dev;
++	unsigned int index, minor = iminor(inode);
++
++	index = minor / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++
++	/* copy the parameters to the configuration */
++	if (copy_from_user(&pcr_cfg,
++			   (struct tsif_pcr_config *)arg,
++			   sizeof(struct tsif_pcr_config)))
++		return -EFAULT;
++
++	davinci_writel(TSIF_PCR_SENSE_CFG_RESETVAL,
++		       tsif_dev->base + PCR_SENSE_CFG);
++
++	davinci_writel((TSIF_PCR_SENSE_CFG_PCR_SENSE_EN | (u32) pcr_cfg.
++			pcr_pid), tsif_dev->base + PCR_SENSE_CFG);
++
++	return 0;
++}
++
++int tsif_set_spec_pkt_config(struct inode *inode, unsigned long arg)
++{
++	struct tsif_spcpkt_config spcpkt_cfg;
++	char *spcpkt_cfg_buff_ptr = NULL;
++	u32 inten, tsif_ctrl1;
++	struct tsif_control_dev *tsif_dev;
++	unsigned int index, minor = iminor(inode);
++
++	index = minor / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++
++	/* copy the parameters to the configuration */
++	if (copy_from_user(&spcpkt_cfg,
++			   (struct tsif_spcpkt_config *)arg,
++			   sizeof(struct tsif_spcpkt_config)))
++		return -EFAULT;
++
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten &= ~TSIF_INTEN_SET_BOUNDARY_SPECIFIC_INTEN_SET;
++	davinci_writel(inten, tsif_dev->base + INTEN);
++
++	spcpkt_cfg_buff_ptr = (char *)virt_to_phys(kmalloc(4096, GFP_KERNEL));
++
++	if (spcpkt_cfg_buff_ptr == NULL)
++		return -1;
++
++	if (&spcpkt_cfg != NULL) {
++		if (spcpkt_cfg.pid < 0x2000) {
++			davinci_writel((u32) spcpkt_cfg.pid,
++				       tsif_dev->base + BSP_PID);
++			tsif_ctrl1 = davinci_readl(tsif_dev->base + CTRL1);
++			tsif_ctrl1 |= TSIF_CTRL1_STREAM_BNDRY_CTL;
++			davinci_writel(tsif_ctrl1, tsif_dev->base + CTRL1);
++		} else {
++			tsif_ctrl1 = davinci_readl(tsif_dev->base + CTRL1);
++			tsif_ctrl1 &= ~TSIF_CTRL1_STREAM_BNDRY_CTL;
++		}
++		davinci_writel((u32) spcpkt_cfg_buff_ptr,
++			       tsif_dev->base + BSP_STORE_ADD);
++	} else {
++		tsif_ctrl1 = davinci_readl(tsif_dev->base + CTRL1);
++		tsif_ctrl1 &= ~TSIF_CTRL1_STREAM_BNDRY_CTL;
++		davinci_writel(tsif_ctrl1, tsif_dev->base + CTRL1);
++		davinci_writel(TSIF_BSP_STORE_ADDR_RESETVAL,
++			       tsif_dev->base + BSP_STORE_ADD);
++	}
++
++	/* Clear boundary_specific */
++	davinci_writel(TSIF_INTEN_CLR_BOUNDARY_SPECIFIC_INTEN_CLR,
++		       tsif_dev->base + INT_STATUS_CLR);
++	/* boundary_specific_inten<-1 */
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten |= TSIF_INTEN_SET_BOUNDARY_SPECIFIC_INTEN_SET;
++	davinci_writel(inten, tsif_dev->base + INTEN);
++
++	/* boundary_specific_inten_set<-1 */
++	inten = davinci_readl(tsif_dev->base + INTEN_SET);
++	inten |= TSIF_INTEN_SET_BOUNDARY_SPECIFIC_INTEN_SET;
++	davinci_writel(inten, tsif_dev->base + INTEN_SET);
++
++	init_completion(&tsif_isr_data.spcpkt_complete);
++	tsif_isr_data.spcpkt_complete.done = 0;
++
++	return 0;
++}
++
++int tsif_control_open(struct inode *inode, struct file *file)
++{
++	unsigned int index, minor = iminor(inode);
++	struct tsif_control_dev *tsif_dev;
++
++	index = minor / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++
++	tsif_dev->tsif_clk = clk_get(NULL, *(tsif_clk_name + index));
++	if (IS_ERR(tsif_dev->tsif_clk)) {
++		printk(KERN_ERR "Cannot get TSIF clock\n");
++		return -1;
++	}
++	clk_enable(tsif_dev->tsif_clk);
++
++	tsif_int_status = 0;
++
++	davinci_writel(0x00000001, tsif_dev->base + EMULATION_CTRL);
++
++	/* Enable the interrupt to arm */
++	davinci_writel((davinci_readl(tsif_dev->base + CTRL1) | 0x8000),
++		       tsif_dev->base + CTRL1);
++
++	return 0;
++}
++
++int tsif_control_release(struct inode *inode, struct file *file)
++{
++	unsigned int index;
++	struct tsif_control_dev *tsif_dev;
++
++	index = iminor(inode) / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++
++	davinci_writel(0x0, tsif_dev->base + CTRL0);
++	davinci_writel(0x0, tsif_dev->base + CTRL1);
++	davinci_writel(0x0, tsif_dev->base + INTEN);
++	davinci_writel(0xFFFFFFFF, tsif_dev->base + INTEN_CLR);
++	davinci_writel(0xFFFFFFFF, tsif_dev->base + INT_STATUS_CLR);
++	davinci_writel(0x00000001, tsif_dev->base + EMULATION_CTRL);
++
++	clk_disable(tsif_dev->tsif_clk);
++
++	return 0;
++}
++
++int tsif_control_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
++			    vma->vm_end - vma->vm_start, vma->vm_page_prot))
++		return -EAGAIN;
++
++	return 0;
++}
++
++int tsif_set_tx_config(struct inode *inode, unsigned long arg)
++{
++	struct tsif_control_dev *tsif_dev;
++	unsigned int index, minor = iminor(inode);
++	u32 tx_ctrl, tsif_ctrl0, inten;
++	struct tsif_tx_config tx_cfg;
++	int pkt_size = 0;
++
++	index = minor / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++
++	tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++
++	/* copy the parameters to the configuration */
++	if (copy_from_user(&tx_cfg,
++			   (struct tsif_tx_config *)arg,
++			   sizeof(struct tsif_tx_config)))
++		return -EFAULT;
++
++	davinci_writel(TSIF_RING_BUF_RD_CH_CTL_RESETVAL,
++		       tsif_dev->base + RRB_CH_CTRL);
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten &= ~TSIF_INTEN_RBR0_FULL_INTEN;
++	davinci_writel(inten, tsif_dev->base + INTEN);
++	if (&tx_cfg != NULL) {
++		tx_ctrl = 0x00000000;
++		switch (tx_cfg.if_mode) {
++		case TSIF_IF_SERIAL_SYNC:
++			if (tx_cfg.clk_speed == TSIF_13_5_MHZ_SERIAL_PARALLEL)
++				set_tsif_clk(TSIF_13_5_MHZ_SERIAL_PARALLEL);
++			else if (tx_cfg.clk_speed ==
++				 TSIF_16_875_MHZ_SERIAL_PARALLEL)
++				set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
++			else if (tx_cfg.clk_speed == TSIF_27_0_MHZ_SERIAL)
++				set_tsif_clk(TSIF_27_0_MHZ_SERIAL);
++			else if (tx_cfg.clk_speed == TSIF_54_0_MHZ_SERIAL)
++				set_tsif_clk(TSIF_54_0_MHZ_SERIAL);
++			else if (tx_cfg.clk_speed == TSIF_81_0_MHZ_SERIAL)
++				set_tsif_clk(TSIF_81_0_MHZ_SERIAL);
++			else
++				return -EINVAL;
++			davinci_cfg_reg(DM646X_PTSOMUX_SERIAL);
++			davinci_cfg_reg(DM646X_PTSIMUX_SERIAL);
++			tx_ctrl |= TSIF_CTRL0_TX_IF_MODE_SER_SYN;
++			break;
++		case TSIF_IF_SERIAL_ASYNC:
++			if (tx_cfg.clk_speed == TSIF_13_5_MHZ_SERIAL_PARALLEL)
++				set_tsif_clk(TSIF_13_5_MHZ_SERIAL_PARALLEL);
++			else if (tx_cfg.clk_speed ==
++				 TSIF_16_875_MHZ_SERIAL_PARALLEL)
++				set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
++			else if (tx_cfg.clk_speed == TSIF_27_0_MHZ_SERIAL)
++				set_tsif_clk(TSIF_27_0_MHZ_SERIAL);
++			else if (tx_cfg.clk_speed == TSIF_54_0_MHZ_SERIAL)
++				set_tsif_clk(TSIF_54_0_MHZ_SERIAL);
++			else if (tx_cfg.clk_speed == TSIF_81_0_MHZ_SERIAL)
++				set_tsif_clk(TSIF_81_0_MHZ_SERIAL);
++			else
++				return -EINVAL;
++			davinci_cfg_reg(DM646X_PTSOMUX_SERIAL);
++			davinci_cfg_reg(DM646X_PTSIMUX_SERIAL);
++			tx_ctrl |= TSIF_CTRL0_TX_IF_MODE_SER_ASYN;
++			break;
++		case TSIF_IF_PARALLEL_SYNC:
++			if (tx_cfg.clk_speed == TSIF_13_5_MHZ_SERIAL_PARALLEL)
++				set_tsif_clk(TSIF_13_5_MHZ_SERIAL_PARALLEL);
++			else if (tx_cfg.clk_speed ==
++				 TSIF_16_875_MHZ_SERIAL_PARALLEL)
++				set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
++			else
++				return -EINVAL;
++			davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL);
++			davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL);
++			tx_ctrl |= TSIF_CTRL0_TX_IF_MODE_PAR_SYN;
++			break;
++		case TSIF_IF_PARALLEL_ASYNC:
++			if (tx_cfg.clk_speed == TSIF_13_5_MHZ_SERIAL_PARALLEL)
++				set_tsif_clk(TSIF_13_5_MHZ_SERIAL_PARALLEL);
++			else if (tx_cfg.clk_speed ==
++				 TSIF_16_875_MHZ_SERIAL_PARALLEL)
++				set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
++			else
++				return -EINVAL;
++			davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL);
++			davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL);
++			tx_ctrl |= TSIF_CTRL0_TX_IF_MODE_PAR_ASYN;
++			break;
++		case TSIF_IF_DMA:
++		default:
++			return -EINVAL;
++		}
++		switch (tx_cfg.stream_mode) {
++		case TSIF_STREAM_TS:
++			tx_ctrl |= TSIF_CTRL0_TX_STREAM_MODE_TS_ACTIVE;
++			pkt_size = 192;
++			break;
++		case TSIF_STREAM_NON_TS:
++			tx_ctrl |= TSIF_CTRL0_TX_STREAM_MODE_TS_INACTIVE;
++			switch (tx_cfg.pkt_size) {
++			case TSIF_200_BYTES_PER_PKT:
++				tx_ctrl |= TSIF_CTRL0_TX_PKT_SIZE_BYTE_200;
++				pkt_size = 200;
++				break;
++			case TSIF_208_BYTES_PER_PKT:
++				tx_ctrl |= TSIF_CTRL0_TX_PKT_SIZE_BYTE_208;
++				pkt_size = 208;
++				break;
++			case TSIF_216_BYTES_PER_PKT:
++				tx_ctrl |= TSIF_CTRL0_TX_PKT_SIZE_BYTE_216;
++				pkt_size = 216;
++				break;
++			case TSIF_224_BYTES_PER_PKT:
++				tx_ctrl |= TSIF_CTRL0_TX_PKT_SIZE_BYTE_224;
++				pkt_size = 224;
++				break;
++			case TSIF_232_BYTES_PER_PKT:
++				tx_ctrl |= TSIF_CTRL0_TX_PKT_SIZE_BYTE_232;
++				pkt_size = 232;
++				break;
++			case TSIF_240_BYTES_PER_PKT:
++				tx_ctrl |= TSIF_CTRL0_TX_PKT_SIZE_BYTE_240;
++				pkt_size = 240;
++				break;
++			case TSIF_248_BYTES_PER_PKT:
++				tx_ctrl |= TSIF_CTRL0_TX_PKT_SIZE_BYTE_248;
++				pkt_size = 248;
++				break;
++			case TSIF_256_BYTES_PER_PKT:
++				tx_ctrl |= TSIF_CTRL0_TX_PKT_SIZE_BYTE_256;
++				pkt_size = 256;
++				break;
++			default:
++				return -EINVAL;
++			}
++			break;
++		default:
++			return -EINVAL;
++		}
++		switch (tx_cfg.ats_mode) {
++		case TSIF_TX_ATS_REMOVE:
++			tx_ctrl |= TSIF_CTRL0_TX_ATS_MODE_OUT_188;
++			break;
++		case TSIF_TX_ATS_THROUGH:
++			tx_ctrl |= TSIF_CTRL0_TX_ATS_MODE_OUT_192;
++			break;
++		default:
++			return -EINVAL;
++		}
++		davinci_writel((u32) tx_cfg.interval_wait,
++			       tsif_dev->base + ASYNC_TX_WAIT);
++
++		tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++		tsif_ctrl0 &= ~(TX_CONFIG);
++		tsif_ctrl0 |= tx_ctrl;
++		tsif_ctrl0 |= TSIF_CTRL0_TX_CLK_INV_MASK;
++		davinci_writel(tsif_ctrl0, tsif_dev->base + CTRL0);
++	} else {
++		davinci_writel(TSIF_ASYNC_TX_WAIT_RESETVAL,
++			       tsif_dev->base + ASYNC_TX_WAIT);
++		tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++		tsif_ctrl0 &= ~(TX_CONFIG) | 0x00000000;
++		davinci_writel(tsif_ctrl0, tsif_dev->base + CTRL0);
++	}
++
++	/* Clear RBR0_full */
++	davinci_writel(TSIF_INTEN_CLR_RBR0_FULL_INTEN_CLR,
++		       tsif_dev->base + INT_STATUS_CLR);
++
++	/* RBR0_full_inten<-1 */
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten |= TSIF_INTEN_RBR0_FULL_INTEN;
++	davinci_writel(inten, tsif_dev->base + INTEN);
++
++	/* RBR0_full_inten_set<-1 */
++	inten = davinci_readl(tsif_dev->base + INTEN_SET);
++	inten |= TSIF_INTEN_SET_RBR0_FULL_INTEN_SET;
++	davinci_writel(inten, tsif_dev->base + INTEN_SET);
++
++	return 0;
++}
++EXPORT_SYMBOL(tsif_set_tx_config);
++
++int tsif_set_rx_config(struct inode *inode, unsigned long arg)
++{
++	struct tsif_control_dev *tsif_dev;
++	unsigned int index, minor = iminor(inode);
++	u32 tsif_ctrl0, tsif_ctrl1, inten;
++	u32 rx_ctrl0, rx_ctrl1;
++	struct tsif_rx_config rx_cfg;
++	int pkt_size = 0;
++
++	index = minor / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++
++	tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++	/* copy the parameters to the configuration */
++	if (copy_from_user(&rx_cfg,
++			   (struct tsif_rx_config *)arg,
++			   sizeof(struct tsif_rx_config)))
++		return -EFAULT;
++
++	if (tsif_stop_rx(inode) != 0)
++		return -EPERM;
++
++	davinci_writel(TSIF_RING_BUFFER_WRITE_CHANNEL_CONTROL_RESETVAL,
++		       tsif_dev->base + WRB_CH_CTRL);
++
++	/* Disbale all receiver relarted interrupts */
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten &= ~(TSIF_INTEN_RBW7_FULL_INTEN |
++		   TSIF_INTEN_RBW6_FULL_INTEN |
++		   TSIF_INTEN_RBW5_FULL_INTEN |
++		   TSIF_INTEN_RBW4_FULL_INTEN |
++		   TSIF_INTEN_RBW3_FULL_INTEN |
++		   TSIF_INTEN_RBW2_FULL_INTEN |
++		   TSIF_INTEN_RBW1_FULL_INTEN |
++		   TSIF_INTEN_RBW0_FULL_INTEN | TSIF_INTEN_GOP_START_INTEN);
++	davinci_writel(inten, tsif_dev->base + INTEN);
++
++	if (&rx_cfg != NULL) {
++		rx_ctrl0 = rx_ctrl1 = 0x00000000;
++		switch (rx_cfg.if_mode) {
++		case TSIF_IF_SERIAL_SYNC:
++			rx_ctrl0 |= TSIF_CTRL0_RCV_IF_MODE_SER_SYN;
++			break;
++		case TSIF_IF_SERIAL_ASYNC:
++			rx_ctrl0 |= TSIF_CTRL0_RCV_IF_MODE_SER_ASYN;
++			break;
++		case TSIF_IF_PARALLEL_SYNC:
++			rx_ctrl0 |= TSIF_CTRL0_RCV_IF_MODE_PAR_SYN;
++			break;
++		case TSIF_IF_PARALLEL_ASYNC:
++			rx_ctrl0 |= TSIF_CTRL0_RCV_IF_MODE_PAR_ASYN;
++			break;
++		case TSIF_IF_DMA:
++			rx_ctrl0 |= TSIF_CTRL0_RCV_IF_MODE_DMA;
++			break;
++		default:
++			return -EINVAL;
++		}
++		switch (rx_cfg.filter_mode) {
++		case TSIF_PID_FILTER_BYPASS:{
++				switch (rx_cfg.stream_mode) {
++				case TSIF_STREAM_TS:
++					rx_ctrl0 |=
++					   TSIF_CTRL0_RCV_STREAM_MODE_TS_ACTIVE;
++					pkt_size = 192;
++					break;
++				case TSIF_STREAM_NON_TS:
++					rx_ctrl0 |=
++					 TSIF_CTRL0_RCV_STREAM_MODE_TS_INACTIVE;
++					switch (rx_cfg.pkt_size) {
++					case TSIF_200_BYTES_PER_PKT:
++						rx_ctrl0 |=
++					 TSIF_CTRL0_RCV_PKT_SIZE_BYTE_200;
++						pkt_size = 200;
++						break;
++					case TSIF_208_BYTES_PER_PKT:
++						rx_ctrl0 |=
++					TSIF_CTRL0_RCV_PKT_SIZE_BYTE_208;
++						pkt_size = 208;
++						break;
++					case TSIF_216_BYTES_PER_PKT:
++						rx_ctrl0 |=
++					    TSIF_CTRL0_RCV_PKT_SIZE_BYTE_216;
++						pkt_size = 216;
++						break;
++					case TSIF_224_BYTES_PER_PKT:
++						rx_ctrl0 |=
++					    TSIF_CTRL0_RCV_PKT_SIZE_BYTE_224;
++						pkt_size = 224;
++						break;
++					case TSIF_232_BYTES_PER_PKT:
++						rx_ctrl0 |=
++					    TSIF_CTRL0_RCV_PKT_SIZE_BYTE_232;
++						pkt_size = 232;
++						break;
++					case TSIF_240_BYTES_PER_PKT:
++						rx_ctrl0 |=
++					    TSIF_CTRL0_RCV_PKT_SIZE_BYTE_240;
++						pkt_size = 240;
++						break;
++					case TSIF_248_BYTES_PER_PKT:
++						rx_ctrl0 |=
++					    TSIF_CTRL0_RCV_PKT_SIZE_BYTE_248;
++						pkt_size = 248;
++						break;
++					case TSIF_256_BYTES_PER_PKT:
++						rx_ctrl0 |=
++					    TSIF_CTRL0_RCV_PKT_SIZE_BYTE_256;
++						pkt_size = 256;
++						break;
++					default:
++						return -EINVAL;
++					}
++					break;
++				default:
++					return -EINVAL;
++				}
++				break;
++			}
++		case TSIF_PID_FILTER_FULL_MANUAL:
++			rx_ctrl1 |=
++			    TSIF_CTRL1_STREAM_BNDRY_CTL |
++			    TSIF_CTRL1_PID_FILTER_EN_ACTIVATE |
++			    TSIF_CTRL1_PID_FILTER_CTL_FULL_MAN;
++			rx_ctrl0 |= TSIF_CTRL0_RCV_STREAM_MODE_TS_ACTIVE;
++			pkt_size = 192;
++			break;
++		case TSIF_PID_FILTER_SEMI_AUTO_A:
++			rx_ctrl1 |=
++			    TSIF_CTRL1_STREAM_BNDRY_CTL |
++			    TSIF_CTRL1_PID_FILTER_EN_ACTIVATE |
++			    TSIF_CTRL1_PID_FILTER_CTL_SEMI_A;
++			rx_ctrl0 |= TSIF_CTRL0_RCV_STREAM_MODE_TS_ACTIVE;
++			pkt_size = 192;
++			break;
++		case TSIF_PID_FILTER_SEMI_AUTO_B:
++			rx_ctrl1 |=
++			    TSIF_CTRL1_STREAM_BNDRY_CTL |
++			    TSIF_CTRL1_PID_FILTER_EN_ACTIVATE |
++			    TSIF_CTRL1_PID_FILTER_CTL_SEMI_B;
++			rx_ctrl0 |= TSIF_CTRL0_RCV_STREAM_MODE_TS_ACTIVE;
++			pkt_size = 192;
++			break;
++		case TSIF_PID_FILTER_FULL_AUTO:
++			rx_ctrl1 |=
++			    TSIF_CTRL1_STREAM_BNDRY_CTL |
++			    TSIF_CTRL1_PID_FILTER_EN_ACTIVATE |
++			    TSIF_CTRL1_PID_FILTER_CTL_FULL_AUT;
++			rx_ctrl0 |= TSIF_CTRL0_RCV_STREAM_MODE_TS_ACTIVE;
++			pkt_size = 192;
++			break;
++		default:
++			return -EINVAL;
++		}
++		switch (rx_cfg.ats_mode) {
++		case TSIF_RX_ATS_THROUGH:
++			rx_ctrl0 |= TSIF_CTRL0_RCV_ATS_MODE_IN_192;
++			break;
++		case TSIF_RX_ATS_NOADD:
++			rx_ctrl0 |= TSIF_CTRL0_RCV_ATS_MODE_IN_188;
++			break;
++		case TSIF_RX_ATS_CHANGE:
++			rx_ctrl0 |= TSIF_CTRL0_RCV_ATS_MODE_CHANGE_192;
++			break;
++		case TSIF_RX_ATS_ADD:
++			rx_ctrl0 |= TSIF_CTRL0_RCV_ATS_MODE_ADD_188;
++			break;
++		default:
++			return -EINVAL;
++		}
++		tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++		tsif_ctrl0 &= ~(RX_CONFIG);
++		tsif_ctrl0 |= rx_ctrl0;
++		davinci_writel(tsif_ctrl0, tsif_dev->base + CTRL0);
++
++		tsif_ctrl1 = davinci_readl(tsif_dev->base + CTRL1);
++		tsif_ctrl1 |= rx_ctrl1;
++		davinci_writel(tsif_ctrl1, tsif_dev->base + CTRL1);
++	} else {
++
++		tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++		tsif_ctrl0 &= ~(RX_CONFIG) | 0x00000000;
++		davinci_writel(tsif_ctrl0, tsif_dev->base + CTRL0);
++		tsif_ctrl1 = davinci_readl(tsif_dev->base + CTRL1);
++		tsif_ctrl1 &= ~(TSIF_CTRL1_PID_FILTER_CTL) | 0x00000000;
++		davinci_writel(tsif_ctrl1, tsif_dev->base + CTRL1);
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL(tsif_set_rx_config);
++
++int tsif_control_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
++		       unsigned long arg)
++{
++	int ret = 0;
++	unsigned int index;
++	struct tsif_control_dev *tsif_dev;
++
++	index = iminor(inode) / tsif_control_minor_count;
++	tsif_dev = tsif_control_dev_get_by_major(index);
++
++	switch (cmd) {
++	case TSIF_SET_RX_CONFIG:{
++			tsif_set_rx_config(inode, arg);
++			break;
++		}
++
++	case TSIF_GET_RX_CONFIG:{
++			u32 tsif_ctrl0, tsif_ctrl1;
++			struct tsif_rx_config rx_cfg;
++
++			tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++			tsif_ctrl1 = davinci_readl(tsif_dev->base + CTRL1);
++			if ((tsif_ctrl0 & TSIF_CTRL0_RCV_IF_MODE_DMA) == 0) {
++				switch (tsif_ctrl0 &
++					TSIF_CTRL0_RCV_IF_MODE_MASK) {
++				case TSIF_CTRL0_RCV_IF_MODE_SER_SYN:
++					rx_cfg.if_mode = TSIF_IF_SERIAL_SYNC;
++					break;
++				case TSIF_CTRL0_RCV_IF_MODE_SER_ASYN:
++					rx_cfg.if_mode = TSIF_IF_SERIAL_ASYNC;
++					break;
++				case TSIF_CTRL0_RCV_IF_MODE_PAR_SYN:
++					rx_cfg.if_mode = TSIF_IF_PARALLEL_SYNC;
++					break;
++				case TSIF_CTRL0_RCV_IF_MODE_PAR_ASYN:
++					rx_cfg.if_mode = TSIF_IF_PARALLEL_ASYNC;
++					break;
++				}
++			} else
++				rx_cfg.if_mode = TSIF_IF_DMA;
++
++			if ((tsif_ctrl0 & TSIF_CTRL0_RCV_STREAM_MODE_TS_ACTIVE)
++			    == 0)
++				rx_cfg.stream_mode = TSIF_STREAM_NON_TS;
++			else
++				rx_cfg.stream_mode = TSIF_STREAM_TS;
++			switch (tsif_ctrl0 & TSIF_CTRL0_RCV_ATS_MODE_MASK) {
++			case TSIF_CTRL0_RCV_ATS_MODE_IN_192:
++				rx_cfg.ats_mode = TSIF_RX_ATS_THROUGH;
++				break;
++			case TSIF_CTRL0_RCV_ATS_MODE_IN_188:
++				rx_cfg.ats_mode = TSIF_RX_ATS_NOADD;
++				break;
++			case TSIF_CTRL0_RCV_ATS_MODE_CHANGE_192:
++				rx_cfg.ats_mode = TSIF_RX_ATS_CHANGE;
++				break;
++			case TSIF_CTRL0_RCV_ATS_MODE_ADD_188:
++				rx_cfg.ats_mode = TSIF_RX_ATS_ADD;
++				break;
++			}
++
++			if ((tsif_ctrl1 & TSIF_CTRL1_PID_FILTER_EN_ACTIVATE) ==
++			    0)
++				rx_cfg.filter_mode = TSIF_PID_FILTER_BYPASS;
++			else {
++				switch (tsif_ctrl1 &
++					TSIF_CTRL1_PID_FILTER_CTL_MASK) {
++				case TSIF_CTRL1_PID_FILTER_CTL_FULL_MAN:
++					rx_cfg.filter_mode =
++					    TSIF_PID_FILTER_FULL_MANUAL;
++					break;
++				case TSIF_CTRL1_PID_FILTER_CTL_SEMI_A:
++					rx_cfg.filter_mode =
++					    TSIF_PID_FILTER_SEMI_AUTO_A;
++					break;
++				case TSIF_CTRL1_PID_FILTER_CTL_SEMI_B:
++					rx_cfg.filter_mode =
++					    TSIF_PID_FILTER_SEMI_AUTO_B;
++					break;
++				case TSIF_CTRL1_PID_FILTER_CTL_FULL_AUT:
++					rx_cfg.filter_mode =
++					    TSIF_PID_FILTER_FULL_AUTO;
++					break;
++				default:
++					return -EINVAL;
++				}
++			}
++
++			if ((tsif_ctrl0 & TSIF_CTRL0_RCV_STREAM_MODE_TS_ACTIVE)
++			    == 0) {
++				switch (tsif_ctrl0 &
++					TSIF_CTRL0_RCV_PKT_SIZE_MASK) {
++				case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_200:
++					rx_cfg.pkt_size =
++					    TSIF_200_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_208:
++					rx_cfg.pkt_size =
++					    TSIF_208_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_216:
++					rx_cfg.pkt_size =
++					    TSIF_216_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_224:
++					rx_cfg.pkt_size =
++					    TSIF_224_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_232:
++					rx_cfg.pkt_size =
++					    TSIF_232_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_240:
++					rx_cfg.pkt_size =
++					    TSIF_240_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_248:
++					rx_cfg.pkt_size =
++					    TSIF_248_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_256:
++					rx_cfg.pkt_size =
++					    TSIF_256_BYTES_PER_PKT;
++					break;
++				default:
++					return -EINVAL;
++				}
++			} else
++				rx_cfg.pkt_size = 192;
++
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_rx_config *)arg,
++					 &rx_cfg,
++					 sizeof(struct tsif_rx_config)))
++				return -EFAULT;
++			break;
++		}
++
++	case TSIF_SET_TX_CONFIG:{
++			tsif_set_tx_config(inode, arg);
++			break;
++		}
++
++	case TSIF_GET_TX_CONFIG:{
++			u32 tsif_ctrl;
++			struct tsif_tx_config tx_cfg;
++
++			tsif_ctrl = davinci_readl(tsif_dev->base + CTRL0);
++			switch (tsif_ctrl & TSIF_CTRL0_TX_IF_MODE) {
++			case TSIF_CTRL0_TX_IF_MODE_SER_SYN:
++				tx_cfg.if_mode = TSIF_IF_SERIAL_SYNC;
++				break;
++			case TSIF_CTRL0_TX_IF_MODE_SER_ASYN:
++				tx_cfg.if_mode = TSIF_IF_SERIAL_ASYNC;
++				break;
++			case TSIF_CTRL0_TX_IF_MODE_PAR_SYN:
++				tx_cfg.if_mode = TSIF_IF_PARALLEL_SYNC;
++				break;
++			case TSIF_CTRL0_TX_IF_MODE_PAR_ASYN:
++				tx_cfg.if_mode = TSIF_IF_PARALLEL_ASYNC;
++				break;
++			}
++			if ((tsif_ctrl & TSIF_CTRL0_TX_STREAM_MODE) == 0)
++				tx_cfg.stream_mode = TSIF_STREAM_NON_TS;
++			else
++				tx_cfg.stream_mode = TSIF_STREAM_TS;
++			switch (tsif_ctrl & TSIF_CTRL0_TX_ATS_MODE) {
++			case TSIF_CTRL0_TX_ATS_MODE_OUT_188:
++				tx_cfg.ats_mode = TSIF_TX_ATS_REMOVE;
++				break;
++			case TSIF_CTRL0_TX_ATS_MODE_OUT_192:
++				tx_cfg.ats_mode = TSIF_TX_ATS_THROUGH;
++				break;
++			}
++			tx_cfg.interval_wait =
++			    davinci_readb(tsif_dev->base + ASYNC_TX_WAIT);
++			if ((tsif_ctrl & TSIF_CTRL0_TX_STREAM_MODE) == 0) {
++				switch (tsif_ctrl & TSIF_CTRL0_TX_PKT_SIZE) {
++				case TSIF_CTRL0_TX_PKT_SIZE_BYTE_200:
++					tx_cfg.pkt_size =
++					    TSIF_200_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_TX_PKT_SIZE_BYTE_208:
++					tx_cfg.pkt_size =
++					    TSIF_208_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_TX_PKT_SIZE_BYTE_216:
++					tx_cfg.pkt_size =
++					    TSIF_216_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_TX_PKT_SIZE_BYTE_224:
++					tx_cfg.pkt_size =
++					    TSIF_224_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_TX_PKT_SIZE_BYTE_232:
++					tx_cfg.pkt_size =
++					    TSIF_232_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_TX_PKT_SIZE_BYTE_240:
++					tx_cfg.pkt_size =
++					    TSIF_240_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_TX_PKT_SIZE_BYTE_248:
++					tx_cfg.pkt_size =
++					    TSIF_248_BYTES_PER_PKT;
++					break;
++				case TSIF_CTRL0_TX_PKT_SIZE_BYTE_256:
++					tx_cfg.pkt_size =
++					    TSIF_256_BYTES_PER_PKT;
++					break;
++				default:
++					return -EINVAL;
++				}
++			} else
++				tx_cfg.pkt_size = 192;
++
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_tx_config *)arg,
++					 &tx_cfg,
++					 sizeof(struct tsif_tx_config)))
++				return -EFAULT;
++			break;
++		}
++
++	case TSIF_START_RX:{
++			u32 tsif_ctrl0;
++
++			tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++			tsif_ctrl0 |=
++			    (TSIF_CTRL0_RCV_DMA_CTL | TSIF_CTRL0_RCV_CTL);
++			davinci_writel(tsif_ctrl0, tsif_dev->base + CTRL0);
++			tsif_rx_enable = 1;
++			break;
++		}
++
++	case TSIF_STOP_RX:{
++			u32 tsif_ctrl0;
++
++			tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++			tsif_ctrl0 &=
++			    ~(TSIF_CTRL0_RCV_DMA_CTL | TSIF_CTRL0_RCV_CTL);
++			davinci_writel(tsif_ctrl0, tsif_dev->base + CTRL0);
++			tsif_rx_enable = 0;
++			break;
++		}
++
++	case TSIF_START_TX:{
++			u32 tsif_ctrl0;
++			void *addr;
++
++			addr =
++			    (void *)davinci_readl(tsif_dev->base +
++						  RRB0_STRT_ADD);
++
++			if (davinci_readl(tsif_dev->base + RRB0_STRT_ADD) ==
++			    0x00000000)
++				return -EPERM;
++
++			tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++			tsif_ctrl0 |=
++			    (TSIF_CTRL0_TX_DMA_CTL | TSIF_CTRL0_TX_CTL);
++			davinci_writel(tsif_ctrl0, tsif_dev->base + CTRL0);
++			tsif_tx_enable = 1;
++			break;
++		}
++
++	case TSIF_STOP_TX:{
++			u32 tsif_ctrl0;
++
++			tsif_ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++			tsif_ctrl0 &=
++			    ~(TSIF_CTRL0_TX_DMA_CTL | TSIF_CTRL0_TX_CTL);
++			davinci_writel(tsif_ctrl0, tsif_dev->base + CTRL0);
++			tsif_tx_enable = 0;
++			tsif_tx_ats_init = 0;
++			break;
++		}
++
++	case TSIF_CONFIG_PAT:{
++			unsigned char flag;
++			unsigned int pat_store_add;
++
++			get_user(flag, (unsigned char *)arg);
++
++			if (flag)
++				tsif_set_pat_config(inode, arg);
++			else {
++				davinci_writel(0x0, tsif_dev->base +
++					       PAT_SENSE_CFG);
++
++				pat_store_add = (unsigned int)
++				    phys_to_virt(davinci_readl
++						 (tsif_dev->base +
++						  PAT_STORE_ADD));
++				kfree((void *)pat_store_add);
++			}
++			break;
++		}
++
++	case TSIF_GET_PAT_PKT:{
++			unsigned int pat_store_add;
++
++			wait_for_completion_interruptible(&tsif_isr_data.
++							  pat_complete);
++
++			pat_store_add =
++			    davinci_readl(tsif_dev->base + PAT_STORE_ADD);
++			pat_store_add =
++			    (unsigned int)phys_to_virt(pat_store_add);
++
++			/* copy to user the PAT packet */
++			if (copy_to_user
++			    ((void *)arg, (void *)pat_store_add, 192))
++				return -EFAULT;
++			else
++				return 0;
++			break;
++		}		/* case */
++
++	case TSIF_GET_PAT_CONFIG:{
++			struct tsif_pat_config pat_cfg;
++
++			pat_cfg.flag = davinci_readl(tsif_dev->base +
++						     PAT_SENSE_CFG) >> 16;
++
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_pat_config *)arg,
++					  &pat_cfg,
++					 sizeof(struct tsif_pat_config)))
++				return -EFAULT;
++			break;
++		}
++
++	case TSIF_GET_PMT_CONFIG:{
++			struct tsif_pmt_config pmt_cfg;
++
++			pmt_cfg.pmt_pid = davinci_readl(tsif_dev->base +
++							PMT_SENSE_CFG) & 0x1fff;
++			pmt_cfg.flag = davinci_readl(tsif_dev->base +
++						     PMT_SENSE_CFG) >> 16;
++
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_pmt_config *)arg,
++					 &pmt_cfg,
++					 sizeof(struct tsif_pmt_config)))
++				return -EFAULT;
++			break;
++		}
++
++	case TSIF_CONFIG_PMT:{
++			struct tsif_pmt_config pmt_cfg;
++			unsigned int pmt_store_add;
++
++			if (copy_from_user(&pmt_cfg,
++					   (struct tsif_pmt_config *)arg,
++					   sizeof(struct tsif_pmt_config)))
++				return -EFAULT;
++
++			if (pmt_cfg.flag)
++				tsif_set_pmt_config(inode, arg);
++			else {
++				davinci_writel(0x0,
++					       tsif_dev->base + PMT_SENSE_CFG);
++
++				pmt_store_add = (unsigned int)
++				    phys_to_virt(davinci_readl
++						 (tsif_dev->base +
++						  PMT_STORE_ADD));
++				kfree((void *)pmt_store_add);
++			}
++			break;
++		}
++
++	case TSIF_GET_PMT_PKT:{
++			unsigned int pmt_store_add;
++
++			wait_for_completion_interruptible(&tsif_isr_data.
++							  pmt_complete);
++
++			pmt_store_add =
++			    davinci_readl(tsif_dev->base + PMT_STORE_ADD);
++			pmt_store_add =
++			    (unsigned int)phys_to_virt(pmt_store_add);
++
++			/* copy to user the PMT packet */
++			if (copy_to_user
++			    ((void *)arg, (void *)pmt_store_add, 4096))
++				return -EFAULT;
++			else
++				return 0;
++			break;
++		}
++
++	case TSIF_ENABLE_PCR:{
++			tsif_set_pcr_config(inode, arg);
++			break;
++		}
++
++	case TSIF_DISABLE_PCR:{
++			davinci_writel(0x0, tsif_dev->base + PCR_SENSE_CFG);
++			break;
++		}
++
++	case TSIF_SET_SPCPKT_CONFIG:{
++			tsif_set_spec_pkt_config(inode, arg);
++			break;
++		}
++
++	case TSIF_GET_SPCPKT_CONFIG:{
++			struct tsif_spcpkt_config spcpkt_cfg;
++			char *spcpkt_cfg_buff_ptr;
++
++			if ((davinci_readl(tsif_dev->base + CTRL1) &
++			     TSIF_CTRL1_STREAM_BNDRY_CTL) == 0)
++				spcpkt_cfg.pid = 0x2000; /* set illegal PID */
++			else
++				spcpkt_cfg.pid =
++				    (u16) (davinci_readl
++					   (tsif_dev->base + BSP_PID) & 0x1fff);
++
++			spcpkt_cfg_buff_ptr =
++			    (u8 *) davinci_readl(tsif_dev->base +
++						 BSP_STORE_ADD);
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_spcpkt_config *)arg,
++					 &spcpkt_cfg,
++					 sizeof(struct tsif_spcpkt_config)))
++				return -EFAULT;
++			break;
++		}
++
++	case TSIF_SET_ATS:{
++			unsigned long ats_val;
++
++			get_user(ats_val, (int *)arg);
++			ats_val |= (1 << 30);
++			davinci_writel(ats_val, tsif_dev->base + TX_ATS_INIT);
++			break;
++		}
++
++	case TSIF_GET_ATS:{
++			unsigned int ats_val;
++
++			ats_val = davinci_readl(tsif_dev->base +
++						TX_ATS_MONITOR);
++			put_user(ats_val, (int *)arg);
++			break;
++		}
++
++	case TSIF_BYPASS_ENABLE:{
++			davinci_writel(0x01000000,
++				       tsif_dev->base + BP_MODE_CFG);
++			break;
++		}
++
++	case TSIF_SET_CONSEQUENTIAL_MODE:{
++			unsigned int ctrl0;
++
++			ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++			ctrl0 |= TSIF_CTRL0_RCV_IF_MODE_DMA;
++			davinci_writel(ctrl0, tsif_dev->base + CTRL0);
++			break;
++		}
++
++	case TSIF_ENABLE_GOP_DETECT:{
++			unsigned char gop_flag;
++
++			get_user(gop_flag, (int *)arg);
++			if (gop_flag) {
++				davinci_writel(
++					       (davinci_readl(
++						tsif_dev->base + INTEN) |
++						TSIF_INTEN_GOP_START_INTEN),
++						tsif_dev->base + INTEN);
++
++				davinci_writel(
++				       (davinci_readl(
++					tsif_dev->base + INTEN_SET) |
++					TSIF_INTEN_SET_GOP_START_INTEN_SET),
++					tsif_dev->base + INTEN_SET);
++
++				davinci_writel(
++					       (davinci_readl(
++						tsif_dev->base + CTRL1) | 0x20),
++						tsif_dev->base + CTRL1);
++			} else {
++				davinci_writel(
++				       (davinci_readl(
++					tsif_dev->base + CTRL1) & 0xFFFFFFDF),
++					tsif_dev->base + CTRL1);
++			}
++			break;
++		}
++
++	case TSIF_GET_SPCPKT:{
++			unsigned int bsp_store_add;
++
++			wait_for_completion_interruptible(&tsif_isr_data.
++							  spcpkt_complete);
++
++			bsp_store_add =
++				davinci_readl(tsif_dev->base + BSP_STORE_ADD);
++			bsp_store_add =
++				(unsigned int)phys_to_virt(bsp_store_add);
++
++			/* copy to user the specific packet */
++			if (copy_to_user
++			    ((void *)arg, (void *)bsp_store_add, 4096))
++				return -EFAULT;
++			else
++				return 0;
++			break;
++		}
++	case TSIF_SET_ENDIAN_CTL:{
++			unsigned long endian_ctl;
++			unsigned long cur_reg_val;
++
++			get_user(endian_ctl, (int *)arg);
++			cur_reg_val = davinci_readl(tsif_dev->base + CTRL1);
++
++			if (endian_ctl)
++				cur_reg_val |= 1 << 14;
++			else
++				cur_reg_val &= ~(1 << 14);
++
++			davinci_writel(cur_reg_val, tsif_dev->base + CTRL1);
++		break;
++		}
++
++	}
++
++	return ret;
++}
++
++static struct file_operations tsif_control_fops = {
++	.owner = THIS_MODULE,
++	.open = tsif_control_open,
++	.release = tsif_control_release,
++	.ioctl = tsif_control_ioctl,
++	.mmap = tsif_control_mmap,
++};
++
++void tsif_pat_complete_cmd(void)
++{
++	complete(&tsif_isr_data.pat_complete);
++}
++EXPORT_SYMBOL(tsif_pat_complete_cmd);
++
++void tsif_pmt_complete_cmd(void)
++{
++	complete(&tsif_isr_data.pmt_complete);
++}
++EXPORT_SYMBOL(tsif_pmt_complete_cmd);
++
++void tsif_spcpkt_complete_cmd(void)
++{
++	complete(&tsif_isr_data.spcpkt_complete);
++}
++EXPORT_SYMBOL(tsif_spcpkt_complete_cmd);
++
++static int tsif_remove(struct device *device)
++{
++	return 0;
++}
++
++static void tsif_platform_release(struct device *device)
++{
++	/* This function does nothing */
++}
++
++static struct device_driver tsif_driver = {
++	.name = "tsif_control",
++	.bus = &platform_bus_type,
++	.remove = tsif_remove,
++};
++
++static struct class *tsif_control_class;
++
++#define CDCE949                 (0x6C)
++
++int set_tsif_clk(enum tsif_clk_speed clk_speed)
++{
++	unsigned int value;
++	unsigned int sys_vddpwdn = (unsigned int)IO_ADDRESS(0x01C40048);
++	unsigned int sys_tsif_ctl = (unsigned int)IO_ADDRESS(0x01C40050);
++	unsigned int sys_vsclkdis = (unsigned int)IO_ADDRESS(0x01C4006C);
++
++	davinci_cfg_reg(DM646X_CRGMUX);
++	davinci_cfg_reg(DM646X_STSOMUX);
++	davinci_cfg_reg(DM646X_STSIMUX);
++
++	{
++		int err = 0;
++		char val2[2];
++
++		val2[0] = 0x27 | 0x80;
++		val2[1] = tsif_output_clk_freq[clk_speed][0];
++		err = davinci_i2c_write(2, val2, CDCE949);
++
++		val2[0] = 0x28 | 0x80;
++		val2[1] = tsif_output_clk_freq[clk_speed][1];
++		err = davinci_i2c_write(2, val2, CDCE949);
++
++		val2[0] = 0x29 | 0x80;
++		val2[1] = tsif_output_clk_freq[clk_speed][2];
++		err = davinci_i2c_write(2, val2, CDCE949);
++
++		val2[0] = 0x2a | 0x80;
++		val2[1] = tsif_output_clk_freq[clk_speed][3];
++		err = davinci_i2c_write(2, val2, CDCE949);
++
++		val2[0] = 0x2b | 0x80;
++		val2[1] = tsif_output_clk_freq[clk_speed][4];
++		err = davinci_i2c_write(2, val2, CDCE949);
++
++		val2[0] = 0x24 | 0x80;
++		val2[1] = 0x6f;
++		err = davinci_i2c_write(2, val2, CDCE949);
++	}
++
++	mdelay(200);
++
++	value = 2 << 12 |	/* Auxclk */
++		8 << 8 |	/* CRG0_VCXI */
++		2 << 4 |	/* Auxclk */
++		0;		/* CRG0_VCXI */
++	outl(value, sys_tsif_ctl);
++
++	/* Enable all the TSIF related clocks */
++	value = inl(sys_vsclkdis);
++	value &= ~(unsigned int)(0x000000FC);
++	outl(value, sys_vsclkdis);
++
++	/* Powerup UART1 Flow control and Data */
++	value = inl(sys_vddpwdn);
++	value &= ~(unsigned int)(0x000000C0);
++	outl(value, sys_vddpwdn);
++
++	return 0;
++}
++EXPORT_SYMBOL(set_tsif_clk);
++
++static int __init tsif_control_init(void)
++{
++	struct platform_device *pldev;
++	int result, ret = 0;
++	dev_t devno;
++	unsigned int size = 0, mem_size, i, j;
++
++	set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
++	davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL);
++	davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL);
++
++	size = tsif_device_count * tsif_control_minor_count;
++	/* Register the driver in the kernel */
++	result = alloc_chrdev_region(&devno, 0, size, DRIVER_NAME);
++	if (result < 0) {
++		printk(KERN_ERR "TSIF: Module intialization failed.\
++			could not register character device\n");
++		return -ENODEV;
++	}
++	tsif_control_major = MAJOR(devno);
++
++	mem_size = sizeof(struct tsif_control_dev);
++
++	for (i = 0; i < tsif_device_count; i++) {
++		tsif_control_dev_array[i] = kmalloc(mem_size, GFP_KERNEL);
++		/* Initialize of character device */
++		cdev_init(&tsif_control_dev_array[i]->c_dev,
++			  &tsif_control_fops);
++		tsif_control_dev_array[i]->c_dev.owner = THIS_MODULE;
++		tsif_control_dev_array[i]->c_dev.ops = &tsif_control_fops;
++
++		devno =
++		    MKDEV(tsif_control_major,
++			  i * tsif_control_minor_count +
++			  tsif_control_minor_start);
++
++		/* addding character device */
++		result =
++		    cdev_add(&tsif_control_dev_array[i]->c_dev, devno,
++			     tsif_control_minor_count);
++		if (result) {
++			printk("TSIF:Error adding TSIF\n");
++			unregister_chrdev_region(devno, size);
++			return result;
++		}
++		tsif_control_dev_array[i]->devno = i;
++	}
++
++	tsif_control_class = class_create(THIS_MODULE, "tsif_control");
++	if (!tsif_control_class) {
++		for (i = 0; i < tsif_device_count; i++)
++			cdev_del(&tsif_control_dev_array[i]->c_dev);
++		return -EIO;
++	}
++
++	/* register driver as a platform driver */
++	if (driver_register(&tsif_driver) != 0) {
++		for (i = 0; i < tsif_device_count; i++) {
++			unregister_chrdev_region(devno, size);
++			cdev_del(&tsif_control_dev_array[i]->c_dev);
++			kfree(tsif_control_dev_array[i]);
++		}
++		return -EINVAL;
++	}
++
++	for (i = 0; i < tsif_device_count; i++) {
++		for (j = 0; j < tsif_control_minor_count; j++) {
++			char name[50];
++			/* Register the drive as a platform device */
++			tsif_control_device[i][j] = NULL;
++
++			pldev = kmalloc(sizeof(*pldev), GFP_KERNEL);
++			if (!pldev)
++				continue;
++
++			memset(pldev, 0, sizeof(*pldev));
++			pldev->name = *(control_dev_name + j);
++			pldev->id = i;
++			pldev->dev.release = tsif_platform_release;
++			tsif_control_device[i][j] = pldev;
++
++			if (platform_device_register(pldev) != 0) {
++				driver_unregister(&tsif_driver);
++				unregister_chrdev_region(devno, size);
++				cdev_del(&tsif_control_dev_array[i]->c_dev);
++				kfree(pldev);
++				kfree(tsif_control_dev_array[i]);
++				return -EINVAL;
++			}
++
++			devno =
++			    MKDEV(tsif_control_major,
++				  tsif_control_minor_start +
++				  i * tsif_control_minor_count + j);
++			ret = sprintf(name, "hd_tsif%d_", i);
++			sprintf(&name[ret], *(control_dev_name + j));
++			class_device_create(tsif_control_class, NULL, devno,
++						NULL, name);
++		}
++		tsif_control_dev_array[i]->base =
++		    (unsigned int)(TSIF_BASE + i * 0x400);
++	}
++
++	return 0;
++}
++
++static void __exit tsif_control_exit(void)
++{
++	dev_t devno;
++	unsigned int size, i,  j;
++
++	/* Release major/minor numbers */
++	if (tsif_control_major != 0) {
++		devno = MKDEV(tsif_control_major, tsif_control_minor_start);
++		size = tsif_device_count * tsif_control_minor_count;
++		unregister_chrdev_region(devno, size);
++	}
++
++	for (i = 0; i < tsif_device_count; i++) {
++		for (j = 0; j < tsif_control_minor_count; j++) {
++			devno = MKDEV(tsif_control_major,
++				      tsif_control_minor_start +
++				      i * tsif_control_minor_count + j);
++			class_device_destroy(tsif_control_class, devno);
++			platform_device_unregister(tsif_control_device[i][j]);
++			kfree(tsif_control_device[i][j]);
++		}
++	}
++
++	if (tsif_control_class != NULL) {
++		size = tsif_device_count * tsif_control_minor_count;
++		for (i = 0; i < tsif_device_count; i++) {
++			cdev_del(&tsif_control_dev_array[i]->c_dev);
++			kfree(tsif_control_dev_array[i]);
++		}
++		class_destroy(tsif_control_class);
++		driver_unregister(&tsif_driver);
++	}
++}
++
++module_init(tsif_control_init);
++module_exit(tsif_control_exit);
++
++MODULE_DESCRIPTION("TSIF Driver");
++MODULE_AUTHOR("Texas Instruments");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/char/tsif_data.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/tsif_data.c
+@@ -0,0 +1,1105 @@
++/*
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#include <linux/config.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/fs.h>
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <linux/types.h>
++#include <linux/cdev.h>
++#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++#include <linux/device.h>
++#include <linux/platform_device.h>
++#include <linux/miscdevice.h>
++#include <linux/semaphore.h>
++#include <asm/arch/clock.h>
++#include <asm/arch/i2c-client.h>
++#include <asm/arch/mux.h>
++#include <asm/arch/tsif.h>
++
++#define DRIVER_NAME     "tsif_data"
++
++struct tsif_data_dev {
++	struct cdev c_dev;
++	dev_t devno;
++	unsigned int base;
++	struct completion rx_complete[9];
++	struct completion tx_complete;
++	unsigned long tx_offset[9];
++	unsigned long rx_offset[9];
++	int in_ring_w_count[9];
++	u32 pstart[9];
++	unsigned long buf_size[9];
++	unsigned int one_ring_size;
++	unsigned int pkt_size;
++};
++
++int dma_stall = 1;
++static u32 tsif_int_status;	/* Interrupt Status */
++static unsigned int tsif_data_major;
++static unsigned int tsif_data_minor_start;
++unsigned int tsif_data_minor_count = 9;
++unsigned int tsif_device_count = 2;
++
++static DEFINE_SPINLOCK(tsif_data_dev_array_lock);
++static struct platform_device *tsif_data_device[2][9];
++static struct tsif_data_dev *tsif_data_dev_array[TSIF_MAJORS];
++static struct fasync_struct *tsif_async_queue;
++
++char *device_name[] = { "rxfilter0",
++	"rxfilter1",
++	"rxfilter2",
++	"rxfilter3",
++	"rxfilter4",
++	"rxfilter5",
++	"rxfilter6",
++	"rxfilter7",
++	"txout"
++};
++
++char *tsif_interrupt_name[] = { "tsif0_isr",
++	"tsif1_isr"
++};
++
++struct tsif_data_dev *tsif_data_dev_get_by_major(unsigned int index)
++{
++	struct tsif_data_dev *tsif_dev;
++
++	spin_lock(&tsif_data_dev_array_lock);
++	tsif_dev = tsif_data_dev_array[index];
++	spin_unlock(&tsif_data_dev_array_lock);
++	return tsif_dev;
++}
++EXPORT_SYMBOL(tsif_data_dev_get_by_major);
++
++int tsif_data_open(struct inode *inode, struct file *file)
++{
++	unsigned int index;
++	struct tsif_data_dev *tsif_dev;
++
++	index = iminor(inode) / tsif_data_minor_count;
++	tsif_dev = tsif_data_dev_get_by_major(index);
++
++	tsif_int_status = 0;
++
++	/* Enable the interrupt to arm */
++	davinci_writel((davinci_readl(tsif_dev->base + CTRL1) | 0x8000),
++		       tsif_dev->base + CTRL1);
++
++	return 0;
++}
++
++int tsif_data_release(struct inode *inode, struct file *file)
++{
++	unsigned int index;
++	struct tsif_data_dev *tsif_dev;
++
++	index = iminor(inode) / tsif_data_minor_count;
++	tsif_dev = tsif_data_dev_get_by_major(index);
++
++	davinci_writel(0x0, tsif_dev->base + WRB_CH_CTRL);
++	davinci_writel(0x0, tsif_dev->base + RRB_CH_CTRL);
++
++	return 0;
++}
++
++void tsif_request_tx_buffer(struct inode *inode, unsigned long arg)
++{
++	unsigned long adr;
++	u32 size;
++	unsigned int index, ch;
++	struct tsif_data_dev *tsif_dev;
++
++	ch = iminor(inode) % tsif_data_minor_count;
++	index = iminor(inode) / tsif_data_minor_count;
++	tsif_dev = tsif_data_dev_get_by_major(index);
++
++	get_user(size, (u32 *) arg);
++	tsif_dev->tx_offset[ch] =
++	    __get_free_pages(GFP_KERNEL | GFP_DMA, get_order(size));
++
++	adr = (unsigned long)tsif_dev->tx_offset[ch];
++	size = PAGE_SIZE << (get_order(size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++	/* convert virtual address to physical */
++	tsif_dev->tx_offset[ch] =
++	    (unsigned long)virt_to_phys((void *)(tsif_dev->tx_offset[ch]));
++
++	return;
++}
++
++void tsif_query_tx_buffer(struct inode *inode, unsigned long arg)
++{
++	unsigned int index, ch;
++	struct tsif_data_dev *tsif_dev;
++
++	ch = iminor(inode) % tsif_data_minor_count;
++	index = iminor(inode) / tsif_data_minor_count;
++	tsif_dev = tsif_data_dev_get_by_major(index);
++
++	put_user(tsif_dev->tx_offset[ch], (unsigned long *)arg);
++
++	return;
++}
++
++void tsif_request_rx_buffer(struct inode *inode, unsigned long arg)
++{
++	unsigned long adr;
++	u32 size;
++	unsigned int index, ch;
++	struct tsif_data_dev *tsif_dev;
++
++	ch = iminor(inode) % tsif_data_minor_count;
++	index = iminor(inode) / tsif_data_minor_count;
++	tsif_dev = tsif_data_dev_get_by_major(index);
++
++	get_user(size, (u32 *) arg);
++	tsif_dev->rx_offset[ch] =
++	    __get_free_pages(GFP_KERNEL | GFP_DMA, get_order(size));
++
++	adr = (unsigned long)tsif_dev->rx_offset[ch];
++	size = PAGE_SIZE << (get_order(size));
++	while (size > 0) {
++		/* make sure the frame buffers
++		   are never swapped out of memory */
++		SetPageReserved(virt_to_page(adr));
++		adr += PAGE_SIZE;
++		size -= PAGE_SIZE;
++	}
++	/* convert virtual address to physical */
++	tsif_dev->rx_offset[ch] =
++	    (unsigned long)virt_to_phys((void *)(tsif_dev->rx_offset[ch]));
++
++	return;
++}
++
++void tsif_query_rx_buffer(struct inode *inode, unsigned long arg)
++{
++	unsigned int index, ch;
++	struct tsif_data_dev *tsif_dev;
++
++	ch = iminor(inode) % tsif_data_minor_count;
++	index = iminor(inode) / tsif_data_minor_count;
++	tsif_dev = tsif_data_dev_get_by_major(index);
++
++	put_user(tsif_dev->rx_offset[ch], (unsigned long *)arg);
++
++	return;
++}
++
++int tsif_data_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
++			    vma->vm_end - vma->vm_start, vma->vm_page_prot))
++		return -EAGAIN;
++
++	return 0;
++}
++
++int tsif_get_pkt_size(struct inode *inode)
++{
++	unsigned int index;
++	int pkt_size = 0;
++	unsigned int ctrl0;
++	struct tsif_data_dev *tsif_dev;
++
++	index = iminor(inode) / tsif_data_minor_count;
++	tsif_dev = tsif_data_dev_get_by_major(index);
++
++	ctrl0 = davinci_readl(tsif_dev->base + CTRL0);
++
++	if ((ctrl0 & TSIF_CTRL0_RCV_STREAM_MODE_TS_ACTIVE) ||
++	    (ctrl0 & TSIF_CTRL0_TX_STREAM_MODE_TS_ACTIVE))
++		pkt_size = 192;
++	else {
++		switch (ctrl0 & TSIF_CTRL0_RCV_PKT_SIZE_MASK) {
++		case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_200:
++			pkt_size = 200;
++			break;
++		case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_208:
++			pkt_size = 208;
++			break;
++		case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_216:
++			pkt_size = 216;
++			break;
++		case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_224:
++			pkt_size = 224;
++			break;
++		case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_232:
++			pkt_size = 232;
++			break;
++		case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_240:
++			pkt_size = 240;
++			break;
++		case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_248:
++			pkt_size = 248;
++			break;
++		case TSIF_CTRL0_RCV_PKT_SIZE_BYTE_256:
++			pkt_size = 256;
++			break;
++		default:
++			return -EINVAL;
++		}
++	}
++	return pkt_size;
++}
++EXPORT_SYMBOL(tsif_get_pkt_size);
++
++int tsif_set_pid_filter_config(struct inode *inode, unsigned long arg)
++{
++	struct tsif_data_dev *tsif_dev;
++	struct tsif_pid_filter_config pid_filter_cfg;
++	u16 ch = iminor(inode) % tsif_data_minor_count;
++	u32 wrb_ch_ctrl, inten, index;
++
++	index = iminor(inode) / tsif_data_minor_count;
++	tsif_dev = tsif_data_dev_get_by_major(index);
++
++	/* copy the parameters to the configuration */
++	if (copy_from_user(&pid_filter_cfg,
++			   (struct tsif_pid_filter_config *)arg,
++			   sizeof(struct tsif_pid_filter_config)))
++		return -EFAULT;
++
++	outl(0x00000000, tsif_pid_flt_cfg[index][ch]);
++	wrb_ch_ctrl = davinci_readl(tsif_dev->base + WRB_CH_CTRL);
++	wrb_ch_ctrl &= ~(TSIF_RING_BUF_WR_CH_CTL_EN_ACTIVATE << (ch * 4));
++	davinci_writel(wrb_ch_ctrl, tsif_dev->base + WRB_CH_CTRL);
++	inten = davinci_readl(tsif_dev->base + INTEN);
++	inten &= ~(TSIF_INTEN_RBW0_FULL_INTEN << ch);
++	davinci_writel(inten, tsif_dev->base + INTEN);
++
++	outl((TSIF_PID_FILTER_ENABLE_MASK |
++	      ((u32) pid_filter_cfg.stream_type << 16) |
++	      ((u32) pid_filter_cfg.pid)),  tsif_pid_flt_cfg[index][ch]);
++	return 0;
++}
++
++/*
++ * This function is used to convert user space virtual address
++ * to physical address.
++ */
++unsigned int tsif_user_virt_to_phys(unsigned int virt)
++{
++	pgd_t *pgd;
++	pmd_t *pmd;
++	pte_t *pte;
++
++	struct mm_struct *mm = current->mm;
++	pgd = pgd_offset(mm, virt);
++	if (!(pgd_none(*pgd) || pgd_bad(*pgd))) {
++		pmd = pmd_offset(pgd, virt);
++
++		if (!(pmd_none(*pmd) || pmd_bad(*pmd))) {
++			pte = pte_offset_kernel(pmd, virt);
++
++			if (pte_present(*pte)) {
++				return __pa(page_address(pte_page(*pte))
++						+ (virt & ~PAGE_MASK));
++			}
++		}
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL(tsif_user_virt_to_phys);
++
++int tsif_data_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
++		    unsigned long arg)
++{
++	int pkt_size = 0, ret = 0;
++	unsigned int index, minor = iminor(inode) % tsif_data_minor_count;
++	struct tsif_data_dev *tsif_dev;
++
++	index = iminor(inode) / tsif_data_minor_count;
++	tsif_dev = tsif_data_dev_get_by_major(index);
++
++	switch (cmd) {
++	case TSIF_REQ_TX_BUF:{
++			tsif_request_tx_buffer(inode, arg);
++			break;
++		}
++
++	case TSIF_QUERY_TX_BUF:{
++			tsif_query_tx_buffer(inode, arg);
++			break;
++		}
++
++	case TSIF_REQ_RX_BUF:{
++			tsif_request_rx_buffer(inode, arg);
++			break;
++		}
++
++	case TSIF_QUERY_RX_BUF:{
++			tsif_query_rx_buffer(inode, arg);
++			break;
++		}
++
++	case TSIF_GET_READ_AVAIL:{
++			u16 ch = iminor(inode) % tsif_data_minor_count;
++			unsigned int index;
++			struct tsif_read_avail read_avail;
++			u32 size, wrb_rp_add;
++			u32 start_addr, end_addr;
++
++			index = iminor(inode) / tsif_data_minor_count;
++			tsif_dev = tsif_data_dev_get_by_major(index);
++
++			/* copy the parameters  */
++			if (copy_from_user(&read_avail,
++					   (struct tsif_read_avail *)arg,
++					   sizeof(struct tsif_read_avail)))
++				return -EFAULT;
++
++			start_addr = inl(tsif_wrb_start_addr[index][ch]);
++			end_addr = inl(tsif_wrb_end_addr[index][ch]);
++			/*
++			 * This condition will nver be met, if the user does
++			 * not piggy back the acknowledgment and sets directly
++			 * moves the read pointer
++			 */
++			if (read_avail.bytes_last_read) {
++				wrb_rp_add = inl(tsif_wrb_read_addr[index][ch]);
++				wrb_rp_add += read_avail.bytes_last_read;
++				/* Need to add a logic when the bytes read is
++				   more than the last pointer */
++				/* if the data read needs a loopback of the read
++				   pointer */
++				/*if (wrb_rp_add >= end_addr) */
++				if (wrb_rp_add > end_addr)
++					wrb_rp_add = start_addr;
++				outl(wrb_rp_add, tsif_wrb_read_addr[index][ch]);
++			}
++
++			size = end_addr - start_addr;
++			wrb_rp_add = inl(tsif_wrb_read_addr[index][ch]);
++
++			if (wrb_rp_add >
++			    inl(tsif_wrb_present_addr[index][ch])) {
++				read_avail.len =
++				    size - wrb_rp_add +
++				    inl(tsif_wrb_present_addr[index][ch]);
++				dma_stall = 0;
++			} else if (wrb_rp_add <
++				   inl(tsif_wrb_present_addr[index][ch])) {
++				read_avail.len =
++				    inl(tsif_wrb_present_addr[index][ch]) -
++				    wrb_rp_add;
++				dma_stall = 0;
++			} else {
++				/* Both are equal. This might be caused if
++				   there is no new data or if the queue is full.
++				   Currently not handled. Add the logic once
++				   previous things start working */
++				if (dma_stall)
++					read_avail.len = 0;
++				else
++					read_avail.len = size;
++			}
++
++			pkt_size = tsif_get_pkt_size(inode);
++			read_avail.len = (read_avail.len / pkt_size) * pkt_size;
++
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_read_avail *)arg,
++					 &read_avail,
++					 sizeof(struct tsif_read_avail)))
++				return -EFAULT;
++
++			break;
++		}
++
++	case TSIF_GET_WRITE_AVAIL:{
++			struct tsif_write_avail write_avail;
++			u32 size, rrb0_wp_add;
++			u32 start_addr, end_addr;
++			int pkt_size;
++
++			/* copy the parameters  */
++			if (copy_from_user(&write_avail,
++					   (struct tsif_write_avail *)arg,
++					   sizeof(struct tsif_write_avail)))
++				return -EFAULT;
++
++			start_addr =
++			    davinci_readl(tsif_dev->base + RRB0_STRT_ADD);
++			end_addr = davinci_readl(tsif_dev->base + RRB0_END_ADD);
++			pkt_size = tsif_get_pkt_size(inode);
++
++			if (write_avail.bytes_last_wrote) {
++				rrb0_wp_add =
++				    davinci_readl(tsif_dev->base + RRB0_WP_ADD);
++				rrb0_wp_add += write_avail.bytes_last_wrote;
++				if (rrb0_wp_add > end_addr)
++					rrb0_wp_add = start_addr;
++				davinci_writel(rrb0_wp_add,
++					       tsif_dev->base + RRB0_WP_ADD);
++			}
++
++			size = end_addr - start_addr;
++
++			rrb0_wp_add =
++			    davinci_readl(tsif_dev->base + RRB0_WP_ADD);
++
++			if (davinci_readl(tsif_dev->base + RRB0_RP_ADD) >
++			    davinci_readl(tsif_dev->base + RRB0_WP_ADD))
++				write_avail.len =
++				    davinci_readl(tsif_dev->base +
++						  RRB0_RP_ADD) -
++				    davinci_readl(tsif_dev->base + RRB0_WP_ADD);
++			else if (rrb0_wp_add ==
++				 davinci_readl(tsif_dev->base + RRB0_RP_ADD)) {
++				write_avail.len = size - pkt_size;
++			} else
++				write_avail.len =
++				    size - rrb0_wp_add +
++				    davinci_readl(tsif_dev->base + RRB0_RP_ADD);
++
++			write_avail.len =
++			    (write_avail.len / pkt_size) * pkt_size;
++
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_write_avail *)arg,
++					 &write_avail,
++					 sizeof(struct tsif_write_avail)))
++				return -EFAULT;
++			break;
++		}
++
++	case TSIF_SET_READ_AVAIL:{
++			struct tsif_read_avail read_avail;
++			u32 wrb_rp_add;
++			u32 start_addr, end_addr;
++
++			/* copy the parameters  */
++			if (copy_from_user(&read_avail,
++					   (struct tsif_read_avail *)arg,
++					   sizeof(struct tsif_read_avail)))
++				return -EFAULT;
++
++			start_addr = inl(tsif_wrb_start_addr[index][minor]);
++			end_addr = inl(tsif_wrb_end_addr[index][minor]);
++
++			wrb_rp_add = inl(tsif_wrb_read_addr[index][minor]);
++			wrb_rp_add += read_avail.bytes_last_read;
++
++			if (wrb_rp_add == end_addr)
++				wrb_rp_add = start_addr;
++
++			/* This is a split condition. */
++			if (wrb_rp_add > end_addr) {
++				wrb_rp_add -= end_addr;
++				wrb_rp_add += start_addr;
++			}
++
++			outl(wrb_rp_add, tsif_wrb_read_addr[index][minor]);
++			break;
++
++		}		/* case TSIF_SET_READ_AVAIL */
++
++	case TSIF_SET_WRITE_AVAIL:{
++			struct tsif_write_avail write_avail;
++			u32 rrb0_wp_add;
++			u32 start_addr, end_addr;
++
++			/* copy the parameters  */
++			if (copy_from_user(&write_avail,
++					   (struct tsif_write_avail *)arg,
++					   sizeof(struct tsif_write_avail)))
++				return -EFAULT;
++
++			start_addr =
++			    davinci_readl(tsif_dev->base + RRB0_STRT_ADD);
++			end_addr = davinci_readl(tsif_dev->base + RRB0_END_ADD);
++
++			rrb0_wp_add =
++			    davinci_readl(tsif_dev->base + RRB0_WP_ADD);
++			/* Initialize the write pointer for the first time when
++			   the data is moved */
++			rrb0_wp_add += write_avail.bytes_last_wrote;
++
++			if (rrb0_wp_add == end_addr) {
++				rrb0_wp_add = start_addr;
++			} else if (rrb0_wp_add > end_addr) {
++				/* This is a split case */
++				rrb0_wp_add -= end_addr;
++				rrb0_wp_add += start_addr;
++			}
++
++			davinci_writel(rrb0_wp_add,
++				       tsif_dev->base + RRB0_WP_ADD);
++			break;
++
++		}		/* case TSIF_SET_WRITE_AVAIL */
++
++	case TSIF_RX_RING_BUF_CONFIG:{
++			struct tsif_rx_ring_buf_config rx_ring_buf_cfg;
++			u32 inten = 0, wrb_ch_ctrl = 0;
++			int pkt_size = tsif_get_pkt_size(inode);
++
++			/* copy the parameters to the configuration */
++			if (copy_from_user(&rx_ring_buf_cfg,
++					   (struct tsif_rx_ring_buf_config *)
++					   arg,
++					   sizeof(struct
++						  tsif_rx_ring_buf_config)))
++				return -EFAULT;
++
++			if (rx_ring_buf_cfg.pstart != NULL) {
++				rx_ring_buf_cfg.pread =
++				    rx_ring_buf_cfg.pstart +
++				    (pkt_size * rx_ring_buf_cfg.buf_size / 3) *
++				    2;
++				rx_ring_buf_cfg.pread =
++				    (char *)tsif_user_virt_to_phys(
++				    (unsigned int)rx_ring_buf_cfg.pread);
++
++				rx_ring_buf_cfg.pstart =
++				    (char *)tsif_user_virt_to_phys(
++				    (unsigned int)rx_ring_buf_cfg.pstart);
++
++				outl((u32) rx_ring_buf_cfg.pstart,
++				     tsif_wrb_start_addr[index][minor]);
++				outl((u32) (rx_ring_buf_cfg.pstart +
++				     (pkt_size * rx_ring_buf_cfg.buf_size)),
++				     tsif_wrb_end_addr[index][minor]);
++				outl((u32) rx_ring_buf_cfg.pread,
++				     tsif_wrb_read_addr[index][minor]);
++
++				tsif_dev->pstart[minor] =
++				    inl(tsif_wrb_start_addr[index][minor]);
++				tsif_dev->buf_size[minor] =
++				    pkt_size * rx_ring_buf_cfg.buf_size;
++				tsif_dev->one_ring_size =
++				    (rx_ring_buf_cfg.buf_size / 3);
++				tsif_dev->pkt_size = pkt_size;
++				tsif_dev->in_ring_w_count[minor] = 2;
++
++				outl((pkt_size * tsif_dev->one_ring_size - 8),
++				     (tsif_wrb_subtraction[index][minor]));
++
++				/* Clear RBW_full */
++				davinci_writel(
++				(TSIF_INTEN_CLR_RBW0_FULL_INTEN_CLR << minor),
++				tsif_dev->base + INT_STATUS_CLR);
++				/* RBW_full_inten<-1 */
++				inten = davinci_readl(tsif_dev->base + INTEN);
++				inten |= (TSIF_INTEN_RBW0_FULL_INTEN << minor);
++				davinci_writel(inten, tsif_dev->base + INTEN);
++
++				/* RBW_full_inten_set<-1 */
++				inten =
++				    davinci_readl(tsif_dev->base + INTEN_SET);
++				inten |=
++				    (TSIF_INTEN_SET_RBW0_FULL_INTEN_SET <<
++				     minor);
++				davinci_writel(inten,
++					       tsif_dev->base + INTEN_SET);
++
++				/* Enable ring buffer write channel 7 */
++				wrb_ch_ctrl =
++				    davinci_readl(tsif_dev->base + WRB_CH_CTRL);
++				wrb_ch_ctrl |= (1 << (minor * 4));
++				davinci_writel(wrb_ch_ctrl,
++					       tsif_dev->base + WRB_CH_CTRL);
++			}
++			break;
++		}		/* case TSIF_RX_RING_BUF_CONFIG */
++
++	case TSIF_TX_RING_BUF_CONFIG:{
++			struct tsif_tx_ring_buf_config tx_ring_buf_cfg;
++			int pkt_size = tsif_get_pkt_size(inode);
++
++			/* copy the parameters to the configuration */
++			if (copy_from_user(&tx_ring_buf_cfg,
++					   (struct tsif_tx_ring_buf_config *)
++					   arg,
++					   sizeof(struct
++						  tsif_tx_ring_buf_config)))
++				return -EFAULT;
++
++			if (tx_ring_buf_cfg.pstart != NULL) {
++				tx_ring_buf_cfg.pstart =
++				    (char *)tsif_user_virt_to_phys(
++				    (unsigned int)tx_ring_buf_cfg.pstart);
++
++				davinci_writel((u32) tx_ring_buf_cfg.pstart,
++					       tsif_dev->base + RRB0_STRT_ADD);
++				davinci_writel((u32) tx_ring_buf_cfg.pstart +
++					       (pkt_size *
++						tx_ring_buf_cfg.buf_size),
++					       tsif_dev->base + RRB0_END_ADD);
++				davinci_writel((u32) tx_ring_buf_cfg.pstart,
++					       tsif_dev->base + RRB0_WP_ADD);
++				davinci_writel((u32) tx_ring_buf_cfg.psub,
++					       tsif_dev->base + RRB0_SUB_ADD);
++
++				/* Enable ring buffer read channel 0 */
++				davinci_writel(0x00000001,
++					       tsif_dev->base + RRB_CH_CTRL);
++			}
++			break;
++		}		/* case TSIF_TX_RING_BUF_CONFIG */
++
++	case TSIF_GET_RX_BUF_STATUS:{
++			struct tsif_buf_status rx_buf_status;
++			u16 ch = iminor(inode) % tsif_data_minor_count;
++			unsigned int index;
++
++			index = iminor(inode) / tsif_data_minor_count;
++
++			rx_buf_status.pstart =
++				(u8 *) inl(tsif_wrb_start_addr[index][ch]);
++			rx_buf_status.pend =
++				(u8 *) inl(tsif_wrb_end_addr[index][ch]);
++			rx_buf_status.pread_write =
++				(u8 *) inl(tsif_wrb_read_addr[index][ch]);
++			rx_buf_status.pcurrent =
++				(u8 *) inl(tsif_wrb_present_addr[index][ch]);
++			rx_buf_status.psub =
++				(u32) inl(tsif_wrb_subtraction[index][ch]);
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_buf_status *)arg,
++					 &rx_buf_status,
++					 sizeof(struct tsif_buf_status)))
++				return -EFAULT;
++			break;
++		}
++
++	case TSIF_GET_TX_BUF_STATUS:{
++			struct tsif_buf_status tx_buf_status;
++
++			tx_buf_status.pstart =
++			   (u8 *) davinci_readl(tsif_dev->base + RRB0_STRT_ADD);
++			tx_buf_status.pend =
++			    (u8 *) davinci_readl(tsif_dev->base + RRB0_END_ADD);
++			tx_buf_status.pread_write =
++			     (u8 *) davinci_readl(tsif_dev->base + RRB0_WP_ADD);
++			tx_buf_status.pcurrent =
++			     (u8 *) davinci_readl(tsif_dev->base + RRB0_RP_ADD);
++			tx_buf_status.psub =
++			     (u32) davinci_readl(tsif_dev->base + RRB0_SUB_ADD);
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_buf_status *)arg,
++					 &tx_buf_status,
++					 sizeof(struct tsif_buf_status)))
++				return -EFAULT;
++			break;
++		}
++
++	case TSIF_WAIT_FOR_RX_COMPLETE:{
++			wait_for_completion_interruptible(&tsif_dev->
++							  rx_complete
++							  [minor]);
++			return 0;
++			break;
++		}		/* case TSIF_WAIT_FOR_RX_COMPLETE */
++
++	case TSIF_WAIT_FOR_TX_COMPLETE:{
++			wait_for_completion_interruptible(&tsif_dev->
++							tx_complete);
++			return 0;
++			break;
++		}		/* case TSIF_WAIT_FOR_TX_COMPLETE */
++
++	case TSIF_SET_PID_FILTER_CONFIG:{
++			tsif_set_pid_filter_config(inode, arg);
++			break;
++		}
++
++	case TSIF_GET_PID_FILTER_CONFIG:{
++			u16 ch = iminor(inode) % tsif_data_minor_count;
++			u32 flt_cfg, index;
++			struct tsif_pid_filter_config pid_filter_cfg;
++
++			index = iminor(inode) / tsif_data_minor_count;
++			flt_cfg = inl(tsif_pid_flt_cfg[index][ch]);
++			if ((flt_cfg & TSIF_PID_FILTER_ENABLE_MASK) != 0) {
++				pid_filter_cfg.pid = (u16) (flt_cfg & 0x1fff);
++				pid_filter_cfg.stream_type =
++					(u8) (flt_cfg >> 16);
++			} else {
++				pid_filter_cfg.pid = 0x2000;
++				pid_filter_cfg.stream_type = 0x00;
++			}
++			/* copy the configuration to the user space */
++			if (copy_to_user((struct tsif_pid_filter_config *)arg,
++					 &pid_filter_cfg,
++					 sizeof(struct tsif_pid_filter_config)))
++				return -EFAULT;
++			break;
++		}
++	}			/* switch */
++
++	return ret;
++}
++
++int tsif_fasync(int fd, struct file *filp, int mode)
++{
++	/* Hook up the our file descriptor to the signal */
++	return fasync_helper(fd, filp, mode, &tsif_async_queue);
++}
++
++static struct file_operations tsif_data_fops = {
++	.owner = THIS_MODULE,
++	.open = tsif_data_open,
++	.release = tsif_data_release,
++	.ioctl = tsif_data_ioctl,
++	.mmap = tsif_data_mmap,
++	.fasync = tsif_fasync,
++};
++
++static int tsif_remove(struct device *device)
++{
++	return 0;
++}
++
++static void tsif_platform_release(struct device *device)
++{
++	/* This function does nothing */
++}
++
++static struct device_driver tsif_driver = {
++	.name = "tsif_data",
++	.bus = &platform_bus_type,
++	.remove = tsif_remove,
++};
++
++irqreturn_t tsif_isr(int irq, void *dev_id, struct pt_regs *regs)
++{
++	struct tsif_data_dev *tsif_dev = dev_id;
++	u32 int_status = 0;
++	u32 rcv_status = 0;
++	unsigned long flags;
++
++	local_irq_save(flags);
++	int_status = davinci_readl(tsif_dev->base + INT_STATUS);
++	rcv_status = davinci_readl(tsif_dev->base + RCV_PKT_STAT);
++	davinci_writel(int_status, tsif_dev->base + INT_STATUS_CLR);
++	davinci_writel(rcv_status, tsif_dev->base + INT_STATUS_CLR);
++
++	if (int_status & 0x8000) {
++		/* printk ("## PID7 Interrupt\n"); */
++		tsif_dev->in_ring_w_count[7]++;
++		if (tsif_dev->in_ring_w_count[7] == 3)
++			tsif_dev->in_ring_w_count[7] = 0;
++		davinci_writel(tsif_dev->pstart[7] +
++			       (tsif_dev->one_ring_size *
++				tsif_dev->pkt_size *
++				tsif_dev->in_ring_w_count[7]),
++			       tsif_dev->base + WRB7_RP_ADD);
++		complete(&tsif_dev->rx_complete[7]);
++	}
++
++	if (int_status & 0x4000) {
++		/* printk ("## PID6 Interrupt\n"); */
++		tsif_dev->in_ring_w_count[6]++;
++		if (tsif_dev->in_ring_w_count[6] == 3)
++			tsif_dev->in_ring_w_count[6] = 0;
++		davinci_writel(tsif_dev->pstart[6] +
++			       (tsif_dev->one_ring_size *
++				tsif_dev->pkt_size *
++				tsif_dev->in_ring_w_count[6]),
++			       tsif_dev->base + WRB6_RP_ADD);
++		complete(&tsif_dev->rx_complete[6]);
++	}
++
++	if (int_status & 0x2000) {
++		/* printk ("## PID5 Interrupt\n"); */
++		tsif_dev->in_ring_w_count[5]++;
++		if (tsif_dev->in_ring_w_count[5] == 3)
++			tsif_dev->in_ring_w_count[5] = 0;
++		davinci_writel(tsif_dev->pstart[5] +
++			       (tsif_dev->one_ring_size *
++				tsif_dev->pkt_size *
++				tsif_dev->in_ring_w_count[5]),
++			       tsif_dev->base + WRB5_RP_ADD);
++		complete(&tsif_dev->rx_complete[5]);
++	}
++
++	if (int_status & 0x1000) {
++		/* printk ("## PID4 Interrupt\n"); */
++		tsif_dev->in_ring_w_count[4]++;
++		if (tsif_dev->in_ring_w_count[4] == 3)
++			tsif_dev->in_ring_w_count[4] = 0;
++		davinci_writel(tsif_dev->pstart[4] +
++			       (tsif_dev->one_ring_size *
++				tsif_dev->pkt_size *
++				tsif_dev->in_ring_w_count[4]),
++			       tsif_dev->base + WRB4_RP_ADD);
++		complete(&tsif_dev->rx_complete[4]);
++	}
++
++	if (int_status & 0x800) {
++		/* printk ("## PID3 Interrupt\n"); */
++		tsif_dev->in_ring_w_count[3]++;
++		if (tsif_dev->in_ring_w_count[3] == 3)
++			tsif_dev->in_ring_w_count[3] = 0;
++		davinci_writel(tsif_dev->pstart[3] +
++			       (tsif_dev->one_ring_size *
++				tsif_dev->pkt_size *
++				tsif_dev->in_ring_w_count[3]),
++			       tsif_dev->base + WRB3_RP_ADD);
++		complete(&tsif_dev->rx_complete[3]);
++	}
++
++	if (int_status & 0x400) {
++		/* printk ("## PID2 Interrupt\n"); */
++		tsif_dev->in_ring_w_count[2]++;
++		if (tsif_dev->in_ring_w_count[2] == 3)
++			tsif_dev->in_ring_w_count[2] = 0;
++		davinci_writel(tsif_dev->pstart[2] +
++			       (tsif_dev->one_ring_size *
++				tsif_dev->pkt_size *
++				tsif_dev->in_ring_w_count[2]),
++			       tsif_dev->base + WRB2_RP_ADD);
++		complete(&tsif_dev->rx_complete[2]);
++	}
++
++	if (int_status & 0x200) {
++		/* printk ("## PID1 Interrupt\n"); */
++		tsif_dev->in_ring_w_count[1]++;
++		if (tsif_dev->in_ring_w_count[1] == 3)
++			tsif_dev->in_ring_w_count[1] = 0;
++		davinci_writel(tsif_dev->pstart[1] +
++			       (tsif_dev->one_ring_size *
++				tsif_dev->pkt_size *
++				tsif_dev->in_ring_w_count[1]),
++			       tsif_dev->base + WRB1_RP_ADD);
++		complete(&tsif_dev->rx_complete[1]);
++	}
++
++	if (int_status & 0x100) {
++		/* printk ("## PID0 Interrupt\n"); */
++		tsif_dev->in_ring_w_count[0]++;
++		if (tsif_dev->in_ring_w_count[0] == 3)
++			tsif_dev->in_ring_w_count[0] = 0;
++		davinci_writel(tsif_dev->pstart[0] +
++			       (tsif_dev->one_ring_size *
++				tsif_dev->pkt_size *
++				tsif_dev->in_ring_w_count[0]),
++			       tsif_dev->base + WRB0_RP_ADD);
++		complete(&tsif_dev->rx_complete[0]);
++	}
++
++	if (int_status & 0x40) {
++		/* Notify all the waiting applications using SIGIO */
++		kill_fasync(&tsif_async_queue, SIGIO, POLL_IN);
++	}
++
++	if (int_status & 0x20) {
++		/* Notify all the waiting applications using SIGIO */
++		kill_fasync(&tsif_async_queue, SIGIO, POLL_IN);
++	}
++
++	if (int_status & 0x10) {
++		/*printk ("### RX Buf Full\n");*/
++		complete(&tsif_dev->tx_complete);
++	}
++
++	if (int_status & 0x00000004) {
++		/* printk ("### PAT Interrupt Received\n"); */
++		tsif_pat_complete_cmd();
++	}
++
++	if (int_status & 0x00000008) {
++		/* printk ("### PMT Interrupt Received\n"); */
++		tsif_pmt_complete_cmd();
++	}
++	if (int_status & 0x00000002) {
++		/* printk ("### GOP Interrupt Received\n"); */
++		kill_fasync(&tsif_async_queue, SIGIO, POLL_IN);
++	}
++
++	if (int_status & 0x00000001) {
++		/* printk ("### BSP Interrupt Received\n"); */
++		tsif_spcpkt_complete_cmd();
++	}
++	local_irq_restore(flags);
++	return IRQ_HANDLED;
++}
++
++static struct class *tsif_data_class;
++
++static int __init tsif_data_init(void)
++{
++	struct platform_device *pldev;
++	int result, ret = 0;
++	dev_t devno;
++	unsigned int size = 0, mem_size, i, j;
++
++	set_tsif_clk(TSIF_16_875_MHZ_SERIAL_PARALLEL);
++	davinci_cfg_reg(DM646X_PTSOMUX_PARALLEL);
++	davinci_cfg_reg(DM646X_PTSIMUX_PARALLEL);
++
++	size = tsif_device_count * tsif_data_minor_count;
++	/* Register the driver in the kernel */
++	result = alloc_chrdev_region(&devno, 0, size, DRIVER_NAME);
++	if (result < 0) {
++		printk(KERN_ERR "TSIF: Module intialization failed.\
++			could not register character device\n");
++		return -ENODEV;
++	}
++	tsif_data_major = MAJOR(devno);
++
++	mem_size = sizeof(struct tsif_data_dev);
++
++	for (i = 0; i < tsif_device_count; i++) {
++		tsif_data_dev_array[i] = kmalloc(mem_size, GFP_KERNEL);
++		/* Initialize of character device */
++		cdev_init(&tsif_data_dev_array[i]->c_dev, &tsif_data_fops);
++		tsif_data_dev_array[i]->c_dev.owner = THIS_MODULE;
++		tsif_data_dev_array[i]->c_dev.ops = &tsif_data_fops;
++
++		devno =
++		    MKDEV(tsif_data_major,
++			  i * tsif_data_minor_count + tsif_data_minor_start);
++
++		/* addding character device */
++		result =
++		    cdev_add(&tsif_data_dev_array[i]->c_dev, devno,
++			     tsif_data_minor_count);
++		if (result) {
++			printk("TSIF:Error adding TSIF\n");
++			unregister_chrdev_region(devno, size);
++			return result;
++		}
++		tsif_data_dev_array[i]->devno = i;
++	}
++
++	tsif_data_class = class_create(THIS_MODULE, "tsif_data");
++	if (!tsif_data_class) {
++		for (i = 0; i < tsif_device_count; i++)
++			cdev_del(&tsif_data_dev_array[i]->c_dev);
++		return -EIO;
++	}
++
++	/* register driver as a platform driver */
++	if (driver_register(&tsif_driver) != 0) {
++		for (i = 0; i < tsif_device_count; i++) {
++			unregister_chrdev_region(devno, size);
++			cdev_del(&tsif_data_dev_array[i]->c_dev);
++			kfree(tsif_data_dev_array[i]);
++		}
++		return -EINVAL;
++	}
++
++	for (i = 0; i < tsif_device_count; i++) {
++		for (j = 0; j < tsif_data_minor_count; j++) {
++			char name[50];
++			/* Register the drive as a platform device */
++			tsif_data_device[i][j] = NULL;
++
++			pldev = kmalloc(sizeof(*pldev), GFP_KERNEL);
++			if (!pldev)
++				continue;
++
++			memset(pldev, 0, sizeof(*pldev));
++			pldev->name = *(device_name + j);
++			pldev->id = i;
++			pldev->dev.release = tsif_platform_release;
++			tsif_data_device[i][j] = pldev;
++
++			if (platform_device_register(pldev) != 0) {
++				driver_unregister(&tsif_driver);
++				unregister_chrdev_region(devno, size);
++				cdev_del(&tsif_data_dev_array[i]->c_dev);
++				kfree(pldev);
++				kfree(tsif_data_dev_array[i]);
++				return -EINVAL;
++			}
++
++			devno =
++			    MKDEV(tsif_data_major,
++				  tsif_data_minor_start + i *
++				  tsif_data_minor_count + j);
++			ret = sprintf(name, "hd_tsif%d_", i);
++			sprintf(&name[ret], *(device_name + j));
++			class_device_create(tsif_data_class, NULL, devno,
++						NULL, name);
++			init_completion(&tsif_data_dev_array[i]->
++					rx_complete[j]);
++			tsif_data_dev_array[i]->rx_complete[j].done = 0;
++		}
++		tsif_data_dev_array[i]->base =
++		    (unsigned int)(TSIF_BASE + i * 0x400);
++		request_irq(IRQ_DM646X_TSIFINT0 + i, tsif_isr, SA_INTERRUPT,
++			    tsif_interrupt_name[i], tsif_data_dev_array[i]);
++		init_completion(&tsif_data_dev_array[i]->tx_complete);
++		tsif_data_dev_array[i]->tx_complete.done = 0;
++	}
++
++	return 0;
++}
++
++static void __exit tsif_data_exit(void)
++{
++	dev_t devno;
++	unsigned int size, i,  j;
++
++	/* Release major/minor numbers */
++	if (tsif_data_major != 0) {
++		devno = MKDEV(tsif_data_major, tsif_data_minor_start);
++		size = tsif_device_count * tsif_data_minor_count;
++		unregister_chrdev_region(devno, size);
++	}
++
++	for (i = 0; i < tsif_device_count; i++) {
++		for (j = 0; j < tsif_data_minor_count; j++) {
++			devno =
++			    MKDEV(tsif_data_major,
++				  tsif_data_minor_start + i *
++				  tsif_data_minor_count + j);
++			class_device_destroy(tsif_data_class, devno);
++			platform_device_unregister(tsif_data_device[i][j]);
++			kfree(tsif_data_device[i][j]);
++		}
++	}
++
++	if (tsif_data_class != NULL) {
++		size = tsif_device_count * tsif_data_minor_count;
++		for (i = 0; i < tsif_device_count; i++) {
++			free_irq(IRQ_DM646X_TSIFINT0 + i,
++				 tsif_data_dev_array[i]);
++			cdev_del(&tsif_data_dev_array[i]->c_dev);
++			kfree(tsif_data_dev_array[i]);
++		}
++		class_destroy(tsif_data_class);
++		driver_unregister(&tsif_driver);
++	}
++}
++
++module_init(tsif_data_init);
++module_exit(tsif_data_exit);
++
++MODULE_DESCRIPTION("TSIF Driver");
++MODULE_AUTHOR("Texas Instruments");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/include/asm-arm/arch-davinci/tsif.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/tsif.h
+@@ -0,0 +1,979 @@
++/*
++ * Copyright (C) 2006 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#ifndef __ASM_ARCH_TSIF_H
++#define __ASM_ARCH_TSIF_H
++
++#include <linux/types.h>
++#include <linux/wait.h>
++#include <linux/io.h>
++#include <asm/arch/hardware.h>
++
++/* TSIF Base Address */
++#define TSIF_BASE       0x01C13000
++#define TSIF_VIRT_BASE  0xE1013000
++/* Number of PID Filters */
++#define TSIF_NUM_PID_FILTER	7
++/* Channel number of other PID packets */
++#define TSIF_OTHER_CH         	7
++#define TSIF_MAJORS		2
++#define TSIF_MINORS		11
++
++extern unsigned int tsif_control_minor_count;
++extern unsigned int tsif_data_minor_count;
++
++struct tsif_irq_data {
++#ifdef __KERNEL__
++	struct completion pat_complete;
++	struct completion pmt_complete;
++	struct completion spcpkt_complete;
++#endif				/* __KERNEL__ */
++};
++
++extern unsigned int tsif_device_count;
++
++#define ENDIAN 1		/* 0:Big Endian,1:Little Endian */
++
++#if ENDIAN == 0			/* Big Endian */
++#define SWAP_BIG_ENDIAN32(a) (a)
++#define SWAP_BIG_ENDIAN16(a) (a)
++#else				/* Little Endian */
++#define SWAP_BIG_ENDIAN32(a)			\
++		((((a)>>24)&0x000000ff)	|	\
++		(((a)>>8)&0x0000ff00)	|	\
++		(((a)<<8)&0x00ff0000)	|	\
++		(((a)<<24)&0xff000000))
++#define SWAP_BIG_ENDIAN16(a) ((((a)>>8)&0x00ff)|(((a)<<8)&0xff00))
++#endif
++
++/*******************************************************************************
++*       Constant/Macro Define                                                  *
++*******************************************************************************/
++#define TSIF_IO(device, offset)						\
++	(IO_ADDRESS((DAVINCI_DM646X_TSIF0_BASE + device * 0x400 + offset * 4)))
++
++/****   TSIF Registers  **/
++#define TSIF1_IO_PID0_FLT_CFG           (TSIF_IO(0, 0x11))
++#define TSIF1_IO_PID1_FLT_CFG           (TSIF_IO(0, 0x12))
++#define TSIF1_IO_PID2_FLT_CFG           (TSIF_IO(0, 0x13))
++#define TSIF1_IO_PID3_FLT_CFG           (TSIF_IO(0, 0x14))
++#define TSIF1_IO_PID4_FLT_CFG           (TSIF_IO(0, 0x15))
++#define TSIF1_IO_PID5_FLT_CFG           (TSIF_IO(0, 0x16))
++#define TSIF1_IO_PID6_FLT_CFG           (TSIF_IO(0, 0x17))
++#define TSIF1_IO_WRB0_STRT_ADD          (TSIF_IO(0, 0x31))
++#define TSIF1_IO_WRB0_END_ADD           (TSIF_IO(0, 0x32))
++#define TSIF1_IO_WRB0_RP_ADD            (TSIF_IO(0, 0x33))
++#define TSIF1_IO_WRB0_SUB_ADD           (TSIF_IO(0, 0x34))
++#define TSIF1_IO_WRB0_WP_ADD            (TSIF_IO(0, 0x35))
++#define TSIF1_IO_WRB1_STRT_ADD          (TSIF_IO(0, 0x38))
++#define TSIF1_IO_WRB1_END_ADD           (TSIF_IO(0, 0x39))
++#define TSIF1_IO_WRB1_RP_ADD            (TSIF_IO(0, 0x3a))
++#define TSIF1_IO_WRB1_SUB_ADD           (TSIF_IO(0, 0x3b))
++#define TSIF1_IO_WRB1_WP_ADD            (TSIF_IO(0, 0x3c))
++#define TSIF1_IO_WRB2_STRT_ADD          (TSIF_IO(0, 0x40))
++#define TSIF1_IO_WRB2_END_ADD           (TSIF_IO(0, 0x41))
++#define TSIF1_IO_WRB2_RP_ADD            (TSIF_IO(0, 0x42))
++#define TSIF1_IO_WRB2_SUB_ADD           (TSIF_IO(0, 0x43))
++#define TSIF1_IO_WRB2_WP_ADD            (TSIF_IO(0, 0x44))
++#define TSIF1_IO_WRB3_STRT_ADD          (TSIF_IO(0, 0x48))
++#define TSIF1_IO_WRB3_END_ADD           (TSIF_IO(0, 0x49))
++#define TSIF1_IO_WRB3_RP_ADD            (TSIF_IO(0, 0x4a))
++#define TSIF1_IO_WRB3_SUB_ADD           (TSIF_IO(0, 0x4b))
++#define TSIF1_IO_WRB3_WP_ADD            (TSIF_IO(0, 0x4c))
++#define TSIF1_IO_WRB4_STRT_ADD          (TSIF_IO(0, 0x50))
++#define TSIF1_IO_WRB4_END_ADD           (TSIF_IO(0, 0x51))
++#define TSIF1_IO_WRB4_RP_ADD            (TSIF_IO(0, 0x52))
++#define TSIF1_IO_WRB4_SUB_ADD           (TSIF_IO(0, 0x53))
++#define TSIF1_IO_WRB4_WP_ADD            (TSIF_IO(0, 0x54))
++#define TSIF1_IO_WRB5_STRT_ADD          (TSIF_IO(0, 0x58))
++#define TSIF1_IO_WRB5_END_ADD           (TSIF_IO(0, 0x59))
++#define TSIF1_IO_WRB5_RP_ADD            (TSIF_IO(0, 0x5a))
++#define TSIF1_IO_WRB5_SUB_ADD           (TSIF_IO(0, 0x5b))
++#define TSIF1_IO_WRB5_WP_ADD            (TSIF_IO(0, 0x5c))
++#define TSIF1_IO_WRB6_STRT_ADD          (TSIF_IO(0, 0x60))
++#define TSIF1_IO_WRB6_END_ADD           (TSIF_IO(0, 0x61))
++#define TSIF1_IO_WRB6_RP_ADD            (TSIF_IO(0, 0x62))
++#define TSIF1_IO_WRB6_SUB_ADD           (TSIF_IO(0, 0x63))
++#define TSIF1_IO_WRB6_WP_ADD            (TSIF_IO(0, 0x64))
++#define TSIF1_IO_WRB7_STRT_ADD          (TSIF_IO(0, 0x68))
++#define TSIF1_IO_WRB7_END_ADD           (TSIF_IO(0, 0x69))
++#define TSIF1_IO_WRB7_RP_ADD            (TSIF_IO(0, 0x6a))
++#define TSIF1_IO_WRB7_SUB_ADD           (TSIF_IO(0, 0x6b))
++#define TSIF1_IO_WRB7_WP_ADD            (TSIF_IO(0, 0x6c))
++
++#define TSIF2_IO_PID0_FLT_CFG           (TSIF_IO(1, 0x11))
++#define TSIF2_IO_PID1_FLT_CFG           (TSIF_IO(1, 0x12))
++#define TSIF2_IO_PID2_FLT_CFG           (TSIF_IO(1, 0x13))
++#define TSIF2_IO_PID3_FLT_CFG           (TSIF_IO(1, 0x14))
++#define TSIF2_IO_PID4_FLT_CFG           (TSIF_IO(1, 0x15))
++#define TSIF2_IO_PID5_FLT_CFG           (TSIF_IO(1, 0x16))
++#define TSIF2_IO_PID6_FLT_CFG           (TSIF_IO(1, 0x17))
++#define TSIF2_IO_WRB0_STRT_ADD          (TSIF_IO(1, 0x31))
++#define TSIF2_IO_WRB0_END_ADD           (TSIF_IO(1, 0x32))
++#define TSIF2_IO_WRB0_RP_ADD            (TSIF_IO(1, 0x33))
++#define TSIF2_IO_WRB0_SUB_ADD           (TSIF_IO(1, 0x34))
++#define TSIF2_IO_WRB0_WP_ADD            (TSIF_IO(1, 0x35))
++#define TSIF2_IO_WRB1_STRT_ADD          (TSIF_IO(1, 0x38))
++#define TSIF2_IO_WRB1_END_ADD           (TSIF_IO(1, 0x39))
++#define TSIF2_IO_WRB1_RP_ADD            (TSIF_IO(1, 0x3a))
++#define TSIF2_IO_WRB1_SUB_ADD           (TSIF_IO(1, 0x3b))
++#define TSIF2_IO_WRB1_WP_ADD            (TSIF_IO(1, 0x3c))
++#define TSIF2_IO_WRB2_STRT_ADD          (TSIF_IO(1, 0x40))
++#define TSIF2_IO_WRB2_END_ADD           (TSIF_IO(1, 0x41))
++#define TSIF2_IO_WRB2_RP_ADD            (TSIF_IO(1, 0x42))
++#define TSIF2_IO_WRB2_SUB_ADD           (TSIF_IO(1, 0x43))
++#define TSIF2_IO_WRB2_WP_ADD            (TSIF_IO(1, 0x44))
++#define TSIF2_IO_WRB3_STRT_ADD          (TSIF_IO(1, 0x48))
++#define TSIF2_IO_WRB3_END_ADD           (TSIF_IO(1, 0x49))
++#define TSIF2_IO_WRB3_RP_ADD            (TSIF_IO(1, 0x4a))
++#define TSIF2_IO_WRB3_SUB_ADD           (TSIF_IO(1, 0x4b))
++#define TSIF2_IO_WRB3_WP_ADD            (TSIF_IO(1, 0x4c))
++#define TSIF2_IO_WRB4_STRT_ADD          (TSIF_IO(1, 0x50))
++#define TSIF2_IO_WRB4_END_ADD           (TSIF_IO(1, 0x51))
++#define TSIF2_IO_WRB4_RP_ADD            (TSIF_IO(1, 0x52))
++#define TSIF2_IO_WRB4_SUB_ADD           (TSIF_IO(1, 0x53))
++#define TSIF2_IO_WRB4_WP_ADD            (TSIF_IO(1, 0x54))
++#define TSIF2_IO_WRB5_STRT_ADD          (TSIF_IO(1, 0x58))
++#define TSIF2_IO_WRB5_END_ADD           (TSIF_IO(1, 0x59))
++#define TSIF2_IO_WRB5_RP_ADD            (TSIF_IO(1, 0x5a))
++#define TSIF2_IO_WRB5_SUB_ADD           (TSIF_IO(1, 0x5b))
++#define TSIF2_IO_WRB5_WP_ADD            (TSIF_IO(1, 0x5c))
++#define TSIF2_IO_WRB6_STRT_ADD          (TSIF_IO(1, 0x60))
++#define TSIF2_IO_WRB6_END_ADD           (TSIF_IO(1, 0x61))
++#define TSIF2_IO_WRB6_RP_ADD            (TSIF_IO(1, 0x62))
++#define TSIF2_IO_WRB6_SUB_ADD           (TSIF_IO(1, 0x63))
++#define TSIF2_IO_WRB6_WP_ADD            (TSIF_IO(1, 0x64))
++#define TSIF2_IO_WRB7_STRT_ADD          (TSIF_IO(1, 0x68))
++#define TSIF2_IO_WRB7_END_ADD           (TSIF_IO(1, 0x69))
++#define TSIF2_IO_WRB7_RP_ADD            (TSIF_IO(1, 0x6a))
++#define TSIF2_IO_WRB7_SUB_ADD           (TSIF_IO(1, 0x6b))
++#define TSIF2_IO_WRB7_WP_ADD            (TSIF_IO(1, 0x6c))
++
++/* PID Filter Config Register Table */
++static unsigned int const tsif_pid_flt_cfg[2][7] = {
++	{
++		TSIF1_IO_PID0_FLT_CFG,
++		TSIF1_IO_PID1_FLT_CFG,
++		TSIF1_IO_PID2_FLT_CFG,
++		TSIF1_IO_PID3_FLT_CFG,
++		TSIF1_IO_PID4_FLT_CFG,
++		TSIF1_IO_PID5_FLT_CFG,
++		TSIF1_IO_PID6_FLT_CFG
++	},
++	{
++		TSIF2_IO_PID0_FLT_CFG,
++		TSIF2_IO_PID1_FLT_CFG,
++		TSIF2_IO_PID2_FLT_CFG,
++		TSIF2_IO_PID3_FLT_CFG,
++		TSIF2_IO_PID4_FLT_CFG,
++		TSIF2_IO_PID5_FLT_CFG,
++		TSIF2_IO_PID6_FLT_CFG
++	}
++};
++
++/* Write Ring Buffer Start Address Register Table */
++static unsigned int const tsif_wrb_start_addr[2][8] = {
++	{
++		TSIF1_IO_WRB0_STRT_ADD,
++		TSIF1_IO_WRB1_STRT_ADD,
++		TSIF1_IO_WRB2_STRT_ADD,
++		TSIF1_IO_WRB3_STRT_ADD,
++		TSIF1_IO_WRB4_STRT_ADD,
++		TSIF1_IO_WRB5_STRT_ADD,
++		TSIF1_IO_WRB6_STRT_ADD,
++		TSIF1_IO_WRB7_STRT_ADD
++	},
++	{
++		TSIF2_IO_WRB0_STRT_ADD,
++		TSIF2_IO_WRB1_STRT_ADD,
++		TSIF2_IO_WRB2_STRT_ADD,
++		TSIF2_IO_WRB3_STRT_ADD,
++		TSIF2_IO_WRB4_STRT_ADD,
++		TSIF2_IO_WRB5_STRT_ADD,
++		TSIF2_IO_WRB6_STRT_ADD,
++		TSIF2_IO_WRB7_STRT_ADD
++	}
++};
++
++/* Write End Address Register Table */
++static unsigned int const tsif_wrb_end_addr[2][8] = {
++	{
++		TSIF1_IO_WRB0_END_ADD,
++		TSIF1_IO_WRB1_END_ADD,
++		TSIF1_IO_WRB2_END_ADD,
++		TSIF1_IO_WRB3_END_ADD,
++		TSIF1_IO_WRB4_END_ADD,
++		TSIF1_IO_WRB5_END_ADD,
++		TSIF1_IO_WRB6_END_ADD,
++		TSIF1_IO_WRB7_END_ADD
++	},
++	{
++		TSIF2_IO_WRB0_END_ADD,
++		TSIF2_IO_WRB1_END_ADD,
++		TSIF2_IO_WRB2_END_ADD,
++		TSIF2_IO_WRB3_END_ADD,
++		TSIF2_IO_WRB4_END_ADD,
++		TSIF2_IO_WRB5_END_ADD,
++		TSIF2_IO_WRB6_END_ADD,
++		TSIF2_IO_WRB7_END_ADD
++	}
++};
++
++/* Write Ring Buffer Read Address Register Table */
++static unsigned int const tsif_wrb_read_addr[2][8] = {
++	{
++		TSIF1_IO_WRB0_RP_ADD,
++		TSIF1_IO_WRB1_RP_ADD,
++		TSIF1_IO_WRB2_RP_ADD,
++		TSIF1_IO_WRB3_RP_ADD,
++		TSIF1_IO_WRB4_RP_ADD,
++		TSIF1_IO_WRB5_RP_ADD,
++		TSIF1_IO_WRB6_RP_ADD,
++		TSIF1_IO_WRB7_RP_ADD
++	},
++	{
++		TSIF2_IO_WRB0_RP_ADD,
++		TSIF2_IO_WRB1_RP_ADD,
++		TSIF2_IO_WRB2_RP_ADD,
++		TSIF2_IO_WRB3_RP_ADD,
++		TSIF2_IO_WRB4_RP_ADD,
++		TSIF2_IO_WRB5_RP_ADD,
++		TSIF2_IO_WRB6_RP_ADD,
++		TSIF2_IO_WRB7_RP_ADD
++	}
++};
++
++/* Write Ring Buffer Subtraction Register Table */
++static unsigned int const tsif_wrb_subtraction[2][8] = {
++	{
++		TSIF1_IO_WRB0_SUB_ADD,
++		TSIF1_IO_WRB1_SUB_ADD,
++		TSIF1_IO_WRB2_SUB_ADD,
++		TSIF1_IO_WRB3_SUB_ADD,
++		TSIF1_IO_WRB4_SUB_ADD,
++		TSIF1_IO_WRB5_SUB_ADD,
++		TSIF1_IO_WRB6_SUB_ADD,
++		TSIF1_IO_WRB7_SUB_ADD
++	},
++	{
++		TSIF2_IO_WRB0_SUB_ADD,
++		TSIF2_IO_WRB1_SUB_ADD,
++		TSIF2_IO_WRB2_SUB_ADD,
++		TSIF2_IO_WRB3_SUB_ADD,
++		TSIF2_IO_WRB4_SUB_ADD,
++		TSIF2_IO_WRB5_SUB_ADD,
++		TSIF2_IO_WRB6_SUB_ADD,
++		TSIF2_IO_WRB7_SUB_ADD
++	}
++};
++
++/* Write Ring Buffer Present Address Register Table */
++static unsigned int const tsif_wrb_present_addr[2][8] = {
++	{
++		TSIF1_IO_WRB0_WP_ADD,
++		TSIF1_IO_WRB1_WP_ADD,
++		TSIF1_IO_WRB2_WP_ADD,
++		TSIF1_IO_WRB3_WP_ADD,
++		TSIF1_IO_WRB4_WP_ADD,
++		TSIF1_IO_WRB5_WP_ADD,
++		TSIF1_IO_WRB6_WP_ADD,
++		TSIF1_IO_WRB7_WP_ADD
++	},
++	{
++		TSIF2_IO_WRB0_WP_ADD,
++		TSIF2_IO_WRB1_WP_ADD,
++		TSIF2_IO_WRB2_WP_ADD,
++		TSIF2_IO_WRB3_WP_ADD,
++		TSIF2_IO_WRB4_WP_ADD,
++		TSIF2_IO_WRB5_WP_ADD,
++		TSIF2_IO_WRB6_WP_ADD,
++		TSIF2_IO_WRB7_WP_ADD
++	}
++};
++
++#define PID			(0x00)
++#define CTRL0			(0x04)
++#define CTRL1			(0x08)
++#define INTEN			(0x0C)
++#define INTEN_SET		(0x10)
++#define INTEN_CLR		(0x14)
++#define INT_STATUS		(0x18)
++#define INT_STATUS_CLR		(0x1C)
++#define EMULATION_CTRL		(0x20)
++#define ASYNC_TX_WAIT		(0x24)
++#define PAT_SENSE_CFG		(0x28)
++#define PAT_STORE_ADD		(0x2C)
++#define PMT_SENSE_CFG		(0x30)
++#define PMT_STORE_ADD		(0x34)
++#define BSP_PID			(0x38)
++#define BSP_STORE_ADD		(0x3C)
++#define PCR_SENSE_CFG		(0x40)
++#define PID0_FLT_CFG		(0x44)
++#define PID1_FLT_CFG		(0x48)
++#define PID2_FLT_CFG		(0x4C)
++#define PID3_FLT_CFG		(0x50)
++#define PID4_FLT_CFG		(0x54)
++#define PID5_FLT_CFG		(0x58)
++#define PID6_FLT_CFG		(0x5C)
++#define BP_MODE_CFG		(0x60)
++#define TX_ATS_INIT		(0x64)
++#define TX_ATS_MONITOR		(0x68)
++#define VBUS_WR_STATUS		(0x6C)
++#define RCV_PKT_STAT		(0x70)
++#define STC_CTRL		(0x80)
++#define STC_INIT		(0x84)
++#define STC_INTVAL_0		(0x88)
++#define STC_INTVAL_1		(0x8C)
++#define STC_INTVAL_2		(0x90)
++#define STC_INTVAL_3		(0x94)
++#define STC_INTVAL_4		(0x98)
++#define STC_INTVAL_5		(0x9C)
++#define STC_INTVAL_6		(0xA0)
++#define STC_INTVAL_7		(0xA4)
++#define WRB_CH_CTRL		(0xC0)
++#define WRB0_STRT_ADD		(0xC4)
++#define WRB0_END_ADD		(0xC8)
++#define WRB0_RP_ADD		(0xCC)
++#define WRB0_SUB_ADD		(0xD0)
++#define WRB0_WP_ADD		(0xD4)
++#define WRB1_STRT_ADD		(0xE0)
++#define WRB1_END_ADD		(0xE4)
++#define WRB1_RP_ADD		(0xE8)
++#define WRB1_SUB_ADD		(0xEC)
++#define WRB1_WP_ADD		(0xF0)
++#define WRB2_STRT_ADD		(0x100)
++#define WRB2_END_ADD		(0x104)
++#define WRB2_RP_ADD		(0x108)
++#define WRB2_SUB_ADD		(0x10C)
++#define WRB2_WP_ADD		(0x110)
++#define WRB3_STRT_ADD		(0x120)
++#define WRB3_END_ADD		(0x124)
++#define WRB3_RP_ADD		(0x128)
++#define WRB3_SUB_ADD		(0x12C)
++#define WRB3_WP_ADD		(0x130)
++#define WRB4_STRT_ADD		(0x140)
++#define WRB4_END_ADD		(0x144)
++#define WRB4_RP_ADD		(0x148)
++#define WRB4_SUB_ADD		(0x14C)
++#define WRB4_WP_ADD		(0x150)
++#define WRB5_STRT_ADD		(0x160)
++#define WRB5_END_ADD		(0x164)
++#define WRB5_RP_ADD		(0x168)
++#define WRB5_SUB_ADD		(0x16C)
++#define WRB5_WP_ADD		(0x170)
++#define WRB6_STRT_ADD		(0x180)
++#define WRB6_END_ADD		(0x184)
++#define WRB6_RP_ADD		(0x188)
++#define WRB6_SUB_ADD		(0x18C)
++#define WRB6_WP_ADD		(0x190)
++#define WRB7_STRT_ADD		(0x1A0)
++#define WRB7_END_ADD		(0x1A4)
++#define WRB7_RP_ADD		(0x1A8)
++#define WRB7_SUB_ADD		(0x1AC)
++#define WRB7_WP_ADD		(0x1B0)
++#define RRB_CH_CTRL		(0x1C0)
++#define RRB0_STRT_ADD		(0x1C4)
++#define RRB0_END_ADD		(0x1C8)
++#define RRB0_WP_ADD		(0x1CC)
++#define RRB0_SUB_ADD		(0x1D0)
++#define RRB0_RP_ADD		(0x1D4)
++#define PKT_CNT_VAL		(0x1D8)
++#define TST_BUF_CTRL		(0x1E8)
++#define TST_RXBUF_U		(0x1EC)
++#define TST_RXBUF_L		(0x1F0)
++#define TST_TXBUF_U		(0x1F4)
++#define TST_TXBUF_L		(0x1F8)
++#define TST_CTRL		(0x1FC)
++
++/**************************************************************************\
++* Field Definition Macros
++\**************************************************************************/
++
++#define TSIF_RING_BUF_WR_CH_CTL_EN_ACTIVATE        0x1
++#define TSIF_CTRL0_TX_CLK_INV_MASK                 (0x80000000u)
++#define TSIF_CTRL0_TX_PKT_SIZE                     (0x07000000u)
++#define TSIF_CTRL0_TX_ATS_MODE                     (0x00C00000u)
++#define TSIF_CTRL0_TX_STREAM_MODE                  (0x00200000u)
++#define TSIF_CTRL0_TX_PKTSTRT_WIDTH                (0x00100000u)
++#define TSIF_CTRL0_TX_IF_MODE                      (0x000C0000u)
++#define TSIF_CTRL0_TX_DMA_CTL                      (0x00020000u)
++#define TSIF_CTRL0_TX_CTL                          (0x00010000u)
++#define TSIF_CTRL0_RCV_PKT_SIZE                    (0x00000700u)
++#define TSIF_CTRL0_RCV_ATS_MODE                    (0x000000C0u)
++#define TSIF_CTRL0_RCV_STREAM_MODE                 (0x00000020u)
++#define TSIF_CTRL0_RCV_INPUT_PORT                  (0x00000010u)
++#define TSIF_CTRL0_RCV_IF_MODE                     (0x0000000Cu)
++#define TSIF_CTRL0_RCV_DMA_CTL                     (0x00000002u)
++#define TSIF_CTRL0_RCV_CTL                         (0x00000001u)
++#define TSIF_CTRL0_RESETVAL                        (0x00000000u)
++#define TSIF_CTRL1_STREAM_BNDRY_CTL                (0x00000010u)
++#define TSIF_CTRL1_PID_FILTER_CTL                  (0x00000007u)
++#define TSIF_CTRL1_RESETVAL                        (0x00000000u)
++#define TSIF_INTEN_RBW7_FULL_INTEN                 (0x00008000u)
++#define TSIF_INTEN_RBW6_FULL_INTEN                 (0x00004000u)
++#define TSIF_INTEN_RBW5_FULL_INTEN                 (0x00002000u)
++#define TSIF_INTEN_RBW4_FULL_INTEN                 (0x00001000u)
++#define TSIF_INTEN_RBW3_FULL_INTEN                 (0x00000800u)
++#define TSIF_INTEN_RBW2_FULL_INTEN                 (0x00000400u)
++#define TSIF_INTEN_RBW1_FULL_INTEN                 (0x00000200u)
++#define TSIF_INTEN_RBW0_FULL_INTEN                 (0x00000100u)
++#define TSIF_INTEN_RBR0_FULL_INTEN                 (0x00000010u)
++#define TSIF_INTEN_PMT_DETECT_INTEN                (0x00000008u)
++#define TSIF_INTEN_PAT_DETECT_INTEN                (0x00000004u)
++#define TSIF_INTEN_GOP_START_INTEN                 (0x00000002u)
++#define TSIF_INTEN_RESETVAL                        (0x00000000u)
++#define TSIF_INTEN_SET_STC_07_INTEN_SET            (0x00800000u)
++#define TSIF_INTEN_SET_STC_06_INTEN_SET            (0x00400000u)
++#define TSIF_INTEN_SET_STC_05_INTEN_SET            (0x00200000u)
++#define TSIF_INTEN_SET_STC_04_INTEN_SET            (0x00100000u)
++#define TSIF_INTEN_SET_STC_03_INTEN_SET            (0x00080000u)
++#define TSIF_INTEN_SET_STC_02_INTEN_SET            (0x00040000u)
++#define TSIF_INTEN_SET_STC_01_INTEN_SET            (0x00020000u)
++#define TSIF_INTEN_SET_STC_00_INTEN_SET            (0x00010000u)
++#define TSIF_INTEN_SET_RBW7_FULL_INTEN_SET         (0x00008000u)
++#define TSIF_INTEN_SET_RBW6_FULL_INTEN_SET         (0x00004000u)
++#define TSIF_INTEN_SET_RBW5_FULL_INTEN_SET         (0x00002000u)
++#define TSIF_INTEN_SET_RBW4_FULL_INTEN_SET         (0x00001000u)
++#define TSIF_INTEN_SET_RBW3_FULL_INTEN_SET         (0x00000800u)
++#define TSIF_INTEN_SET_RBW2_FULL_INTEN_SET         (0x00000400u)
++#define TSIF_INTEN_SET_RBW1_FULL_INTEN_SET         (0x00000200u)
++#define TSIF_INTEN_SET_RBW0_FULL_INTEN_SET         (0x00000100u)
++#define TSIF_INTEN_SET_RCV_PKTERR_INTEN_SET        (0x00000040u)
++#define TSIF_INTEN_SET_VBUS_ERR_INTEN_SET          (0x00000020u)
++#define TSIF_INTEN_SET_RBR0_FULL_INTEN_SET         (0x00000010u)
++#define TSIF_INTEN_SET_PMT_DETECT_INTEN_SET        (0x00000008u)
++#define TSIF_INTEN_SET_PAT_DETECT_INTEN_SET        (0x00000004u)
++#define TSIF_INTEN_SET_GOP_START_INTEN_SET         (0x00000002u)
++#define TSIF_INTEN_SET_BOUNDARY_SPECIFIC_INTEN_SET (0x00000001u)
++#define TSIF_INTEN_CLR_STC_07_INTEN_CLR            (0x00800000u)
++#define TSIF_INTEN_CLR_STC_06_INTEN_CLR            (0x00400000u)
++#define TSIF_INTEN_CLR_STC_05_INTEN_CLR            (0x00200000u)
++#define TSIF_INTEN_CLR_STC_04_INTEN_CLR            (0x00100000u)
++#define TSIF_INTEN_CLR_STC_03_INTEN_CLR            (0x00080000u)
++#define TSIF_INTEN_CLR_STC_02_INTEN_CLR            (0x00040000u)
++#define TSIF_INTEN_CLR_STC_01_INTEN_CLR            (0x00020000u)
++#define TSIF_INTEN_CLR_STC_00_INTEN_CLR            (0x00010000u)
++#define TSIF_INTEN_CLR_RBW7_FULL_INTEN_CLR         (0x00008000u)
++#define TSIF_INTEN_CLR_RBW6_FULL_INTEN_CLR         (0x00004000u)
++#define TSIF_INTEN_CLR_RBW5_FULL_INTEN_CLR         (0x00002000u)
++#define TSIF_INTEN_CLR_RBW4_FULL_INTEN_CLR         (0x00001000u)
++#define TSIF_INTEN_CLR_RBW3_FULL_INTEN_CLR         (0x00000800u)
++#define TSIF_INTEN_CLR_RBW2_FULL_INTEN_CLR         (0x00000400u)
++#define TSIF_INTEN_CLR_RBW1_FULL_INTEN_CLR         (0x00000200u)
++#define TSIF_INTEN_CLR_RBW0_FULL_INTEN_CLR         (0x00000100u)
++#define TSIF_INTEN_CLR_RCV_PKTERR_INTEN_CLR        (0x00000040u)
++#define TSIF_INTEN_CLR_VBUS_ERR_INTEN_CLR          (0x00000020u)
++#define TSIF_INTEN_CLR_RBR0_FULL_INTEN_CLR         (0x00000010u)
++#define TSIF_INTEN_CLR_PMT_DETECT_INTEN_CLR        (0x00000008u)
++#define TSIF_INTEN_CLR_PAT_DETECT_INTEN_CLR        (0x00000004u)
++#define TSIF_INTEN_CLR_GOP_START_INTEN_CLR         (0x00000002u)
++#define TSIF_INTEN_CLR_BOUNDARY_SPECIFIC_INTEN_CLR (0x00000001u)
++#define TSIF_STATUS_PMT_DETECT_STATUS              (0x00000008u)
++#define TSIF_STATUS_PAT_DETECT_STATUS              (0x00000004u)
++#define TSIF_EMU_CTRL_TSIF_EMULSUSP_FREE           (0x00000001u)
++#define TSIF_ASYNC_TX_WAIT_RESETVAL                (0x00000000u)
++#define TSIF_PAT_SENSE_CFG_PAT_SENSE_EN            (0x00010000u)
++#define TSIF_PAT_SENSE_CFG_RESETVAL                (0x00000000u)
++#define TSIF_PAT_STORE_ADDRESS_RESETVAL            (0x00000000u)
++#define TSIF_PMT_SENSE_CFG_PMT_SENSE_EN            (0x00010000u)
++#define TSIF_PMT_SENSE_CFG_RESETVAL                (0x00000000u)
++#define TSIF_PMT_STORE_ADDRESS_RESETVAL            (0x00000000u)
++#define TSIF_PCR_SENSE_CFG_PCR_SENSE_EN            (0x00010000u)
++#define TSIF_PCR_SENSE_CFG_RESETVAL                (0x00000000u)
++#define TSIF_BSP_STORE_ADDR_RESETVAL               (0x00000000u)
++#define TSIF_TX_ATS_INIT_TX_ATS_INIT_EN            (0x40000000u)
++#define TSIF_RING_BUFFER_WRITE_CHANNEL_CONTROL_RESETVAL (0x00000000u)
++#define TSIF_RING_BUF_WR_CH7_START_ADDR_RESETVAL        (0x00000000u)
++#define TSIF_RING_BUF_WR_CH7_END_ADDR_RESETVAL          (0x00000000u)
++#define TSIF_RING_BUF_WR_CH7_RD_POINT_ADDR_RESETVAL     (0x00000000u)
++#define TSIF_RING_BUF_WR_CH7_SUB_RESETVAL               (0x00000000u)
++#define TSIF_RING_BUF_RD_CH_CTL_RESETVAL                (0x00000000u)
++#define TSIF_RING_BUF_RD_CH0_START_ADDR_RESETVAL        (0x00000000u)
++#define TSIF_RING_BUF_RD_CH0_END_ADDR_RESETVAL          (0x00000000u)
++#define TSIF_RING_BUF_RD_CH0_WR_POINT_ADDR_RESETVAL     (0x00000000u)
++#define TSIF_RING_BUF_RD_CH0_SUB_RESETVAL               (0x00000000u)
++
++/* Macros for internal use */
++#define TSIF_PID_FILTER_ENABLE_MASK		(0x01000000u)
++#define TSIF_CTRL0_RCV_IF_MODE_SER_SYN 		(0x00000000u)
++#define TSIF_CTRL0_RCV_IF_MODE_SER_ASYN 	(0x00000004u)
++#define TSIF_CTRL0_RCV_IF_MODE_PAR_SYN 		(0x00000008u)
++#define TSIF_CTRL0_RCV_IF_MODE_PAR_ASYN 	(0x0000000Cu)
++#define TSIF_CTRL0_RCV_IF_MODE_DMA 		(0x00000010u)
++#define TSIF_CTRL0_RCV_STREAM_MODE_TS_INACTIVE 	(0x00000000u)
++#define TSIF_CTRL0_RCV_STREAM_MODE_TS_ACTIVE 	(0x00000020u)
++#define TSIF_CTRL0_RCV_ATS_MODE_IN_192 		(0x00000000u)
++#define TSIF_CTRL0_RCV_ATS_MODE_IN_188 		(0x00000040u)
++#define TSIF_CTRL0_RCV_ATS_MODE_CHANGE_192 	(0x00000080u)
++#define TSIF_CTRL0_RCV_ATS_MODE_ADD_188 	(0x000000C0u)
++#define TSIF_CTRL1_PID_FILTER_EN_INACTIVATE 	(0x00000000u)
++#define TSIF_CTRL1_PID_FILTER_EN_ACTIVATE 	(0x00000008u)
++#define TSIF_CTRL1_PID_FILTER_CTL_FULL_MAN 	(0x00000000u)
++#define TSIF_CTRL1_PID_FILTER_CTL_SEMI_A 	(0x00000001u)
++#define TSIF_CTRL1_PID_FILTER_CTL_SEMI_B 	(0x00000002u)
++#define TSIF_CTRL1_PID_FILTER_CTL_FULL_AUT 	(0x00000003u)
++#define TSIF_CTRL0_RCV_PKT_SIZE_BYTE_200 	(0x00000000u)
++#define TSIF_CTRL0_RCV_PKT_SIZE_BYTE_208 	(0x00000100u)
++#define TSIF_CTRL0_RCV_PKT_SIZE_BYTE_216 	(0x00000200u)
++#define TSIF_CTRL0_RCV_PKT_SIZE_BYTE_224 	(0x00000300u)
++#define TSIF_CTRL0_RCV_PKT_SIZE_BYTE_232 	(0x00000400u)
++#define TSIF_CTRL0_RCV_PKT_SIZE_BYTE_240 	(0x00000500u)
++#define TSIF_CTRL0_RCV_PKT_SIZE_BYTE_248 	(0x00000600u)
++#define TSIF_CTRL0_RCV_PKT_SIZE_BYTE_256 	(0x00000700u)
++#define TSIF_CTRL0_TX_IF_MODE_SER_SYN 		(0x00000000u)
++#define TSIF_CTRL0_TX_IF_MODE_SER_ASYN 		(0x00040000u)
++#define TSIF_CTRL0_TX_IF_MODE_PAR_SYN 		(0x00080000u)
++#define TSIF_CTRL0_TX_IF_MODE_PAR_ASYN 		(0x000C0000u)
++#define TSIF_CTRL0_TX_STREAM_MODE_TS_INACTIVE 	(0x00000000u)
++#define TSIF_CTRL0_TX_STREAM_MODE_TS_ACTIVE 	(0x00200000u)
++#define TSIF_CTRL0_TX_ATS_MODE_OUT_188 		(0x00000000u)
++#define TSIF_CTRL0_TX_ATS_MODE_OUT_192 		(0x00400000u)
++#define TSIF_CTRL0_TX_PKT_SIZE_BYTE_200 	(0x00000000u)
++#define TSIF_CTRL0_TX_PKT_SIZE_BYTE_208 	(0x01000000u)
++#define TSIF_CTRL0_TX_PKT_SIZE_BYTE_216 	(0x02000000u)
++#define TSIF_CTRL0_TX_PKT_SIZE_BYTE_224 	(0x03000000u)
++#define TSIF_CTRL0_TX_PKT_SIZE_BYTE_232 	(0x04000000u)
++#define TSIF_CTRL0_TX_PKT_SIZE_BYTE_240 	(0x05000000u)
++#define TSIF_CTRL0_TX_PKT_SIZE_BYTE_248 	(0x06000000u)
++#define TSIF_CTRL0_TX_PKT_SIZE_BYTE_256 	(0x07000000u)
++
++#define TSIF_CTRL0_RCV_IF_MODE_MASK		(0x0000000Cu)
++#define TSIF_CTRL0_RCV_ATS_MODE_MASK 		(0x000000C0u)
++#define TSIF_CTRL1_PID_FILTER_CTL_MASK 		(0x00000007u)
++#define TSIF_CTRL0_RCV_PKT_SIZE_MASK 		(0x00000700u)
++#define TSIF_CTRL0_TX_PKT_SIZE_MASK 		(0x07000000u)
++
++#define RX_CONFIG		(TSIF_CTRL0_RCV_PKT_SIZE | \
++				TSIF_CTRL0_RCV_ATS_MODE | \
++				TSIF_CTRL0_RCV_STREAM_MODE | \
++				TSIF_CTRL0_RCV_INPUT_PORT | \
++				TSIF_CTRL0_RCV_IF_MODE | \
++				TSIF_CTRL0_RCV_DMA_CTL | \
++				TSIF_CTRL0_RCV_CTL)
++
++#define TX_CONFIG		(TSIF_CTRL0_TX_PKT_SIZE | \
++				TSIF_CTRL0_TX_ATS_MODE | \
++				TSIF_CTRL0_TX_STREAM_MODE | \
++				TSIF_CTRL0_TX_PKTSTRT_WIDTH | \
++				TSIF_CTRL0_TX_IF_MODE | \
++				TSIF_CTRL0_TX_DMA_CTL | \
++				TSIF_CTRL0_TX_CTL)
++
++/*
++ * Enumerations
++ */
++
++enum tsif_if_mode {
++	/* Synchronous serial interface */
++	TSIF_IF_SERIAL_SYNC,
++	/* Asynchronous serial interface */
++	TSIF_IF_SERIAL_ASYNC,
++	/* Synchronous parallel interface */
++	TSIF_IF_PARALLEL_SYNC,
++	/* Asynchronous parallel interface */
++	TSIF_IF_PARALLEL_ASYNC,
++	/* Consequential Interface */
++	TSIF_IF_DMA
++};
++
++enum tsif_stream_mode {
++	TSIF_STREAM_TS,		/* TS */
++	TSIF_STREAM_NON_TS	/* Non-TS */
++};
++
++enum tsif_tx_ats_mode {
++	/* Output 188 byte length TS data after deleting ATS value */
++	TSIF_TX_ATS_REMOVE,
++	/* Output 192 byte length TS data without any changing ATS value */
++	TSIF_TX_ATS_THROUGH,
++};
++
++enum tsif_rx_ats_mode {
++	/* Receiving 192 byte length TS packet without changing ATS data */
++	TSIF_RX_ATS_THROUGH,
++	/* to be discussed */
++	TSIF_RX_ATS_NOADD,
++	/* Receiving 192 byte length TS packet with changing ATS data */
++	TSIF_RX_ATS_CHANGE,
++	/* Receiving 188 byte length TS packet with adding ATS data */
++	TSIF_RX_ATS_ADD
++};
++
++enum tsif_pid_filter_mode {
++	/* Bypass Mode(PID Filter Inactive) */
++	TSIF_PID_FILTER_BYPASS,
++	/* Full Manual Mode */
++	TSIF_PID_FILTER_FULL_MANUAL,
++	/* Semi-automatic Mode-A */
++	TSIF_PID_FILTER_SEMI_AUTO_A,
++	/* Semi-automatic Mode-B */
++	TSIF_PID_FILTER_SEMI_AUTO_B,
++	/* Full Automatic Mode */
++	TSIF_PID_FILTER_FULL_AUTO
++};
++
++enum tsif_channel_id {
++	/* Receive Data Channel 0 */
++	TSIF_RX_FILTER0,
++	/* Receive Data Channel 1 */
++	TSIF_RX_FILTER1,
++	/* Receive Data Channel 2 */
++	TSIF_RX_FILTER2,
++	/* Receive Data Channel 3 */
++	TSIF_RX_FILTER3,
++	/* Receive Data Channel 4 */
++	TSIF_RX_FILTER4,
++	/* Receive Data Channel 5 */
++	TSIF_RX_FILTER5,
++	/* Receive Data Channel 6 */
++	TSIF_RX_FILTER6,
++	/* Receive Data Channel 7 */
++	TSIF_RX_FILTER7,
++	/* Receive Control Channel */
++	TSIF_RX_CONTROL_CHANNEL,
++	/* Transmit Control Channel */
++	TSIF_TX_CONTROL_CHANNEL,
++	/* ATS */
++	TSIF_TX_ATS
++};
++
++enum tsif_pkt_size {
++	/* 200 bytes per packet */
++	TSIF_200_BYTES_PER_PKT,
++	/* 208 bytes per packet */
++	TSIF_208_BYTES_PER_PKT,
++	/* 216 bytes per packet */
++	TSIF_216_BYTES_PER_PKT,
++	/* 224 bytes per packet */
++	TSIF_224_BYTES_PER_PKT,
++	/* 232 bytes per packet */
++	TSIF_232_BYTES_PER_PKT,
++	/* 240 bytes per packet */
++	TSIF_240_BYTES_PER_PKT,
++	/* 248 bytes per packet */
++	TSIF_248_BYTES_PER_PKT,
++	/* 256 bytes per packet */
++	TSIF_256_BYTES_PER_PKT
++};
++
++enum tsif_clk_speed {
++	/* 13.5 MHz for serial/parallel mode */
++	TSIF_13_5_MHZ_SERIAL_PARALLEL,
++	/* 16.875 MHz for serial/parallel mode */
++	TSIF_16_875_MHZ_SERIAL_PARALLEL,
++	/* 27.0 MHz for serial mode */
++	TSIF_27_0_MHZ_SERIAL,
++	/* 54.0 MHz for serial mode */
++	TSIF_54_0_MHZ_SERIAL,
++	/* 81.0 MHz for serial mode */
++	TSIF_81_0_MHZ_SERIAL
++};
++
++/*
++ * Structures
++ */
++struct tsif_tx_config {
++	/* Mode of transmitter interface */
++	enum tsif_if_mode if_mode;
++	/* Stream mode of transmitter */
++	enum tsif_stream_mode stream_mode;
++	/* ATS mode  */
++	enum tsif_tx_ats_mode ats_mode;
++	/* Interval between transmitter packets */
++	unsigned char interval_wait;
++	/* Packet size for transmitter */
++	unsigned int pkt_size;
++	/* Clock speed for transmitter */
++	enum tsif_clk_speed clk_speed;
++};
++
++struct tsif_rx_config {
++	/* Mode of receiver interface */
++	enum tsif_if_mode if_mode;
++	/* Stream mode of receiver */
++	enum tsif_stream_mode stream_mode;
++	/* ATS mode  */
++	enum tsif_rx_ats_mode ats_mode;
++	/* Mode of PID filter */
++	enum tsif_pid_filter_mode filter_mode;
++	/* Packet size for receiver */
++	unsigned int pkt_size;
++};
++
++struct tsif_tx_ring_buf_config {
++	/* Receive buffer start address */
++	char *pstart;
++	/* Receive buffer write pointer address */
++	char *pwrite;
++	/* Receive buffer size */
++	unsigned long buf_size;
++	/* Receive buffer subtraction address */
++	unsigned int psub;
++};
++
++struct tsif_rx_ring_buf_config {
++	/* Receive buffer start address */
++	char *pstart;
++	/* Receive buffer read pointer address */
++	char *pread;
++	/* Receive buffer size */
++	unsigned long buf_size;
++	/* Receive buffer subtraction address */
++	unsigned int psub;
++};
++
++struct tsif_pid_filter_config {
++	/* Target PID */
++	unsigned short pid;
++	/* Stream type for Semi-automatic Mode-B/Full Automatic Mode */
++	unsigned char stream_type;
++};
++
++struct tsif_pat_config {
++	/* Flag indicating whether PAT is enabled or not */
++	unsigned char flag;
++};
++
++struct tsif_pmt_config {
++	/* PMT Id */
++	unsigned short pmt_pid;
++	/* Flag to enable/disbale PMT */
++	unsigned char flag;
++};
++
++struct tsif_pcr_config {
++	/* PMT Id */
++	unsigned short pcr_pid;
++};
++
++struct tsif_spcpkt_config {
++	/* PID of Specific Packet */
++	unsigned short pid;
++};
++
++struct tsif_buf_status {
++	/* Pointer for start address */
++	char *pstart;
++	/* Pointer for end address */
++	char *pend;
++	/* Destination of write pointer for transmitter/read
++	 * pointer for receiver */
++	char *pread_write;
++	/* Current write pointer for transmitter / read pointer for receiver */
++	char *pcurrent;
++	/* Subtraction address */
++	unsigned int psub;
++};
++
++struct tsif_read_avail {
++	/* Offset from where read has to start */
++	unsigned int offset;
++	/* Length that can be read from user */
++	unsigned int len;
++	/* Variable in which the number of bytes read successfully in the
++	 * last transaction is populated by the user */
++	unsigned int bytes_last_read;
++};
++
++struct tsif_write_avail {
++	/* Offset from where write has to start */
++	unsigned int offset;
++	/* Length that can be written from user */
++	unsigned int len;
++	/* Variable in which the number of bytes wrote successfully in the
++	 * last transaction is populated by the user */
++	unsigned int bytes_last_wrote;
++};
++
++/*
++ * IOCTLs
++ */
++#define TSIF_IOC_BASE			'S'
++/* Set configuration for PID filter */
++#define TSIF_SET_PID_FILTER_CONFIG	\
++			_IOW(TSIF_IOC_BASE, 1, struct tsif_pid_filter_config *)
++
++/* Get configuration of PID filter */
++#define TSIF_GET_PID_FILTER_CONFIG	\
++			_IOR(TSIF_IOC_BASE, 2, struct tsif_pid_filter_config *)
++
++/* Set configuration for receiver */
++#define TSIF_SET_RX_CONFIG		\
++			_IOW(TSIF_IOC_BASE, 3, struct tsif_rx_config *)
++
++/* Get configuration of receiver */
++#define TSIF_GET_RX_CONFIG		\
++			_IOR(TSIF_IOC_BASE, 4, struct tsif_rx_config *)
++
++/* Set configuration for transmitter */
++#define TSIF_SET_TX_CONFIG		\
++				_IOW(TSIF_IOC_BASE, 5, struct tsif_tx_config *)
++
++/* Get configuration of transmitter */
++#define TSIF_GET_TX_CONFIG		\
++			_IOR(TSIF_IOC_BASE, 6, struct tsif_tx_config *)
++
++/* Start receiver */
++#define TSIF_START_RX                   _IO(TSIF_IOC_BASE, 7)
++
++/* Stop receiver */
++#define TSIF_STOP_RX                    _IO(TSIF_IOC_BASE, 8)
++
++/* Start transmitter */
++#define TSIF_START_TX                   _IO(TSIF_IOC_BASE, 9)
++
++/* Stop transmitter */
++#define TSIF_STOP_TX                    _IO(TSIF_IOC_BASE, 10)
++
++/* Get status of receiver buffer */
++#define TSIF_GET_RX_BUF_STATUS		\
++			_IOR(TSIF_IOC_BASE, 11, struct tsif_buf_status *)
++
++/* Get status of transmitter buffer */
++#define TSIF_GET_TX_BUF_STATUS		\
++			_IOR(TSIF_IOC_BASE, 12, struct tsif_buf_status *)
++
++/* Enable/Disable PAT Detection */
++#define TSIF_CONFIG_PAT			_IOW(TSIF_IOC_BASE, 13, unsigned char *)
++
++/* Get PAT packet */
++#define TSIF_GET_PAT_PKT                _IOR(TSIF_IOC_BASE, 14, void *)
++
++/* Set configuration for detecting PMT */
++#define TSIF_CONFIG_PMT			\
++			_IOW(TSIF_IOC_BASE, 15, struct tsif_pmt_config *)
++
++/* Get PMT packet */
++#define TSIF_GET_PMT_PKT                _IOR(TSIF_IOC_BASE, 16, void *)
++
++/* Enable PCR detection */
++#define TSIF_ENABLE_PCR			\
++			_IOW(TSIF_IOC_BASE, 17, struct tsif_pcr_config *)
++
++/* Disable PCR detection */
++#define TSIF_DISABLE_PCR		_IO(TSIF_IOC_BASE, 18)
++
++/* Set configuration for detecting specific packet */
++#define TSIF_SET_SPCPKT_CONFIG		\
++			_IOW(TSIF_IOC_BASE, 19, struct tsif_spcpkt_config *)
++
++/* Get configuration for detecting specific packet */
++#define TSIF_GET_SPCPKT_CONFIG		\
++			_IOR(TSIF_IOC_BASE, 20, struct tsif_spcpkt_config *)
++
++/* Get read availability */
++#define TSIF_GET_READ_AVAIL		\
++			_IOR(TSIF_IOC_BASE, 21, struct tsif_read_avail *)
++
++/* Get write availability */
++#define TSIF_GET_WRITE_AVAIL		\
++			_IOR(TSIF_IOC_BASE, 22, struct tsif_write_avail *)
++
++/* Allocate a TX buffer */
++#define TSIF_REQ_TX_BUF                	_IOWR(TSIF_IOC_BASE, 23, unsigned int *)
++
++/* Query a TX buffer */
++#define TSIF_QUERY_TX_BUF               _IOR(TSIF_IOC_BASE, 24, unsigned int *)
++
++/* Allocate a RX buffer */
++#define TSIF_REQ_RX_BUF                	_IOWR(TSIF_IOC_BASE, 25, unsigned int *)
++
++/* Query a RX buffer */
++#define TSIF_QUERY_RX_BUF               _IOR(TSIF_IOC_BASE, 26, unsigned int *)
++
++/* Set read availability */
++#define TSIF_SET_READ_AVAIL		\
++			_IOW(TSIF_IOC_BASE, 27, struct tsif_read_avail *)
++
++/* Set write availability */
++#define TSIF_SET_WRITE_AVAIL		\
++			_IOW(TSIF_IOC_BASE, 28, struct tsif_write_avail *)
++
++/* Set ATS */
++#define TSIF_SET_ATS            	_IOW(TSIF_IOC_BASE, 29, unsigned int *)
++
++/* Wait for RX to complete */
++#define TSIF_WAIT_FOR_RX_COMPLETE	_IO(TSIF_IOC_BASE, 30)
++
++/* Configure the receiver ring buffer */
++#define TSIF_RX_RING_BUF_CONFIG		\
++		_IOW(TSIF_IOC_BASE, 31, struct tsif_rx_ring_buf_config *)
++
++/* Configure the transmit ring buffer */
++#define TSIF_TX_RING_BUF_CONFIG		\
++		_IOW(TSIF_IOC_BASE, 32, struct tsif_tx_ring_buf_config *)
++
++/* Enable by-pass mode */
++#define TSIF_BYPASS_ENABLE		_IO(TSIF_IOC_BASE, 33)
++
++/* Enable consequential mode */
++#define TSIF_SET_CONSEQUENTIAL_MODE	_IO(TSIF_IOC_BASE, 34)
++
++#define TSIF_GET_PAT_CONFIG		\
++			_IOR(TSIF_IOC_BASE, 35, struct tsif_pat_config *)
++
++#define TSIF_GET_PMT_CONFIG		\
++			_IOR(TSIF_IOC_BASE, 36, struct tsif_pmt_config *)
++
++/* Get ATS */
++#define TSIF_GET_ATS            	_IOR(TSIF_IOC_BASE, 37, unsigned int *)
++
++/* Enable/Disable GOP Detection */
++#define TSIF_ENABLE_GOP_DETECT		_IOW(TSIF_IOC_BASE, 38, unsigned int *)
++
++/* Get the Specific Packet */
++#define TSIF_GET_SPCPKT         	_IOR(TSIF_IOC_BASE, 39, void *)
++
++/* Wait for TX to complete */
++#define TSIF_WAIT_FOR_TX_COMPLETE	_IO(TSIF_IOC_BASE, 40)
++
++/* Set/Reset the Endianness control bit */
++#define TSIF_SET_ENDIAN_CTL		_IOWR(TSIF_IOC_BASE, 41, unsigned int *)
++
++struct inode;
++struct file;
++struct vm_area_struct;
++struct device;
++struct pt_regs;
++
++struct tsif_dev *tsif_dev_get_by_major(unsigned int);
++int tsif_set_pid_filter_config(struct inode *, unsigned long);
++int tsif_set_rx_config(struct inode *, unsigned long);
++int tsif_set_tx_config(struct inode *, unsigned long);
++int tsif_stop_rx(struct inode *);
++int tsif_set_pat_config(struct inode *, unsigned long);
++int tsif_set_pmt_config(struct inode *, unsigned long);
++int tsif_set_spec_pkt_config(struct inode *, unsigned long);
++int tsif_pid_open(struct inode *, struct file *);
++int tsif_control_open(struct inode *, struct file *);
++int tsif_pid_release(struct inode *, struct file *);
++int tsif_control_release(struct inode *, struct file *);
++int tsif_control_mmap(struct file *, struct vm_area_struct *);
++int tsif_pid_mmap(struct file *, struct vm_area_struct *);
++int tsif_pid_ioctl(struct inode *, struct file *, unsigned int, unsigned long);
++int tsif_control_ioctl(struct inode *, struct file *, unsigned int,
++		       unsigned long);
++void tsif_pat_complete_cmd(void);
++void tsif_pmt_complete_cmd(void);
++void tsif_spcpkt_complete_cmd(void);
++int set_tsif_clk(enum tsif_clk_speed);
++unsigned int tsif_user_virt_to_phys(unsigned int);
++static int tsif_remove(struct device *);
++static void tsif_platform_release(struct device *);
++
++#endif				/* __ASM_ARCH_TSIF_H */
+Index: linux-2.6.18/mvl_patches/pro50-1596.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1596.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1596);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

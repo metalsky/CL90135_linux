@@ -1,0 +1,390 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_pBuffer_with_buf
+# Date: Fri Sep 19 14:12:37 2008
+# From d285f5f580bd2af2230c54d43919c0ef2f02d134 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Thu, 16 Aug 2007 00:53:36 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace pBuffer with buf
+# 
+# Search and replace pBuffer with buf
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 86fc81985152f66c96aa6a8585837a138c9ff7e6)
+
+PATCHNUM=1731
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From d285f5f580bd2af2230c54d43919c0ef2f02d134 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Thu, 16 Aug 2007 00:53:36 -0700
+Subject: [PATCH] musb_hdrc: Search and replace pBuffer with buf
+
+Search and replace pBuffer with buf
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 86fc81985152f66c96aa6a8585837a138c9ff7e6)
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -105,7 +105,7 @@
+ 
+ static void musb_ep_program(struct musb *musb, u8 epnum,
+ 			struct urb *urb, unsigned int nOut,
+-			u8 * pBuffer, u32 dwLength);
++			u8 * buf, u32 dwLength);
+ 
+ /*
+  * Clear TX fifo. Needed to avoid BABBLE errors.
+@@ -171,7 +171,7 @@ musb_start_urb(struct musb *musb, int is
+ {
+ 	u16			wFrame;
+ 	u32			dwLength;
+-	void			*pBuffer;
++	void			*buf;
+ 	void __iomem		*mbase =  musb->mregs;
+ 	struct urb		*urb = next_urb(qh);
+ 	struct musb_hw_ep	*hw_ep = qh->hw_ep;
+@@ -190,17 +190,17 @@ musb_start_urb(struct musb *musb, int is
+ 		is_in = 0;
+ 		hw_ep->out_qh = qh;
+ 		musb->ep0_stage = MGC_END0_START;
+-		pBuffer = urb->setup_packet;
++		buf = urb->setup_packet;
+ 		dwLength = 8;
+ 		break;
+ 	case USB_ENDPOINT_XFER_ISOC:
+ 		qh->iso_idx = 0;
+ 		qh->frame = 0;
+-		pBuffer = urb->transfer_buffer + urb->iso_frame_desc[0].offset;
++		buf = urb->transfer_buffer + urb->iso_frame_desc[0].offset;
+ 		dwLength = urb->iso_frame_desc[0].length;
+ 		break;
+ 	default:		/* bulk, interrupt */
+-		pBuffer = urb->transfer_buffer;
++		buf = urb->transfer_buffer;
+ 		dwLength = urb->transfer_buffer_length;
+ 	}
+ 
+@@ -213,14 +213,14 @@ musb_start_urb(struct musb *musb, int is
+ 			case USB_ENDPOINT_XFER_ISOC:	s = "-iso"; break;
+ 			default:			s = "-intr"; break;
+ 			}; s;}),
+-			epnum, pBuffer, dwLength);
++			epnum, buf, dwLength);
+ 
+ 	/* Configure endpoint */
+ 	if (is_in || hw_ep->is_shared_fifo)
+ 		hw_ep->in_qh = qh;
+ 	else
+ 		hw_ep->out_qh = qh;
+-	musb_ep_program(musb, epnum, urb, !is_in, pBuffer, dwLength);
++	musb_ep_program(musb, epnum, urb, !is_in, buf, dwLength);
+ 
+ 	/* transmit may have more work: start it when it is time */
+ 	if (is_in)
+@@ -470,7 +470,7 @@ static u8 musb_host_packet_rx(struct mus
+ 		u8 epnum, u8 bIsochError)
+ {
+ 	u16 wRxCount;
+-	u8 *pBuffer;
++	u8 *buf;
+ 	u16 csr;
+ 	u8 bDone = FALSE;
+ 	u32			length;
+@@ -498,7 +498,7 @@ static u8 musb_host_packet_rx(struct mus
+ 		}
+ 
+ 		d = urb->iso_frame_desc + qh->iso_idx;
+-		pBuffer = buffer + d->offset;
++		buf = buffer + d->offset;
+ 		length = d->length;
+ 		if (wRxCount > length) {
+ 			if (status == 0) {
+@@ -518,7 +518,7 @@ static u8 musb_host_packet_rx(struct mus
+ 		bDone = (++qh->iso_idx >= urb->number_of_packets);
+ 	} else {
+ 		/* non-isoch */
+-		pBuffer = buffer + qh->offset;
++		buf = buffer + qh->offset;
+ 		length = urb->transfer_buffer_length - qh->offset;
+ 		if (wRxCount > length) {
+ 			if (urb->status == -EINPROGRESS)
+@@ -542,7 +542,7 @@ static u8 musb_host_packet_rx(struct mus
+ 			urb->status = -EREMOTEIO;
+ 	}
+ 
+-	musb_read_fifo(hw_ep, length, pBuffer);
++	musb_read_fifo(hw_ep, length, buf);
+ 
+ 	csr = musb_readw(epio, MUSB_RXCSR);
+ 	csr |= MUSB_RXCSR_H_WZC_BITS;
+@@ -625,7 +625,7 @@ musb_rx_reinit(struct musb *musb, struct
+  */
+ static void musb_ep_program(struct musb *musb, u8 epnum,
+ 			struct urb *urb, unsigned int is_out,
+-			u8 * pBuffer, u32 dwLength)
++			u8 * buf, u32 dwLength)
+ {
+ 	struct dma_controller	*dma_controller;
+ 	struct dma_channel	*pDmaChannel;
+@@ -855,7 +855,7 @@ static void musb_ep_program(struct musb 
+ 
+ 			/* PIO to load FIFO */
+ 			qh->segsize = wLoadCount;
+-			musb_write_fifo(hw_ep, wLoadCount, pBuffer);
++			musb_write_fifo(hw_ep, wLoadCount, buf);
+ 			csr = musb_readw(epio, MUSB_TXCSR);
+ 			csr &= ~(MUSB_TXCSR_DMAENAB
+ 				| MUSB_TXCSR_DMAMODE
+@@ -1168,7 +1168,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 	u8			bDone = FALSE;
+ 	u16			tx_csr;
+ 	size_t			wLength = 0;
+-	u8			*pBuffer = NULL;
++	u8			*buf = NULL;
+ 	struct urb		*urb;
+ 	struct musb_hw_ep	*hw_ep = musb->endpoints + epnum;
+ 	void __iomem		*epio = hw_ep->regs;
+@@ -1274,7 +1274,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 				bDone = TRUE;
+ 			} else if (!dma) {
+ 				d++;
+-				pBuffer = urb->transfer_buffer + d->offset;
++				buf = urb->transfer_buffer + d->offset;
+ 				wLength = d->length;
+ 			}
+ 		} else if (dma) {
+@@ -1288,7 +1288,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 							& URB_ZERO_PACKET))
+ 				bDone = TRUE;
+ 			if (!bDone) {
+-				pBuffer = urb->transfer_buffer
++				buf = urb->transfer_buffer
+ 						+ qh->offset;
+ 				wLength = urb->transfer_buffer_length
+ 						- qh->offset;
+@@ -1312,7 +1312,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 		musb_advance_schedule(musb, urb, hw_ep, USB_DIR_OUT);
+ 
+ 	} else if (!(tx_csr & MUSB_TXCSR_DMAENAB)) {
+-		// WARN_ON(!pBuffer);
++		// WARN_ON(!buf);
+ 
+ 		/* REVISIT:  some docs say that when hw_ep->tx_double_buffered,
+ 		 * (and presumably, fifo is not half-full) we should write TWO
+@@ -1320,7 +1320,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 		 */
+ 		/* PIO:  start next packet in this URB */
+ 		wLength = min(qh->maxpacket, (u16) wLength);
+-		musb_write_fifo(hw_ep, wLength, pBuffer);
++		musb_write_fifo(hw_ep, wLength, buf);
+ 		qh->segsize = wLength;
+ 
+ 		musb_ep_select(mbase, epnum);
+Index: linux-2.6.18/mvl_patches/pro50-1731.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1731.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1731);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

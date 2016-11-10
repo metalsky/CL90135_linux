@@ -1,0 +1,995 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_cir_6467
+# Date: Fri Sep 19 14:00:27 2008
+# Source: MontaVista Software, Inc. 
+# MR: 28263
+# Type: Integration 
+# Disposition: merged from PRO 4.0 
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com> 
+# Description: 
+#     Add Consumer InfraRed support for TI DaVinci DM6467
+# 
+
+PATCHNUM=1572
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc. 
+MR: 28263
+Type: Integration 
+Disposition: merged from PRO 4.0 
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com> 
+Description: 
+    Add Consumer InfraRed support for TI DaVinci DM6467
+
+Index: linux-2.6.18/drivers/char/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Kconfig
++++ linux-2.6.18/drivers/char/Kconfig
+@@ -1161,5 +1161,12 @@ config DAVINCI_PWM
+         help
+                 DaVinci PWM Driver
+ 
++config DM646x_CIR
++	tristate "DM646x Consumer IR Driver"
++	default n
++	depends on MACH_DAVINCI_DM6467_EVM
++	help
++	  DM646x Consumer IR Driver
++
+ endmenu
+ 
+Index: linux-2.6.18/drivers/char/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Makefile
++++ linux-2.6.18/drivers/char/Makefile
+@@ -109,6 +109,8 @@ obj-$(CONFIG_TCG_TPM)		+= tpm/
+ 
+ obj-$(CONFIG_DAVINCI_PWM) += davinci_pwm.o
+ 
++obj-$(CONFIG_DM646x_CIR)	+= cir.o
++
+ # Files generated that shall be removed upon make clean
+ clean-files := consolemap_deftbl.c defkeymap.c qtronixmap.c
+ 
+Index: linux-2.6.18/drivers/char/cir.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/char/cir.c
+@@ -0,0 +1,589 @@
++/*
++ * cir.c - Driver for Consumer Infrared (CIR) (on Davinci-HD EVM)
++ *
++ * Copyright (C) 2007  Texas Instruments, India
++ * Author: Suresh Rajashekara <suresh.r@ti.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/fs.h>
++#include <linux/cdev.h>
++#include <linux/jiffies.h>
++#include <linux/spinlock.h>
++#include <linux/device.h>
++#include <linux/platform_device.h>
++#include <linux/clk.h>
++#include <asm/arch/cir.h>
++#include <asm/arch/i2c-client.h>
++
++#define MODULE_NAME   "Consumer IR"
++
++/* Globals */
++static dev_t cir_dev;
++static u32 cir_major_number;
++static u32 cir_minor_number;
++static struct cdev cir_cdev;
++static atomic_t reference_count = ATOMIC_INIT(0);
++static DECLARE_MUTEX(mutex);
++
++static spinlock_t cir_lock = SPIN_LOCK_UNLOCKED;
++
++#define RAW_KEY_CODES 4
++/* If another key press is detected within this jiffies duration, then the
++ * driver discards the key press. */
++static int repeat_delay;	/* Value in jiffies */
++
++#define MAX_KEYS_IN_BUFFER  4
++static s16 decoded_keys[MAX_KEYS_IN_BUFFER];
++static u8 raw_key_buf[RAW_KEY_CODES] = {0};
++
++static int key_read;
++static int key_write;
++static unsigned long next_key_time;
++u8 cir_key_idx;
++
++DECLARE_COMPLETION(cir_keys);
++
++static u32 cir_reg_get ( u32 reg );
++static void cir_reg_set ( u32 reg, u8 reg_value );
++static void cir_reset(void);
++static void configure_cir_registers(void);
++int cir_release(struct inode *inode, struct file *file);
++
++static struct class *cir_class;
++
++static void cir_platform_release(struct device *device)
++{
++	/* this function does nothing */
++}
++
++static struct platform_device cir_device = {
++	.name = "cir",
++	.id = 0,
++	.dev = {
++		.release = cir_platform_release,
++	}
++};
++
++static struct device_driver cir_driver = {
++	.name = "cir",
++	.bus = &platform_bus_type,
++};
++
++
++
++static int cir_flush(void)
++{
++	u32 i;
++
++	unsigned int flags;
++	spin_lock_irqsave(&cir_lock, flags);
++
++	cir_reset();
++	configure_cir_registers();
++
++	key_read = 0;
++	key_write = 0;
++	cir_key_idx = 0;
++
++	for (i = 0; i < MAX_KEYS_IN_BUFFER; i++)
++		decoded_keys[i] = -1;
++
++	spin_unlock_irqrestore(&cir_lock, flags);
++
++	return 0;
++}
++
++static s16 decode_cir_value(u8 *raw_cir_data)
++{
++	u16 i;
++	u32 acc;
++	u16 lowbit;
++	u16 highbit;
++	u16 cir_value = 0;
++
++	/* do the whole RC-5 decoding thing.. */
++	acc = ( raw_cir_data[0] << 0 )
++		| ( raw_cir_data[1] << 8 )
++		| ( raw_cir_data[2] << 16 )
++		| ( raw_cir_data[3] << 24 );
++
++	acc = acc >> 1;
++	for ( i = 0 ; i < 16 ; i++ ) {
++		cir_value <<= 1;
++
++		/* Low & High bits */
++		lowbit  = ( acc & 0x0002 );
++		highbit = ( acc & 0x0001 );
++
++		/* One bit */
++		if ( ( highbit == 0 ) && ( lowbit != 0 ) )
++			cir_value |= 1;
++
++		acc = acc >> 2;
++	}
++
++
++	/* check if the start bit is valid */
++	if (cir_value & 0x8000)	{
++		/* good key received (hopefully), tell everyone about it. */
++		return (cir_value >> 3) & 0xfff;
++	}
++
++	/* wrong key received.. */
++	return -1;
++}
++
++
++static inline s8 get_stored_key(s16 *key)
++{
++	s8 ret = -1;
++	unsigned int flags;
++
++	spin_lock_irqsave(&cir_lock, flags);
++
++	if (decoded_keys[key_read] != -1) {
++		/* return valid key */
++		*key =  decoded_keys[key_read];
++		/*after the valid key is read,invalidate the buffer with -1 */
++		decoded_keys[key_read] = -1;
++		ret = 0;
++
++		if (++key_read >= MAX_KEYS_IN_BUFFER)
++			key_read = 0;
++		}
++
++	spin_unlock_irqrestore(&cir_lock, flags);
++
++	return ret;
++}
++
++static inline void store_received_key(s16 key)
++{
++	unsigned int flags;
++
++	spin_lock_irqsave(&cir_lock, flags);
++	/*store the decoded key into the buffer which will be read later*/
++	decoded_keys[key_write] = key;
++
++	if (++key_write >= MAX_KEYS_IN_BUFFER)
++			key_write = 0;
++
++	spin_unlock_irqrestore(&cir_lock, flags);
++}
++
++ssize_t cir_read (struct file *file, char __user *buff, size_t size, loff_t
++		  *loff)
++{
++	u16 key;
++
++	/* we only allow one key read at a time */
++	if (size != sizeof(u16)) {
++		printk (KERN_ERR "Invalid size requested for read\n");
++		return -EFAULT;
++	}
++
++begin:
++	if (get_stored_key(&key) != -1) {
++		/* there is a key to be read.. */
++		if (copy_to_user(buff, &key, sizeof(u16)) != 0) return -EFAULT;
++	} else {
++
++		/* tell non blocking applications to come again */
++	if (file->f_flags & O_NONBLOCK) {
++			return -EAGAIN;
++		} else { /* ask blocking applications to sleep comfortably */
++			if (wait_for_completion_interruptible(&cir_keys))
++				return -ERESTARTSYS;
++			goto begin;
++		}
++	}
++
++	return size;
++}
++
++static u32 cir_reg_get ( u32 reg )
++{
++	u32 reg_value;
++	u32 lcr = 0;
++	u32 preg32 = IO_ADDRESS((CIR_BASE) + (reg & ~(USE_LCR_80|USE_LCR_BF)));
++	u32 set_lcr_80 = ((u32)reg) & USE_LCR_80;
++	u32 set_lcr_bf = ((u32)reg) & USE_LCR_BF;
++
++	/* Set LCR if needed */
++	if ( set_lcr_80 ) {
++		lcr = cir_reg_get( LCR );
++		cir_reg_set( LCR, 0x80 );
++	}
++
++	if ( set_lcr_bf ) {
++		lcr = cir_reg_get( LCR );
++		cir_reg_set( LCR, 0xbf );
++	}
++
++	/* Get UART register */
++	reg_value = *( volatile u32 * )( preg32 );
++
++	/* Return LCR reg if necessary */
++	if ( set_lcr_80 || set_lcr_bf ) {
++		cir_reg_set( LCR, lcr );
++	}
++
++	return reg_value;
++}
++
++static void cir_reg_set ( u32 reg, u8 reg_value )
++{
++	u32 lcr = 0;
++	u32 preg32 = IO_ADDRESS((CIR_BASE) + (reg & ~(USE_LCR_80|USE_LCR_BF)));
++	u32 set_lcr_80 = ((u32)reg) & USE_LCR_80;
++	u32 set_lcr_bf = ((u32)reg) & USE_LCR_BF;
++
++	/* Set LCR if needed */
++	if ( set_lcr_80 ) {
++		lcr = cir_reg_get( LCR );
++		cir_reg_set( LCR, 0x80 );
++	}
++
++	if ( set_lcr_bf ) {
++		lcr = cir_reg_get( LCR );
++		cir_reg_set( LCR, 0xbf );
++	}
++
++	/* Set UART register */
++	*( volatile u32 * )( preg32 ) = reg_value;
++
++	/* Return LCR reg if necessary */
++	if ( set_lcr_80 || set_lcr_bf ) {
++		cir_reg_set( LCR, lcr );
++	}
++}
++
++static void configure_cir_registers (void)
++{
++
++	/* Enable FIFO, set the granularity to
++	   cause interrupt after 4 bytes in FIFO */
++	cir_reg_set(FCR, 0x1);
++	cir_reg_set(TLR, 0x10);
++	cir_reg_set(SCR, 0x80);
++
++	cir_reg_set( EFR, 0x10 );
++	cir_reg_set( IER, 0 );
++	cir_reg_set( MCR, 0 );
++	cir_reg_set( EFR, 0 );
++	cir_reg_set( LCR, 0 );
++	cir_reg_set( MDR1, 0x07 );
++	cir_reg_set( LCR, 0xbf );
++	cir_reg_set( IIR, 0x10 );
++	cir_reg_set( LCR, 0x87 );
++	cir_reg_set( IER, 0x05 );
++	cir_reg_set( RHR, 0x35 );
++	cir_reg_set( LCR, 0x06 );
++	cir_reg_set( MCR, 0x01 );
++	cir_reg_set( IER, 0x01 );
++	cir_reg_set( EBLR, 0x05 );
++	cir_reg_set( SFLSR, 0x01 );
++	cir_reg_set( RESUME, 0x00 );
++	cir_reg_set( SFREGL, 0x04 );
++	cir_reg_set( SFREGH, 0x00 );
++	cir_reg_set( LCR, 0x07 );
++	cir_reg_set( CFPS, 56 );
++	cir_reg_set( MDR2, 0x58 );
++	cir_reg_set( MDR1, 0x06 );
++}
++
++static void cir_reset( void )
++{
++	u32 val = 0;
++
++
++	cir_reg_set( EFR, 0x10 );
++	cir_reg_set( IER, 0 );
++	cir_reg_set( MCR, 0 );
++	cir_reg_set( EFR, 0 );
++	cir_reg_set( LCR, 0 );
++	cir_reg_set( MDR1, 0x07 );
++	cir_reg_get ( RESUME );
++
++	/* disable FIFO and clear RX and TX fifos  */
++	val = cir_reg_get(FCR);
++	val &= 0xFE;
++	val |= 0x6;
++	cir_reg_set(FCR, val);
++}
++
++int cir_open (struct inode *inode, struct file *file)
++{
++	int i;
++
++	INIT_COMPLETION(cir_keys);
++	davinci_i2c_expander_op(0x3a, CIR_MOD_DM646X, 0);
++	next_key_time = jiffies;
++
++	if (file->f_mode == FMODE_WRITE) {
++		printk (KERN_ERR "TX Not supported\n");
++		return -EACCES;
++	}
++
++	if (atomic_inc_return(&reference_count) > 1) {
++		atomic_dec(&reference_count);
++		return -EACCES;
++	}
++
++	for (i = 0; i < MAX_KEYS_IN_BUFFER; i++)
++		decoded_keys[i] = -1;
++
++	cir_reset();
++	configure_cir_registers();
++
++	return 0;
++}
++
++int cir_release (struct inode *inode, struct file *file)
++{
++	complete_all(&cir_keys);
++	cir_reset();
++	atomic_dec(&reference_count);
++	return 0;
++}
++
++static irqreturn_t cir_irq_handler (int irq, void *dev_id, struct pt_regs *regs)
++{
++	s16 key;
++	/* loop while fifo not empty */
++	while ((cir_reg_get(LSR) & 0x1) != 1) {
++
++		raw_key_buf[cir_key_idx++] = cir_reg_get(RHR);
++
++		/* if all the codes necessary for for decode are received */
++		if (cir_key_idx == RAW_KEY_CODES) {
++			/* lets see if the debounce period is complete */
++			if (time_after(jiffies, next_key_time)) {
++				/* .. go ahead and decode the value */
++				key = decode_cir_value(raw_key_buf);
++				if (key != -1) {
++					store_received_key(key);
++					next_key_time = jiffies + repeat_delay;
++				complete (&cir_keys);
++			}
++				else
++					cir_flush();
++			}
++			cir_key_idx = 0;
++		}
++	}
++
++	cir_reg_get(RESUME);
++
++	return IRQ_HANDLED;
++}
++
++int cir_ioctl ( struct inode *inode, struct file *filp, unsigned int cmd,
++		unsigned long arg )
++{
++	int err = 0, time_val = 0, ret_val = 0;
++
++	if ( _IOC_TYPE(cmd) != CIR_IOC_MAGIC ) {
++		return -ENOTTY;
++	}
++
++	if ( _IOC_NR(cmd) > CIR_IOC_MAXNR ) {
++		return -ENOTTY;
++	}
++
++	if ( _IOC_DIR(cmd) & _IOC_READ ) {
++		err = !access_ok( VERIFY_WRITE, (void __user *)arg,
++				   _IOC_SIZE(cmd));
++	} else if ( _IOC_DIR(cmd) & _IOC_WRITE ) {
++		err =  !access_ok( VERIFY_READ, (void __user *)arg,
++				   _IOC_SIZE(cmd));
++	}
++
++	if (err) {
++		return -EFAULT;
++	}
++
++	switch ( cmd ) {
++
++	case CIR_FLUSH:
++		cir_flush();
++		return 0;
++
++		/* Value sent by user will be in ms, we convert that */
++		/* to jiffies */
++	case CIR_SET_REPEAT_DELAY:
++		ret_val = __get_user (time_val, (int __user *)arg);
++		if (ret_val == 0) {
++			repeat_delay = time_val/10;
++			return (repeat_delay*10);
++		} else {
++			return -EFAULT;
++		}
++		break;
++
++		/* Value returned from this ioctl has to be in ms */
++	case CIR_GET_REPEAT_DELAY:
++		ret_val = __put_user ((repeat_delay*10), (int __user *)arg);
++		if ( ret_val == 0 ) {
++			return 0;
++		} else {
++			return -EFAULT;
++		}
++		break;
++
++	default:
++		printk (KERN_ERR "Unknow IOCTL command\n");
++		break;
++	}
++
++	return -ENOTTY;
++}
++
++static struct file_operations cir_fops = {
++	.owner   = THIS_MODULE,
++	.read    = cir_read,
++	.open    = cir_open,
++	.release = cir_release,
++	.ioctl   = cir_ioctl,
++};
++
++static int __init cir_init ( void )
++{
++	s8 retval = 0;
++	struct clk *clkp;
++
++	cir_major_number = 0;
++	cir_minor_number = 0;
++	cir_class = NULL;
++
++	repeat_delay = 20;	/* in Jiffies */
++
++	cir_key_idx = 0;
++
++	clkp = clk_get (NULL, "UART2");
++
++	if ( IS_ERR ( clkp ) ) {
++		printk (KERN_ERR "Unable to get the clock for CIR\n");
++		goto failure;
++	} else
++		clk_enable (clkp);
++
++	if (cir_major_number) {	/* If major number is specified */
++		cir_dev = MKDEV(cir_major_number, 0);
++		retval = register_chrdev_region (cir_dev,
++						 CIR_DEV_COUNT,
++						 "/dev/cir");
++	} else {			/* If major number is not specified */
++		retval = alloc_chrdev_region (&cir_dev,
++					      cir_minor_number,
++					      CIR_DEV_COUNT,
++					      "/dev/cir");
++		cir_major_number = MAJOR(cir_dev);
++	}
++
++	if (retval < 0) {
++		printk (KERN_ERR "Unable to register the CIR device\n");
++		retval = -ENODEV;
++		goto failure;
++	} else {
++		printk(KERN_INFO "CIR device registered successfully "
++			  "(Major = %d, Minor = %d)\n",
++			  MAJOR(cir_dev), MINOR(cir_dev) );
++	}
++
++	cdev_init (&cir_cdev, &cir_fops);
++	cir_cdev.owner = THIS_MODULE;
++	cir_cdev.ops = &cir_fops;
++
++	/* You should not call cdev_add until your driver is completely ready to
++	   handle operations on the device*/
++	retval = cdev_add (&cir_cdev, cir_dev, CIR_DEV_COUNT);
++
++	if (retval) {
++		unregister_chrdev_region (cir_dev, CIR_DEV_COUNT);
++		printk (KERN_ERR "Error %d adding CIR device\n", retval);
++		goto failure;
++	}
++
++	retval = request_irq (CIR_IRQ, cir_irq_handler,
++			      SA_INTERRUPT|SA_SAMPLE_RANDOM, "Consumer IR",
++			      NULL);
++	if (retval) {
++		unregister_chrdev_region (cir_dev, CIR_DEV_COUNT);
++		cdev_del (&cir_cdev);
++		printk (KERN_ERR "Unable to register CIR IRQ %d\n", CIR_IRQ );
++		goto failure;
++	}
++
++	cir_class = class_create(THIS_MODULE, "cir");
++
++	if (!cir_class) {
++		unregister_chrdev_region (cir_dev, CIR_DEV_COUNT);
++		cdev_del(&cir_cdev);
++		goto failure;
++	}
++
++	if (driver_register(&cir_driver) != 0) {
++		unregister_chrdev_region (cir_dev, CIR_DEV_COUNT);
++		cdev_del(&cir_cdev);
++		class_destroy(cir_class);
++		goto failure;
++	}
++	/* Register the drive as a platform device */
++	if (platform_device_register(&cir_device) != 0) {
++		driver_unregister(&cir_driver);
++		unregister_chrdev_region (cir_dev, CIR_DEV_COUNT);
++		cdev_del(&cir_cdev);
++		class_destroy(cir_class);
++		goto failure;
++	}
++
++	cir_dev = MKDEV(cir_major_number, 0);
++
++	class_device_create(cir_class, NULL, cir_dev, NULL, "cir");
++
++	spin_lock_init(&cir_lock);
++
++ failure:
++	return retval;
++}
++
++static void __exit cir_exit ( void )
++{
++	printk (KERN_INFO "Unregistering the CIR device");
++
++	driver_unregister(&cir_driver);
++	platform_device_unregister(&cir_device);
++	free_irq(CIR_IRQ, NULL);
++	cir_dev = MKDEV(cir_major_number, 0);
++	class_device_destroy(cir_class, cir_dev);
++	class_destroy(cir_class);
++	cdev_del(&cir_cdev);
++	unregister_chrdev_region(cir_dev, CIR_DEV_COUNT);
++
++	return;
++}
++
++module_init (cir_init);
++module_exit (cir_exit);
++
++MODULE_AUTHOR ( "Texas Instruments" );
++MODULE_DESCRIPTION ( "Consumer Infrared (CIR) Driver" );
++MODULE_LICENSE ( "GPL" );
+Index: linux-2.6.18/include/asm-arm/arch-davinci/cir.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/cir.h
+@@ -0,0 +1,137 @@
++/*
++ * cir.h - Header file for the driver for Consumer Infrared (CIR)
++	   (on Davinci-HD EVM)
++ *
++ * Copyright (C) 2007  Texas Instruments, India
++ * Author: Suresh Rajashekara <suresh.r@ti.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ */
++
++#ifndef __CIR_H__
++#define __CIR_H__
++
++#ifdef __KERNEL__
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/device.h>
++#include <linux/wait.h>
++#include <linux/completion.h>
++#include <linux/interrupt.h>
++#include <linux/err.h>
++
++#include <asm/delay.h>
++#include <asm/io.h>
++#include <asm/irq.h>
++
++#include <asm/arch/memory.h>
++#include <asm/arch/edma.h>
++#include <asm/arch/irqs.h>
++// #include <asm/arch/mcasp.h>
++#include <linux/clk.h>
++#include <asm/atomic.h>
++#include <asm/uaccess.h>
++
++#define CIR_IOC_BASE     'C'
++#define CIRIOC_GET_SYS_CLOCK_FREQ_PRESCALER  _IOR(CIR_IOC_BASE, 1, int)
++#define CIRIOC_SET_SYS_CLOCK_FREQ_PRESCALER  _IOW(CIR_IOC_BASE, 2, int)
++#define CIRIOC_GET_ENCODING                  _IOR(CIR_IOC_BASE, 3, int)
++
++#define CIR_ENCODING_RC5   1
++
++#define CIR_MAJOR_NUMBER 253	/* This macro is currently not used. Define it
++				   to any value if you are using static minor
++				   numbers and use the same in cir.c */
++#define CIR_IRQ          IRQ_UARTINT2
++#define CIR_DEV_COUNT    1
++#endif /* __KERNEL__ */
++
++#define CIR_IOC_MAGIC 'k'
++
++#ifdef __KERNEL__
++/* Only 3 Ioctls now. Update if adding new ioctl */
++#define CIR_IOC_MAXNR 2
++#endif  /* __KERNEL__ */
++
++/* Ioctl to flush the buffers driver uses to store the keys received */
++#define CIR_FLUSH _IO(CIR_IOC_MAGIC, 0)
++
++/* Change the duration, within which, if another key is received is neglected */
++#define CIR_SET_REPEAT_DELAY _IOW(CIR_IOC_MAGIC, 1, int)
++
++/* Read the duration, within which, if another key is received is neglected */
++#define CIR_GET_REPEAT_DELAY _IOR(CIR_IOC_MAGIC, 2, int)
++#ifdef __KERNEL__
++#define CIR_BASE  DM644X_UART2_BASE /* UART 2 */
++
++/* CIR Register Mapping */
++#define RHR          (0x00)
++#define THR          (0x00)
++#define IER          (0x04)
++#define IIR          (0x08)
++#define FCR          (0x08)
++#define LCR          (0x0C)
++#define MCR          (0x10)
++#define LSR          (0x14)
++#define MSR          (0x18)
++#define TCR          (0x18)
++#define TLR          (0x1C)
++#define SPR          (0x1C)
++#define MDR1         (0x20)
++#define MDR2         (0x24)
++#define SFLSR        (0x28)
++#define TXFLL        (0x28)
++#define RESUME       (0x2C)
++#define TXFLH        (0x2C)
++#define SFREGL       (0x30)
++#define RXFLL        (0x30)
++#define SFREGH       (0x34)
++#define RXFLH        (0x34)
++#define BLR          (0x38)
++#define ACREG        (0x3C)
++#define SCR          (0x40)
++#define SSR          (0x44)
++#define EBLR         (0x48)
++#define MVR          (0x50)
++#define SYSC         (0x54)
++#define SYSS         (0x58)
++#define WER          (0x5C)
++#define CFPS         (0x60)
++
++/* ------------------------------------------------------------------------ *
++ *  Control Registers for: UART Registers minus Base Address (  )           *
++ *  These Registers are available with "LCR[bit 7] = 1"                     *
++ * ------------------------------------------------------------------------ */
++#define USE_LCR_80              ( 0x100 )
++#define DLL                     ( USE_LCR_80 + 0x0 )
++#define DLH                     ( USE_LCR_80 + 0x4 )
++#define UASR                    ( USE_LCR_80 + 0x38 )
++
++/* ------------------------------------------------------------------------  *
++ *  Control Registers for: UART Registers minus Base Address (  )            *
++ *  These Registers are available with "LCR = 0xBF"                          *
++ *  ------------------------------------------------------------------------ */
++#define USE_LCR_BF              ( 0x200 )
++#define EFR                     ( USE_LCR_BF + 0x8 )
++#define XON1                    ( USE_LCR_BF + 0x10 )
++#define XON2                    ( USE_LCR_BF + 0x14 )
++#define XOFF1                   ( USE_LCR_BF + 0x18 )
++#define XOFF2                   ( USE_LCR_BF + 0x1c )
++
++#define BIT(n)       (1<<n)
++#endif /* __KERNEL__ */
++
++#endif /* _CIR_H__ */
+Index: linux-2.6.18/mvl_patches/pro50-1572.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1572.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1572);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

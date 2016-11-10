@@ -1,0 +1,555 @@
+#! /usr/bin/env bash
+# Patch: -mmc_add_support_for_mmc_v4_high_speed_mode
+# Date: Thu Feb 19 15:01:07 2009
+# Source: Philip Langdale <philipl@overt.org>
+# MR: 29234
+# Type: Enhancement
+# Disposition: merged from 2.6.20-rc1
+# Signed-off-by: Philip Langdale <philipl@overt.org>
+# Signed-off-by: Pierre Ossman <drzeus@drzeus.cx>
+# Signed-off-by: Steve Chen <schen@mvista.com.
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+# [PATCH] mmc: Add support for mmc v4 high speed mode
+# 
+# This adds support for the high-speed modes defined by mmc v4
+# (assuming the host controller is up to it). On a TI sdhci controller,
+# it improves read speed from 1.3MBps to 2.3MBps. The TI controller can
+# only go up to 24MHz, but everything helps. Another person has taken
+# this basic patch and used it on a Nokia 770 to get a bigger boost
+# because that controller can run at 48MHZ.
+# 
+# commit bce40a36de574376f41f1ff3c4d212a7da2a3c90
+# tree f866c1d744db98d897d8e2684f7f47b56e75cb9b
+# parent 9c9c26188ff9fa5f44ba5a00e01b54b539f83d1d
+# author Philip Langdale <philipl@overt.org> Sat, 21 Oct 2006 12:35:02 +0200
+# committer Pierre Ossman <drzeus@drzeus.cx> Fri, 01 Dec 2006 18:21:32 +0100
+# 
+#  drivers/mmc/mmc.c            |  121 ++++++++++++++++++++++++++++++++++++++++++-
+#  include/linux/mmc/card.h     |    8 ++
+#  include/linux/mmc/protocol.h |   47 +++++++++++++++-
+#  3 files changed, 171 insertions(+), 5 deletions(-)
+# 
+
+PATCHNUM=2110
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Philip Langdale <philipl@overt.org>
+MR: 29234
+Type: Enhancement
+Disposition: merged from 2.6.20-rc1
+Signed-off-by: Philip Langdale <philipl@overt.org>
+Signed-off-by: Pierre Ossman <drzeus@drzeus.cx>
+Signed-off-by: Steve Chen <schen@mvista.com.
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+[PATCH] mmc: Add support for mmc v4 high speed mode
+
+This adds support for the high-speed modes defined by mmc v4
+(assuming the host controller is up to it). On a TI sdhci controller,
+it improves read speed from 1.3MBps to 2.3MBps. The TI controller can
+only go up to 24MHz, but everything helps. Another person has taken
+this basic patch and used it on a Nokia 770 to get a bigger boost
+because that controller can run at 48MHZ.
+
+commit bce40a36de574376f41f1ff3c4d212a7da2a3c90
+tree f866c1d744db98d897d8e2684f7f47b56e75cb9b
+parent 9c9c26188ff9fa5f44ba5a00e01b54b539f83d1d
+author Philip Langdale <philipl@overt.org> Sat, 21 Oct 2006 12:35:02 +0200
+committer Pierre Ossman <drzeus@drzeus.cx> Fri, 01 Dec 2006 18:21:32 +0100
+
+ drivers/mmc/mmc.c            |  121 ++++++++++++++++++++++++++++++++++++++++++-
+ include/linux/mmc/card.h     |    8 ++
+ include/linux/mmc/protocol.h |   47 +++++++++++++++-
+ mvl_patches/pro50-2110.c     |   16 +++++
+ 4 files changed, 187 insertions(+), 5 deletions(-)
+
+Index: linux-2.6.18/drivers/mmc/mmc.c
+===================================================================
+--- linux-2.6.18.orig/drivers/mmc/mmc.c
++++ linux-2.6.18/drivers/mmc/mmc.c
+@@ -4,6 +4,7 @@
+  *  Copyright (C) 2003-2004 Russell King, All Rights Reserved.
+  *  SD support Copyright (C) 2004 Ian Molton, All Rights Reserved.
+  *  SD support Copyright (C) 2005 Pierre Ossman, All Rights Reserved.
++ *  MMCv4 support Copyright (C) 2006 Philip Langdale, All Rights Reserved.
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 as
+@@ -953,6 +954,114 @@ static void mmc_read_csds(struct mmc_hos
+ 	}
+ }
+ 
++static void mmc_process_ext_csds(struct mmc_host *host)
++{
++	int err;
++	struct mmc_card *card;
++
++	struct mmc_request mrq;
++	struct mmc_command cmd;
++	struct mmc_data data;
++
++	struct scatterlist sg;
++
++	/*
++	 * As the ext_csd is so large and mostly unused, we don't store the
++	 * raw block in mmc_card.
++	 */
++	u8 *ext_csd;
++	ext_csd = kmalloc(512, GFP_KERNEL);
++	if (!ext_csd) {
++		printk("%s: could not allocate a buffer to receive the ext_csd."
++		       "mmc v4 cards will be treated as v3.\n",
++			mmc_hostname(host));
++		return;
++	}
++
++	list_for_each_entry(card, &host->cards, node) {
++		if (card->state & (MMC_STATE_DEAD|MMC_STATE_PRESENT))
++			continue;
++		if (mmc_card_sd(card))
++			continue;
++		if (card->csd.mmca_vsn < CSD_SPEC_VER_4)
++			continue;
++
++		err = mmc_select_card(host, card);
++		if (err != MMC_ERR_NONE) {
++			mmc_card_set_dead(card);
++			continue;
++		}
++
++		memset(&cmd, 0, sizeof(struct mmc_command));
++
++		cmd.opcode = MMC_SEND_EXT_CSD;
++		cmd.arg = 0;
++		cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
++
++		memset(&data, 0, sizeof(struct mmc_data));
++
++		mmc_set_data_timeout(&data, card, 0);
++
++		data.blksz = 512;
++		data.blocks = 1;
++		data.flags = MMC_DATA_READ;
++		data.sg = &sg;
++		data.sg_len = 1;
++
++		memset(&mrq, 0, sizeof(struct mmc_request));
++
++		mrq.cmd = &cmd;
++		mrq.data = &data;
++
++		sg_init_one(&sg, ext_csd, 512);
++
++		mmc_wait_for_req(host, &mrq);
++
++		if (cmd.error != MMC_ERR_NONE || data.error != MMC_ERR_NONE) {
++			mmc_card_set_dead(card);
++			continue;
++		}
++
++		switch (ext_csd[EXT_CSD_CARD_TYPE]) {
++		case EXT_CSD_CARD_TYPE_52 | EXT_CSD_CARD_TYPE_26:
++			card->ext_csd.hs_max_dtr = 52000000;
++			break;
++		case EXT_CSD_CARD_TYPE_26:
++			card->ext_csd.hs_max_dtr = 26000000;
++			break;
++		default:
++			/* MMC v4 spec says this cannot happen */
++			printk("%s: card is mmc v4 but doesn't support "
++			       "any high-speed modes.\n",
++				mmc_hostname(card->host));
++			mmc_card_set_bad(card);
++			continue;
++		}
++
++		/* Activate highspeed support. */
++		cmd.opcode = MMC_SWITCH;
++		cmd.arg = (MMC_SWITCH_MODE_WRITE_BYTE << 24) |
++			  (EXT_CSD_HS_TIMING << 16) |
++			  (1 << 8) |
++			  EXT_CSD_CMD_SET_NORMAL;
++		cmd.flags = MMC_RSP_R1B | MMC_CMD_AC;
++
++		err = mmc_wait_for_cmd(host, &cmd, CMD_RETRIES);
++		if (err != MMC_ERR_NONE) {
++			printk("%s: failed to switch card to mmc v4 "
++			       "high-speed mode.\n",
++			       mmc_hostname(card->host));
++			continue;
++		}
++
++		mmc_card_set_highspeed(card);
++	}
++
++	kfree(ext_csd);
++
++	mmc_deselect_cards(host);
++}
++
+ static void mmc_read_scrs(struct mmc_host *host)
+ {
+ 	int err;
+@@ -1032,8 +1141,14 @@ static unsigned int mmc_calculate_clock(
+ 	unsigned int max_dtr = host->f_max;
+ 
+ 	list_for_each_entry(card, &host->cards, node)
+-		if (!mmc_card_dead(card) && max_dtr > card->csd.max_dtr)
+-			max_dtr = card->csd.max_dtr;
++		if (!mmc_card_dead(card)) {
++			if (mmc_card_highspeed(card)) {
++				if (max_dtr > card->ext_csd.hs_max_dtr)
++			    		max_dtr = card->ext_csd.hs_max_dtr;
++			} else if (max_dtr > card->csd.max_dtr) {
++				max_dtr = card->csd.max_dtr;
++			}
++		}
+ 
+ 	pr_debug("%s: selected %d.%03dMHz transfer rate\n",
+ 		 mmc_hostname(host),
+@@ -1153,6 +1268,8 @@ static void mmc_setup(struct mmc_host *h
+ 
+ 	if (host->mode == MMC_MODE_SD)
+ 		mmc_read_scrs(host);
++	else
++		mmc_process_ext_csds(host);
+ }
+ 
+ 
+Index: linux-2.6.18/include/linux/mmc/card.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/mmc/card.h
++++ linux-2.6.18/include/linux/mmc/card.h
+@@ -39,6 +39,10 @@ struct mmc_csd {
+ 				write_misalign:1;
+ };
+ 
++struct mmc_ext_csd {
++	unsigned int		hs_max_dtr;
++};
++
+ struct sd_scr {
+ 	unsigned char		sda_vsn;
+ 	unsigned char		bus_widths;
+@@ -62,11 +66,13 @@ struct mmc_card {
+ #define MMC_STATE_BAD		(1<<2)		/* unrecognised device */
+ #define MMC_STATE_SDCARD	(1<<3)		/* is an SD card */
+ #define MMC_STATE_READONLY	(1<<4)		/* card is read-only */
++#define MMC_STATE_HIGHSPEED	(1<<5)		/* card is in mmc4 highspeed mode */
+ 	u32			raw_cid[4];	/* raw card CID */
+ 	u32			raw_csd[4];	/* raw card CSD */
+ 	u32			raw_scr[2];	/* raw card SCR */
+ 	struct mmc_cid		cid;		/* card identification */
+ 	struct mmc_csd		csd;		/* card specific */
++	struct mmc_ext_csd	ext_csd;	/* mmc v4 extended card specific */
+ 	struct sd_scr		scr;		/* extra SD information */
+ };
+ 
+@@ -75,12 +81,14 @@ struct mmc_card {
+ #define mmc_card_bad(c)		((c)->state & MMC_STATE_BAD)
+ #define mmc_card_sd(c)		((c)->state & MMC_STATE_SDCARD)
+ #define mmc_card_readonly(c)	((c)->state & MMC_STATE_READONLY)
++#define mmc_card_highspeed(c)	((c)->state & MMC_STATE_HIGHSPEED)
+ 
+ #define mmc_card_set_present(c)	((c)->state |= MMC_STATE_PRESENT)
+ #define mmc_card_set_dead(c)	((c)->state |= MMC_STATE_DEAD)
+ #define mmc_card_set_bad(c)	((c)->state |= MMC_STATE_BAD)
+ #define mmc_card_set_sd(c)	((c)->state |= MMC_STATE_SDCARD)
+ #define mmc_card_set_readonly(c) ((c)->state |= MMC_STATE_READONLY)
++#define mmc_card_set_highspeed(c) ((c)->state |= MMC_STATE_HIGHSPEED)
+ 
+ #define mmc_card_name(c)	((c)->cid.prod_name)
+ #define mmc_card_id(c)		((c)->dev.bus_id)
+Index: linux-2.6.18/include/linux/mmc/protocol.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/mmc/protocol.h
++++ linux-2.6.18/include/linux/mmc/protocol.h
+@@ -25,14 +25,16 @@
+ #ifndef MMC_MMC_PROTOCOL_H
+ #define MMC_MMC_PROTOCOL_H
+ 
+-/* Standard MMC commands (3.1)           type  argument     response */
++/* Standard MMC commands (4.1)           type  argument     response */
+    /* class 1 */
+ #define	MMC_GO_IDLE_STATE         0   /* bc                          */
+ #define MMC_SEND_OP_COND          1   /* bcr  [31:0] OCR         R3  */
+ #define MMC_ALL_SEND_CID          2   /* bcr                     R2  */
+ #define MMC_SET_RELATIVE_ADDR     3   /* ac   [31:16] RCA        R1  */
+ #define MMC_SET_DSR               4   /* bc   [31:16] RCA            */
++#define MMC_SWITCH                6   /* ac   [31:0] See below   R1b */
+ #define MMC_SELECT_CARD           7   /* ac   [31:16] RCA        R1  */
++#define MMC_SEND_EXT_CSD          8   /* adtc                    R1  */
+ #define MMC_SEND_CSD              9   /* ac   [31:16] RCA        R2  */
+ #define MMC_SEND_CID             10   /* ac   [31:16] RCA        R2  */
+ #define MMC_READ_DAT_UNTIL_STOP  11   /* adtc [31:0] dadr        R1  */
+@@ -87,6 +89,17 @@
+ #define SD_APP_SEND_SCR          51   /* adtc                    R1  */
+ 
+ /*
++ * MMC_SWITCH argument format:
++ *
++ *	[31:26] Always 0
++ *	[25:24] Access Mode
++ *	[23:16] Location of target Byte in EXT_CSD
++ *	[15:08] Value Byte
++ *	[07:03] Always 0
++ *	[02:00] Command Set
++ */
++
++/*
+   MMC status in R1
+   Type
+   	e : error bit
+@@ -229,13 +242,41 @@ struct _mmc_csd {
+ 
+ #define CSD_STRUCT_VER_1_0  0           /* Valid for system specification 1.0 - 1.2 */
+ #define CSD_STRUCT_VER_1_1  1           /* Valid for system specification 1.4 - 2.2 */
+-#define CSD_STRUCT_VER_1_2  2           /* Valid for system specification 3.1       */
++#define CSD_STRUCT_VER_1_2  2           /* Valid for system specification 3.1 - 3.2 - 3.31 - 4.0 - 4.1 */
++#define CSD_STRUCT_EXT_CSD  3           /* Version is coded in CSD_STRUCTURE in EXT_CSD */
+ 
+ #define CSD_SPEC_VER_0      0           /* Implements system specification 1.0 - 1.2 */
+ #define CSD_SPEC_VER_1      1           /* Implements system specification 1.4 */
+ #define CSD_SPEC_VER_2      2           /* Implements system specification 2.0 - 2.2 */
+-#define CSD_SPEC_VER_3      3           /* Implements system specification 3.1 */
++#define CSD_SPEC_VER_3      3           /* Implements system specification 3.1 - 3.2 - 3.31 */
++#define CSD_SPEC_VER_4      4           /* Implements system specification 4.0 - 4.1 */
++
++/*
++ * EXT_CSD fields
++ */
++
++#define EXT_CSD_HS_TIMING	185	/* R/W */
++#define EXT_CSD_CARD_TYPE	196	/* RO */
++
++/*
++ * EXT_CSD field definitions
++ */
++
++#define EXT_CSD_CMD_SET_NORMAL		(1<<0)
++#define EXT_CSD_CMD_SET_SECURE		(1<<1)
++#define EXT_CSD_CMD_SET_CPSECURE	(1<<2)
++
++#define EXT_CSD_CARD_TYPE_26	(1<<0)	/* Card can run at 26MHz */
++#define EXT_CSD_CARD_TYPE_52	(1<<1)	/* Card can run at 52MHz */
++
++/*
++ * MMC_SWITCH access modes
++ */
+ 
++#define MMC_SWITCH_MODE_CMD_SET		0x00	/* Change the command set */
++#define MMC_SWITCH_MODE_SET_BITS	0x01	/* Set bits which are 1 in value */
++#define MMC_SWITCH_MODE_CLEAR_BITS	0x02	/* Clear bits which are 1 in value */
++#define MMC_SWITCH_MODE_WRITE_BYTE	0x03	/* Set target to value */
+ 
+ /*
+  * SD bus widths
+Index: linux-2.6.18/mvl_patches/pro50-2110.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2110.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2110);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

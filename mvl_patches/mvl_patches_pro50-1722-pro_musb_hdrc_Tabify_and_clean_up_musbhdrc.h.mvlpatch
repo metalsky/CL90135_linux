@@ -1,0 +1,687 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Tabify_and_clean_up_musbhdrc.h
+# Date: Fri Sep 19 14:11:41 2008
+# From 54b35ebc5d1ff7283c7ba65d8c718cd354d0c652 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Wed, 15 Aug 2007 07:13:01 -0700
+# Subject: [PATCH] musb_hdrc: Tabify and clean-up musbhdrc.h
+# 
+# Tabify and clean-up musbhdrc.h
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit d993696c5c82441c37e6fdc83cdb36931e3762d9)
+
+PATCHNUM=1722
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 54b35ebc5d1ff7283c7ba65d8c718cd354d0c652 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Wed, 15 Aug 2007 07:13:01 -0700
+Subject: [PATCH] musb_hdrc: Tabify and clean-up musbhdrc.h
+
+Tabify and clean-up musbhdrc.h
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit d993696c5c82441c37e6fdc83cdb36931e3762d9)
+Index: linux-2.6.18/drivers/usb/musb/musbhdrc.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbhdrc.h
++++ linux-2.6.18/drivers/usb/musb/musbhdrc.h
+@@ -1,4 +1,4 @@
+-/******************************************************************
++/*
+  * Copyright 2005 Mentor Graphics Corporation
+  * Copyright (C) 2005-2006 by Texas Instruments
+  *
+@@ -29,35 +29,29 @@
+  * NON-INFRINGEMENT.  MENTOR GRAPHICS DOES NOT PROVIDE SUPPORT
+  * SERVICES OR UPDATES FOR THIS DRIVER, EVEN IF YOU ARE A MENTOR
+  * GRAPHICS SUPPORT CUSTOMER.
+- ******************************************************************/
++ */
+ 
+ #ifndef __MUSB_HDRC_DEFS_H__
+ #define __MUSB_HDRC_DEFS_H__
+ 
+-/*
+- * HDRC-specific definitions
+- */
+-
+-#define MUSB_EP0_FIFOSIZE      64	/* this is non-configurable */
++#define MUSB_EP0_FIFOSIZE	64	/* This is non-configurable */
+ 
+ /*
+- *     MUSBMHDRC Register map
++ * Common USB registers
+  */
+ 
+-/* Common USB registers */
+-
+-#define MUSB_FADDR	0x00	/* 8-bit */
+-#define MUSB_POWER	0x01	/* 8-bit */
++#define MUSB_FADDR		0x00	/* 8-bit */
++#define MUSB_POWER		0x01	/* 8-bit */
+ 
+-#define MUSB_INTRTX	0x02	/* 16-bit */
+-#define MUSB_INTRRX       0x04
+-#define MUSB_INTRTXE      0x06
+-#define MUSB_INTRRXE      0x08
+-#define MUSB_INTRUSB      0x0A	/* 8 bit */
+-#define MUSB_INTRUSBE     0x0B	/* 8 bit */
+-#define MUSB_FRAME        0x0C
+-#define MUSB_INDEX        0x0E	/* 8 bit */
+-#define MUSB_TESTMODE     0x0F	/* 8 bit */
++#define MUSB_INTRTX		0x02	/* 16-bit */
++#define MUSB_INTRRX		0x04
++#define MUSB_INTRTXE		0x06
++#define MUSB_INTRRXE		0x08
++#define MUSB_INTRUSB		0x0A	/* 8 bit */
++#define MUSB_INTRUSBE		0x0B	/* 8 bit */
++#define MUSB_FRAME		0x0C
++#define MUSB_INDEX		0x0E	/* 8 bit */
++#define MUSB_TESTMODE		0x0F	/* 8 bit */
+ 
+ /* Get offset for a given FIFO from musb->mregs */
+ #ifdef	CONFIG_USB_TUSB6010
+@@ -66,49 +60,51 @@
+ #define MUSB_FIFO_OFFSET(epnum)	(0x20 + ((epnum) * 4))
+ #endif
+ 
+-/* Additional Control Registers */
++/*
++ * Additional Control Registers
++ */
+ 
+-#define MUSB_DEVCTL	0x60	/* 8 bit */
++#define MUSB_DEVCTL		0x60	/* 8 bit */
+ 
+ /* These are always controlled through the INDEX register */
+-#define MUSB_TXFIFOSZ	0x62	/* 8-bit (see masks) */
+-#define MUSB_RXFIFOSZ	0x63	/* 8-bit (see masks) */
+-#define MUSB_TXFIFOADD	0x64	/* 16-bit offset shifted right 3 */
+-#define MUSB_RXFIFOADD	0x66	/* 16-bit offset shifted right 3 */
+-
+-// vctrl/vstatus:  optional vendor utmi+phy register at 0x68
+-#define MUSB_HWVERS	0x6C	/* 8 bit */
+-
+-#define MUSB_EPINFO	0x78	/* 8 bit */
+-#define MUSB_RAMINFO	0x79	/* 8 bit */
+-#define MUSB_LINKINFO	0x7a	/* 8 bit */
+-#define MUSB_VPLEN	0x7b	/* 8 bit */
+-#define MUSB_HS_EOF1	0x7c	/* 8 bit */
+-#define MUSB_FS_EOF1	0x7d	/* 8 bit */
+-#define MUSB_LS_EOF1	0x7e	/* 8 bit */
+-
+-/* offsets to endpoint registers */
+-#define MUSB_TXMAXP	0x00
+-#define MUSB_TXCSR	0x02
+-#define MUSB_CSR0		MUSB_TXCSR	/* re-used for EP0 */
+-#define MUSB_RXMAXP	0x04
+-#define MUSB_RXCSR	0x06
+-#define MUSB_RXCOUNT	0x08
+-#define MUSB_COUNT0	MUSB_RXCOUNT	/* re-used for EP0 */
+-#define MUSB_TXTYPE	0x0A
+-#define MUSB_TYPE0	MUSB_TXTYPE	/* re-used for EP0 */
+-#define MUSB_TXINTERVAL	0x0B
+-#define MUSB_NAKLIMIT0	MUSB_TXINTERVAL	/* re-used for EP0 */
+-#define MUSB_RXTYPE	0x0C
+-#define MUSB_RXINTERVAL	0x0D
+-#define MUSB_FIFOSIZE	0x0F
+-#define MUSB_CONFIGDATA	MUSB_FIFOSIZE	/* re-used for EP0 */
++#define MUSB_TXFIFOSZ		0x62	/* 8-bit (see masks) */
++#define MUSB_RXFIFOSZ		0x63	/* 8-bit (see masks) */
++#define MUSB_TXFIFOADD		0x64	/* 16-bit offset shifted right 3 */
++#define MUSB_RXFIFOADD		0x66	/* 16-bit offset shifted right 3 */
++
++/* REVISIT: vctrl/vstatus: optional vendor utmi+phy register at 0x68 */
++#define MUSB_HWVERS		0x6C	/* 8 bit */
++
++#define MUSB_EPINFO		0x78	/* 8 bit */
++#define MUSB_RAMINFO		0x79	/* 8 bit */
++#define MUSB_LINKINFO		0x7a	/* 8 bit */
++#define MUSB_VPLEN		0x7b	/* 8 bit */
++#define MUSB_HS_EOF1		0x7c	/* 8 bit */
++#define MUSB_FS_EOF1		0x7d	/* 8 bit */
++#define MUSB_LS_EOF1		0x7e	/* 8 bit */
++
++/* Offsets to endpoint registers */
++#define MUSB_TXMAXP		0x00
++#define MUSB_TXCSR		0x02
++#define MUSB_CSR0		MUSB_TXCSR	/* Re-used for EP0 */
++#define MUSB_RXMAXP		0x04
++#define MUSB_RXCSR		0x06
++#define MUSB_RXCOUNT		0x08
++#define MUSB_COUNT0		MUSB_RXCOUNT	/* Re-used for EP0 */
++#define MUSB_TXTYPE		0x0A
++#define MUSB_TYPE0		MUSB_TXTYPE	/* Re-used for EP0 */
++#define MUSB_TXINTERVAL		0x0B
++#define MUSB_NAKLIMIT0		MUSB_TXINTERVAL	/* Re-used for EP0 */
++#define MUSB_RXTYPE		0x0C
++#define MUSB_RXINTERVAL		0x0D
++#define MUSB_FIFOSIZE		0x0F
++#define MUSB_CONFIGDATA		MUSB_FIFOSIZE	/* Re-used for EP0 */
+ 
+-/* offsets to endpoint registers in indexed model (using INDEX register) */
++/* Offsets to endpoint registers in indexed model (using INDEX register) */
+ #define MUSB_INDEXED_OFFSET(_epnum, _offset)	\
+-	(0x10                   + (_offset))
++	(0x10 + (_offset))
+ 
+-/* offsets to endpoint registers in flat models */
++/* Offsets to endpoint registers in flat models */
+ #define MUSB_FLAT_OFFSET(_epnum, _offset)	\
+ 	(0x100 + (0x10*(_epnum)) + (_offset))
+ 
+@@ -116,96 +112,94 @@
+ /* TUSB6010 EP0 configuration register is special */
+ #define MUSB_TUSB_OFFSET(_epnum, _offset)	\
+ 	(0x10 + _offset)
+-#include "tusb6010.h"		/* needed "only" for TUSB_EP0_CONF */
++#include "tusb6010.h"		/* Needed "only" for TUSB_EP0_CONF */
+ #endif
+ 
+ /* "bus control"/target registers, for host side multipoint (external hubs) */
+-#define MUSB_TXFUNCADDR	0x00
+-#define MUSB_TXHUBADDR	0x02
+-#define MUSB_TXHUBPORT	0x03
+-
+-#define MUSB_RXFUNCADDR	0x04
+-#define MUSB_RXHUBADDR	0x06
+-#define MUSB_RXHUBPORT	0x07
++#define MUSB_TXFUNCADDR		0x00
++#define MUSB_TXHUBADDR		0x02
++#define MUSB_TXHUBPORT		0x03
++
++#define MUSB_RXFUNCADDR		0x04
++#define MUSB_RXHUBADDR		0x06
++#define MUSB_RXHUBPORT		0x07
+ 
+ #define MUSB_BUSCTL_OFFSET(_epnum, _offset) \
+ 	(0x80 + (8*(_epnum)) + (_offset))
+ 
+ /*
+- *     MUSBHDRC Register bit masks
++ * MUSB Register bits
+  */
+ 
+ /* POWER */
+-
+-#define MUSB_POWER_ISOUPDATE   0x80
+-#define MUSB_POWER_SOFTCONN    0x40
++#define MUSB_POWER_ISOUPDATE	0x80
++#define MUSB_POWER_SOFTCONN	0x40
+ #define MUSB_POWER_HSENAB	0x20
+ #define MUSB_POWER_HSMODE	0x10
+-#define MUSB_POWER_RESET       0x08
+-#define MUSB_POWER_RESUME      0x04
+-#define MUSB_POWER_SUSPENDM    0x02
+-#define MUSB_POWER_ENSUSPEND   0x01
++#define MUSB_POWER_RESET	0x08
++#define MUSB_POWER_RESUME	0x04
++#define MUSB_POWER_SUSPENDM	0x02
++#define MUSB_POWER_ENSUSPEND	0x01
+ 
+ /* INTRUSB */
+-#define MUSB_INTR_SUSPEND    0x01
+-#define MUSB_INTR_RESUME     0x02
+-#define MUSB_INTR_RESET      0x04
+-#define MUSB_INTR_BABBLE     0x04
+-#define MUSB_INTR_SOF        0x08
+-#define MUSB_INTR_CONNECT    0x10
+-#define MUSB_INTR_DISCONNECT 0x20
+-#define MUSB_INTR_SESSREQ    0x40
+-#define MUSB_INTR_VBUSERROR  0x80	/* FOR SESSION END */
++#define MUSB_INTR_SUSPEND	0x01
++#define MUSB_INTR_RESUME	0x02
++#define MUSB_INTR_RESET		0x04
++#define MUSB_INTR_BABBLE	0x04
++#define MUSB_INTR_SOF		0x08
++#define MUSB_INTR_CONNECT	0x10
++#define MUSB_INTR_DISCONNECT	0x20
++#define MUSB_INTR_SESSREQ	0x40
++#define MUSB_INTR_VBUSERROR	0x80	/* For SESSION end */
+ 
+ /* DEVCTL */
+-#define MUSB_DEVCTL_BDEVICE    0x80
+-#define MUSB_DEVCTL_FSDEV      0x40
+-#define MUSB_DEVCTL_LSDEV      0x20
+-#define MUSB_DEVCTL_VBUS       0x18
++#define MUSB_DEVCTL_BDEVICE	0x80
++#define MUSB_DEVCTL_FSDEV	0x40
++#define MUSB_DEVCTL_LSDEV	0x20
++#define MUSB_DEVCTL_VBUS	0x18
+ #define MUSB_DEVCTL_VBUS_SHIFT	3
+-#define MUSB_DEVCTL_HM         0x04
+-#define MUSB_DEVCTL_HR         0x02
+-#define MUSB_DEVCTL_SESSION    0x01
++#define MUSB_DEVCTL_HM		0x04
++#define MUSB_DEVCTL_HR		0x02
++#define MUSB_DEVCTL_SESSION	0x01
+ 
+ /* TESTMODE */
++#define MUSB_TEST_FORCE_HOST	0x80
++#define MUSB_TEST_FIFO_ACCESS	0x40
++#define MUSB_TEST_FORCE_FS	0x20
++#define MUSB_TEST_FORCE_HS	0x10
++#define MUSB_TEST_PACKET	0x08
++#define MUSB_TEST_K		0x04
++#define MUSB_TEST_J		0x02
++#define MUSB_TEST_SE0_NAK	0x01
+ 
+-#define MUSB_TEST_FORCE_HOST   0x80
+-#define MUSB_TEST_FIFO_ACCESS  0x40
+-#define MUSB_TEST_FORCE_FS     0x20
+-#define MUSB_TEST_FORCE_HS     0x10
+-#define MUSB_TEST_PACKET       0x08
+-#define MUSB_TEST_K            0x04
+-#define MUSB_TEST_J            0x02
+-#define MUSB_TEST_SE0_NAK      0x01
+-
+-/* allocate for double-packet buffering (effectively doubles assigned _SIZE) */
++/* Allocate for double-packet buffering (effectively doubles assigned _SIZE) */
+ #define MUSB_FIFOSZ_DPB	0x10
+-/* allocation size (8, 16, 32, ... 4096) */
++/* Allocation size (8, 16, 32, ... 4096) */
+ #define MUSB_FIFOSZ_SIZE	0x0f
+ 
+ /* CSR0 */
+-#define MUSB_CSR0_FLUSHFIFO      0x0100
+-#define MUSB_CSR0_TXPKTRDY       0x0002
+-#define MUSB_CSR0_RXPKTRDY       0x0001
++#define MUSB_CSR0_FLUSHFIFO	0x0100
++#define MUSB_CSR0_TXPKTRDY	0x0002
++#define MUSB_CSR0_RXPKTRDY	0x0001
+ 
+ /* CSR0 in Peripheral mode */
+-#define MUSB_CSR0_P_SVDSETUPEND  0x0080
+-#define MUSB_CSR0_P_SVDRXPKTRDY  0x0040
+-#define MUSB_CSR0_P_SENDSTALL    0x0020
+-#define MUSB_CSR0_P_SETUPEND     0x0010
+-#define MUSB_CSR0_P_DATAEND      0x0008
+-#define MUSB_CSR0_P_SENTSTALL    0x0004
++#define MUSB_CSR0_P_SVDSETUPEND	0x0080
++#define MUSB_CSR0_P_SVDRXPKTRDY	0x0040
++#define MUSB_CSR0_P_SENDSTALL	0x0020
++#define MUSB_CSR0_P_SETUPEND	0x0010
++#define MUSB_CSR0_P_DATAEND	0x0008
++#define MUSB_CSR0_P_SENTSTALL	0x0004
+ 
+ /* CSR0 in Host mode */
+-#define MUSB_CSR0_H_DIS_PING	0x0800
+-#define MUSB_CSR0_H_WR_DATATOGGLE   0x0400	/* set to allow setting: */
+-#define MUSB_CSR0_H_DATATOGGLE	    0x0200	/* data toggle control */
+-#define MUSB_CSR0_H_NAKTIMEOUT   0x0080
+-#define MUSB_CSR0_H_STATUSPKT    0x0040
+-#define MUSB_CSR0_H_REQPKT       0x0020
+-#define MUSB_CSR0_H_ERROR        0x0010
+-#define MUSB_CSR0_H_SETUPPKT     0x0008
+-#define MUSB_CSR0_H_RXSTALL      0x0004
++#define MUSB_CSR0_H_DIS_PING		0x0800
++#define MUSB_CSR0_H_WR_DATATOGGLE	0x0400	/* Set to allow setting: */
++#define MUSB_CSR0_H_DATATOGGLE		0x0200	/* Data toggle control */
++#define MUSB_CSR0_H_NAKTIMEOUT		0x0080
++#define MUSB_CSR0_H_STATUSPKT		0x0040
++#define MUSB_CSR0_H_REQPKT		0x0020
++#define MUSB_CSR0_H_ERROR		0x0010
++#define MUSB_CSR0_H_SETUPPKT		0x0008
++#define MUSB_CSR0_H_RXSTALL		0x0004
+ 
+ /* CSR0 bits to avoid zeroing (write zero clears, write 1 ignored) */
+ #define MUSB_CSR0_P_WZC_BITS	\
+@@ -214,52 +208,47 @@
+ 	( MUSB_CSR0_H_NAKTIMEOUT | MUSB_CSR0_H_RXSTALL \
+ 	| MUSB_CSR0_RXPKTRDY )
+ 
+-
+ /* TxType/RxType */
+-#define MUSB_TYPE_SPEED	0xc0
++#define MUSB_TYPE_SPEED		0xc0
+ #define MUSB_TYPE_SPEED_SHIFT	6
+-#define MUSB_TYPE_PROTO	0x30	/* implicitly zero for ep0 */
++#define MUSB_TYPE_PROTO		0x30	/* Implicitly zero for ep0 */
+ #define MUSB_TYPE_PROTO_SHIFT	4
+-#define MUSB_TYPE_REMOTE_END	0xf	/* implicitly zero for ep0 */
++#define MUSB_TYPE_REMOTE_END	0xf	/* Implicitly zero for ep0 */
+ 
+ /* CONFIGDATA */
+-
+-#define MUSB_CONFIGDATA_MPRXE      0x80	/* auto bulk pkt combining */
+-#define MUSB_CONFIGDATA_MPTXE      0x40	/* auto bulk pkt splitting */
+-#define MUSB_CONFIGDATA_BIGENDIAN  0x20
+-#define MUSB_CONFIGDATA_HBRXE      0x10	/* HB-ISO for RX */
+-#define MUSB_CONFIGDATA_HBTXE      0x08	/* HB-ISO for TX */
+-#define MUSB_CONFIGDATA_DYNFIFO    0x04	/* dynamic FIFO sizing */
+-#define MUSB_CONFIGDATA_SOFTCONE   0x02	/* SoftConnect */
+-#define MUSB_CONFIGDATA_UTMIDW     0x01	/* data width 0/1 => 8/16bits */
++#define MUSB_CONFIGDATA_MPRXE		0x80	/* Auto bulk pkt combining */
++#define MUSB_CONFIGDATA_MPTXE		0x40	/* Auto bulk pkt splitting */
++#define MUSB_CONFIGDATA_BIGENDIAN	0x20
++#define MUSB_CONFIGDATA_HBRXE		0x10	/* HB-ISO for RX */
++#define MUSB_CONFIGDATA_HBTXE		0x08	/* HB-ISO for TX */
++#define MUSB_CONFIGDATA_DYNFIFO		0x04	/* Dynamic FIFO sizing */
++#define MUSB_CONFIGDATA_SOFTCONE	0x02	/* SoftConnect */
++#define MUSB_CONFIGDATA_UTMIDW		0x01	/* Data width 0/1 => 8/16bits */
+ 
+ /* TXCSR in Peripheral and Host mode */
+-
+-#define MUSB_TXCSR_AUTOSET       0x8000
+-#define MUSB_TXCSR_MODE          0x2000
+-#define MUSB_TXCSR_DMAENAB       0x1000
+-#define MUSB_TXCSR_FRCDATATOG    0x0800
+-#define MUSB_TXCSR_DMAMODE       0x0400
+-#define MUSB_TXCSR_CLRDATATOG    0x0040
+-#define MUSB_TXCSR_FLUSHFIFO     0x0008
+-#define MUSB_TXCSR_FIFONOTEMPTY  0x0002
+-#define MUSB_TXCSR_TXPKTRDY      0x0001
++#define MUSB_TXCSR_AUTOSET		0x8000
++#define MUSB_TXCSR_MODE			0x2000
++#define MUSB_TXCSR_DMAENAB		0x1000
++#define MUSB_TXCSR_FRCDATATOG		0x0800
++#define MUSB_TXCSR_DMAMODE		0x0400
++#define MUSB_TXCSR_CLRDATATOG		0x0040
++#define MUSB_TXCSR_FLUSHFIFO		0x0008
++#define MUSB_TXCSR_FIFONOTEMPTY		0x0002
++#define MUSB_TXCSR_TXPKTRDY		0x0001
+ 
+ /* TXCSR in Peripheral mode */
+-
+-#define MUSB_TXCSR_P_ISO         0x4000
+-#define MUSB_TXCSR_P_INCOMPTX    0x0080
+-#define MUSB_TXCSR_P_SENTSTALL   0x0020
+-#define MUSB_TXCSR_P_SENDSTALL   0x0010
+-#define MUSB_TXCSR_P_UNDERRUN    0x0004
++#define MUSB_TXCSR_P_ISO		0x4000
++#define MUSB_TXCSR_P_INCOMPTX		0x0080
++#define MUSB_TXCSR_P_SENTSTALL		0x0020
++#define MUSB_TXCSR_P_SENDSTALL		0x0010
++#define MUSB_TXCSR_P_UNDERRUN		0x0004
+ 
+ /* TXCSR in Host mode */
+-
+-#define MUSB_TXCSR_H_WR_DATATOGGLE   0x0200
+-#define MUSB_TXCSR_H_DATATOGGLE      0x0100
+-#define MUSB_TXCSR_H_NAKTIMEOUT  0x0080
+-#define MUSB_TXCSR_H_RXSTALL     0x0020
+-#define MUSB_TXCSR_H_ERROR       0x0004
++#define MUSB_TXCSR_H_WR_DATATOGGLE	0x0200
++#define MUSB_TXCSR_H_DATATOGGLE		0x0100
++#define MUSB_TXCSR_H_NAKTIMEOUT		0x0080
++#define MUSB_TXCSR_H_RXSTALL		0x0020
++#define MUSB_TXCSR_H_ERROR		0x0004
+ 
+ /* TXCSR bits to avoid zeroing (write zero clears, write 1 ignored) */
+ #define MUSB_TXCSR_P_WZC_BITS	\
+@@ -269,36 +258,32 @@
+ 	( MUSB_TXCSR_H_NAKTIMEOUT | MUSB_TXCSR_H_RXSTALL \
+ 	| MUSB_TXCSR_H_ERROR | MUSB_TXCSR_FIFONOTEMPTY )
+ 
+-
+ /* RXCSR in Peripheral and Host mode */
+-
+-#define MUSB_RXCSR_AUTOCLEAR     0x8000
+-#define MUSB_RXCSR_DMAENAB       0x2000
+-#define MUSB_RXCSR_DISNYET       0x1000
+-#define MUSB_RXCSR_PID_ERR       0x1000
+-#define MUSB_RXCSR_DMAMODE       0x0800
+-#define MUSB_RXCSR_INCOMPRX      0x0100
+-#define MUSB_RXCSR_CLRDATATOG    0x0080
+-#define MUSB_RXCSR_FLUSHFIFO     0x0010
+-#define MUSB_RXCSR_DATAERROR     0x0008
+-#define MUSB_RXCSR_FIFOFULL      0x0002
+-#define MUSB_RXCSR_RXPKTRDY      0x0001
++#define MUSB_RXCSR_AUTOCLEAR		0x8000
++#define MUSB_RXCSR_DMAENAB		0x2000
++#define MUSB_RXCSR_DISNYET		0x1000
++#define MUSB_RXCSR_PID_ERR		0x1000
++#define MUSB_RXCSR_DMAMODE		0x0800
++#define MUSB_RXCSR_INCOMPRX		0x0100
++#define MUSB_RXCSR_CLRDATATOG		0x0080
++#define MUSB_RXCSR_FLUSHFIFO		0x0010
++#define MUSB_RXCSR_DATAERROR		0x0008
++#define MUSB_RXCSR_FIFOFULL		0x0002
++#define MUSB_RXCSR_RXPKTRDY		0x0001
+ 
+ /* RXCSR in Peripheral mode */
+-
+-#define MUSB_RXCSR_P_ISO         0x4000
+-#define MUSB_RXCSR_P_SENTSTALL   0x0040
+-#define MUSB_RXCSR_P_SENDSTALL   0x0020
+-#define MUSB_RXCSR_P_OVERRUN     0x0004
++#define MUSB_RXCSR_P_ISO		0x4000
++#define MUSB_RXCSR_P_SENTSTALL		0x0040
++#define MUSB_RXCSR_P_SENDSTALL		0x0020
++#define MUSB_RXCSR_P_OVERRUN		0x0004
+ 
+ /* RXCSR in Host mode */
+-
+-#define MUSB_RXCSR_H_AUTOREQ     0x4000
+-#define MUSB_RXCSR_H_WR_DATATOGGLE   0x0400
+-#define MUSB_RXCSR_H_DATATOGGLE        0x0200
+-#define MUSB_RXCSR_H_RXSTALL     0x0040
+-#define MUSB_RXCSR_H_REQPKT      0x0020
+-#define MUSB_RXCSR_H_ERROR       0x0004
++#define MUSB_RXCSR_H_AUTOREQ		0x4000
++#define MUSB_RXCSR_H_WR_DATATOGGLE	0x0400
++#define MUSB_RXCSR_H_DATATOGGLE		0x0200
++#define MUSB_RXCSR_H_RXSTALL		0x0040
++#define MUSB_RXCSR_H_REQPKT		0x0020
++#define MUSB_RXCSR_H_ERROR		0x0004
+ 
+ /* RXCSR bits to avoid zeroing (write zero clears, write 1 ignored) */
+ #define MUSB_RXCSR_P_WZC_BITS	\
+@@ -308,9 +293,7 @@
+ 	( MUSB_RXCSR_H_RXSTALL | MUSB_RXCSR_H_ERROR \
+ 	| MUSB_RXCSR_DATAERROR | MUSB_RXCSR_RXPKTRDY )
+ 
+-
+ /* HUBADDR */
+ #define MUSB_HUBADDR_MULTI_TT		0x80
+ 
+-
+ #endif	/* __MUSB_HDRC_DEFS_H__ */
+Index: linux-2.6.18/mvl_patches/pro50-1722.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1722.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1722);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

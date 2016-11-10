@@ -1,0 +1,557 @@
+#! /usr/bin/env bash
+# Patch: -control_api_more_robust_TLV_implementation
+# Date: Thu Feb 19 14:59:30 2009
+# Source: kernel.org
+# MR: 28687
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+# 
+# [ALSA] Control API - more robust TLV implementation
+# 
+# - added callback option
+# - added READ/WRITE/COMMAND flags to access member
+# - added WRITE/COMMAND ioctls
+# - added SNDRV_CTL_EVENT_MASK_TLV for TLV change notifications
+# - added TLV support to ELEM_ADD ioctl
+# 
+# Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+# 
+# commit 8aa9b586e42099817163aba01d925c2660c4dbbe
+# tree b70172eafcb672074fda1858c7a9c5779a1132f8
+# parent 6bbe13ecbbce4415a5a7959b3bc35b18313025e0
+# author Jaroslav Kysela <perex@suse.cz> Wed, 05 Jul 2006 17:34:51 +0200
+# committer Jaroslav Kysela <perex@suse.cz> Sat, 23 Sep 2006 10:37:26 +0200
+# 
+#  include/sound/asound.h  |   10 +++
+#  include/sound/control.h |   16 +++++
+#  sound/core/control.c    |  139 +++++++++++++++++++++++++++++++++++++----------
+#  3 files changed, 132 insertions(+), 33 deletions(-)
+# 
+
+PATCHNUM=2086
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 28687
+Type: Enhancement
+Disposition: local
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+
+[ALSA] Control API - more robust TLV implementation
+
+- added callback option
+- added READ/WRITE/COMMAND flags to access member
+- added WRITE/COMMAND ioctls
+- added SNDRV_CTL_EVENT_MASK_TLV for TLV change notifications
+- added TLV support to ELEM_ADD ioctl
+
+Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+
+commit 8aa9b586e42099817163aba01d925c2660c4dbbe
+tree b70172eafcb672074fda1858c7a9c5779a1132f8
+parent 6bbe13ecbbce4415a5a7959b3bc35b18313025e0
+author Jaroslav Kysela <perex@suse.cz> Wed, 05 Jul 2006 17:34:51 +0200
+committer Jaroslav Kysela <perex@suse.cz> Sat, 23 Sep 2006 10:37:26 +0200
+
+ include/sound/asound.h   |   10 +++
+ include/sound/control.h  |   16 ++++-
+ mvl_patches/pro50-2086.c |   16 +++++
+ sound/core/control.c     |  139 ++++++++++++++++++++++++++++++++++++-----------
+ 4 files changed, 148 insertions(+), 33 deletions(-)
+
+diff --git a/include/sound/asound.h b/include/sound/asound.h
+index 76a2040..c1621c6 100644
+Index: linux-2.6.18/include/sound/asound.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/asound.h
++++ linux-2.6.18/include/sound/asound.h
+@@ -727,10 +727,15 @@ typedef int __bitwise snd_ctl_elem_iface
+ #define SNDRV_CTL_ELEM_ACCESS_WRITE		(1<<1)
+ #define SNDRV_CTL_ELEM_ACCESS_READWRITE		(SNDRV_CTL_ELEM_ACCESS_READ|SNDRV_CTL_ELEM_ACCESS_WRITE)
+ #define SNDRV_CTL_ELEM_ACCESS_VOLATILE		(1<<2)	/* control value may be changed without a notification */
+-#define SNDRV_CTL_ELEM_ACCESS_TIMESTAMP		(1<<2)	/* when was control changed */
++#define SNDRV_CTL_ELEM_ACCESS_TIMESTAMP		(1<<3)	/* when was control changed */
++#define SNDRV_CTL_ELEM_ACCESS_TLV_READ		(1<<4)	/* TLV read is possible */
++#define SNDRV_CTL_ELEM_ACCESS_TLV_WRITE		(1<<5)	/* TLV write is possible */
++#define SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE	(SNDRV_CTL_ELEM_ACCESS_TLV_READ|SNDRV_CTL_ELEM_ACCESS_TLV_WRITE)
++#define SNDRV_CTL_ELEM_ACCESS_TLV_COMMAND	(1<<6)	/* TLV command is possible */
+ #define SNDRV_CTL_ELEM_ACCESS_INACTIVE		(1<<8)	/* control does actually nothing, but may be updated */
+ #define SNDRV_CTL_ELEM_ACCESS_LOCK		(1<<9)	/* write lock */
+ #define SNDRV_CTL_ELEM_ACCESS_OWNER		(1<<10)	/* write lock owner */
++#define SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK	(1<<28)	/* kernel use a TLV callback */ 
+ #define SNDRV_CTL_ELEM_ACCESS_USER		(1<<29) /* user space element */
+ #define SNDRV_CTL_ELEM_ACCESS_DINDIRECT		(1<<30)	/* indirect access for matrix dimensions in the info structure */
+ #define SNDRV_CTL_ELEM_ACCESS_INDIRECT		(1<<31)	/* indirect access for element value in the value structure */
+@@ -838,6 +843,8 @@ enum {
+ 	SNDRV_CTL_IOCTL_ELEM_REPLACE = _IOWR('U', 0x18, struct snd_ctl_elem_info),
+ 	SNDRV_CTL_IOCTL_ELEM_REMOVE = _IOWR('U', 0x19, struct snd_ctl_elem_id),
+ 	SNDRV_CTL_IOCTL_TLV_READ = _IOWR('U', 0x1a, struct snd_ctl_tlv),
++	SNDRV_CTL_IOCTL_TLV_WRITE = _IOWR('U', 0x1b, struct snd_ctl_tlv),
++	SNDRV_CTL_IOCTL_TLV_COMMAND = _IOWR('U', 0x1c, struct snd_ctl_tlv),
+ 	SNDRV_CTL_IOCTL_HWDEP_NEXT_DEVICE = _IOWR('U', 0x20, int),
+ 	SNDRV_CTL_IOCTL_HWDEP_INFO = _IOR('U', 0x21, struct snd_hwdep_info),
+ 	SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE = _IOR('U', 0x30, int),
+@@ -862,6 +869,7 @@ enum sndrv_ctl_event_type {
+ #define SNDRV_CTL_EVENT_MASK_VALUE	(1<<0)	/* element value was changed */
+ #define SNDRV_CTL_EVENT_MASK_INFO	(1<<1)	/* element info was changed */
+ #define SNDRV_CTL_EVENT_MASK_ADD	(1<<2)	/* element was added */
++#define SNDRV_CTL_EVENT_MASK_TLV	(1<<3)	/* element TLV tree was changed */
+ #define SNDRV_CTL_EVENT_MASK_REMOVE	(~0U)	/* element was removed */
+ 
+ struct snd_ctl_event {
+Index: linux-2.6.18/include/sound/control.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/control.h
++++ linux-2.6.18/include/sound/control.h
+@@ -30,6 +30,11 @@ struct snd_kcontrol;
+ typedef int (snd_kcontrol_info_t) (struct snd_kcontrol * kcontrol, struct snd_ctl_elem_info * uinfo);
+ typedef int (snd_kcontrol_get_t) (struct snd_kcontrol * kcontrol, struct snd_ctl_elem_value * ucontrol);
+ typedef int (snd_kcontrol_put_t) (struct snd_kcontrol * kcontrol, struct snd_ctl_elem_value * ucontrol);
++typedef int (snd_kcontrol_tlv_rw_t)(struct snd_kcontrol *kcontrol,
++				    int op_flag, /* 0=read,1=write,-1=command */
++				    unsigned int size,
++				    unsigned int __user *tlv);
++
+ 
+ struct snd_kcontrol_new {
+ 	snd_ctl_elem_iface_t iface;	/* interface identifier */
+@@ -42,7 +47,10 @@ struct snd_kcontrol_new {
+ 	snd_kcontrol_info_t *info;
+ 	snd_kcontrol_get_t *get;
+ 	snd_kcontrol_put_t *put;
+-	unsigned int *tlv;
++	union {
++		snd_kcontrol_tlv_rw_t *c;
++		unsigned int *p;
++	} tlv;
+ 	unsigned long private_value;
+ };
+ 
+@@ -59,7 +67,11 @@ struct snd_kcontrol {
+ 	snd_kcontrol_info_t *info;
+ 	snd_kcontrol_get_t *get;
+ 	snd_kcontrol_put_t *put;
+-	unsigned int *tlv;
++	snd_kcontrol_tlv_rw_t *tlv_rw;
++	union {
++		snd_kcontrol_tlv_rw_t *c;
++		unsigned int *p;
++	} tlv;
+ 	unsigned long private_value;
+ 	void *private_data;
+ 	void (*private_free)(struct snd_kcontrol *kcontrol);
+Index: linux-2.6.18/sound/core/control.c
+===================================================================
+--- linux-2.6.18.orig/sound/core/control.c
++++ linux-2.6.18/sound/core/control.c
+@@ -236,12 +236,16 @@ struct snd_kcontrol *snd_ctl_new1(const 
+ 	kctl.id.index = ncontrol->index;
+ 	kctl.count = ncontrol->count ? ncontrol->count : 1;
+ 	access = ncontrol->access == 0 ? SNDRV_CTL_ELEM_ACCESS_READWRITE :
+-		 (ncontrol->access & (SNDRV_CTL_ELEM_ACCESS_READWRITE|SNDRV_CTL_ELEM_ACCESS_INACTIVE|
+-		 		      SNDRV_CTL_ELEM_ACCESS_DINDIRECT|SNDRV_CTL_ELEM_ACCESS_INDIRECT));
++		 (ncontrol->access & (SNDRV_CTL_ELEM_ACCESS_READWRITE|
++				      SNDRV_CTL_ELEM_ACCESS_INACTIVE|
++		 		      SNDRV_CTL_ELEM_ACCESS_DINDIRECT|
++		 		      SNDRV_CTL_ELEM_ACCESS_INDIRECT|
++		 		      SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE|
++		 		      SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK));
+ 	kctl.info = ncontrol->info;
+ 	kctl.get = ncontrol->get;
+ 	kctl.put = ncontrol->put;
+-	kctl.tlv = ncontrol->tlv;
++	kctl.tlv.p = ncontrol->tlv.p;
+ 	kctl.private_value = ncontrol->private_value;
+ 	kctl.private_data = private_data;
+ 	return snd_ctl_new(&kctl, access);
+@@ -883,6 +887,8 @@ struct user_element {
+ 	struct snd_ctl_elem_info info;
+ 	void *elem_data;		/* element data */
+ 	unsigned long elem_data_size;	/* size of element data in bytes */
++	void *tlv_data;			/* TLV data */
++	unsigned long tlv_data_size;	/* TLV data size */
+ 	void *priv_data;		/* private data (like strings for enumerated type) */
+ 	unsigned long priv_data_size;	/* size of private data in bytes */
+ };
+@@ -917,9 +923,46 @@ static int snd_ctl_elem_user_put(struct 
+ 	return change;
+ }
+ 
++static int snd_ctl_elem_user_tlv(struct snd_kcontrol *kcontrol,
++				 int op_flag,
++				 unsigned int size,
++				 unsigned int __user *tlv)
++{
++	struct user_element *ue = kcontrol->private_data;
++	int change = 0;
++	void *new_data;
++
++	if (op_flag > 0) {
++		if (size > 1024 * 128)	/* sane value */
++			return -EINVAL;
++		new_data = kmalloc(size, GFP_KERNEL);
++		if (new_data == NULL)
++			return -ENOMEM;
++		if (copy_from_user(new_data, tlv, size)) {
++			kfree(new_data);
++			return -EFAULT;
++		}
++		change = ue->tlv_data_size != size;
++		if (!change)
++			change = memcmp(ue->tlv_data, new_data, size);
++		kfree(ue->tlv_data);
++		ue->tlv_data = new_data;
++		ue->tlv_data_size = size;
++	} else {
++		if (size < ue->tlv_data_size)
++			return -ENOSPC;
++		if (copy_to_user(tlv, ue->tlv_data, ue->tlv_data_size))
++			return -EFAULT;
++	}
++	return change;
++}
++
+ static void snd_ctl_elem_user_free(struct snd_kcontrol *kcontrol)
+ {
+-	kfree(kcontrol->private_data);
++	struct user_element *ue = kcontrol->private_data;
++	if (ue->tlv_data)
++		kfree(ue->tlv_data);
++	kfree(ue);
+ }
+ 
+ static int snd_ctl_elem_add(struct snd_ctl_file *file,
+@@ -938,7 +981,8 @@ static int snd_ctl_elem_add(struct snd_c
+ 		return -EINVAL;
+ 	access = info->access == 0 ? SNDRV_CTL_ELEM_ACCESS_READWRITE :
+ 		(info->access & (SNDRV_CTL_ELEM_ACCESS_READWRITE|
+-				 SNDRV_CTL_ELEM_ACCESS_INACTIVE));
++				 SNDRV_CTL_ELEM_ACCESS_INACTIVE|
++				 SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE));
+ 	info->id.numid = 0;
+ 	memset(&kctl, 0, sizeof(kctl));
+ 	down_write(&card->controls_rwsem);
+@@ -964,6 +1008,10 @@ static int snd_ctl_elem_add(struct snd_c
+ 		kctl.get = snd_ctl_elem_user_get;
+ 	if (access & SNDRV_CTL_ELEM_ACCESS_WRITE)
+ 		kctl.put = snd_ctl_elem_user_put;
++	if (access & SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE) {
++		kctl.tlv.c = snd_ctl_elem_user_tlv;
++		access |= SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK;
++	}
+ 	switch (info->type) {
+ 	case SNDRV_CTL_ELEM_TYPE_BOOLEAN:
+ 		private_size = sizeof(char);
+@@ -1069,38 +1117,65 @@ static int snd_ctl_subscribe_events(stru
+ 	return 0;
+ }
+ 
+-static int snd_ctl_tlv_read(struct snd_card *card,
+-                            struct snd_ctl_tlv __user *_tlv)
++static int snd_ctl_tlv_ioctl(struct snd_ctl_file *file,
++                             struct snd_ctl_tlv __user *_tlv,
++                             int op_flag)
+ {
++	struct snd_card *card = file->card;
+ 	struct snd_ctl_tlv tlv;
+ 	struct snd_kcontrol *kctl;
++	struct snd_kcontrol_volatile *vd;
+ 	unsigned int len;
+ 	int err = 0;
+ 
+ 	if (copy_from_user(&tlv, _tlv, sizeof(tlv)))
+ 		return -EFAULT;
+-        if (tlv.length < sizeof(unsigned int) * 3)
+-                return -EINVAL;
+-        down_read(&card->controls_rwsem);
+-        kctl = snd_ctl_find_numid(card, tlv.numid);
+-        if (kctl == NULL) {
+-                err = -ENOENT;
+-                goto __kctl_end;
+-        }
+-        if (kctl->tlv == NULL) {
+-                err = -ENXIO;
+-                goto __kctl_end;
+-        }
+-        len = kctl->tlv[1] + 2 * sizeof(unsigned int);
+-        if (tlv.length < len) {
+-                err = -ENOMEM;
+-                goto __kctl_end;
+-        }
+-        if (copy_to_user(_tlv->tlv, kctl->tlv, len))
+-        	err = -EFAULT;
++	if (tlv.length < sizeof(unsigned int) * 3)
++		return -EINVAL;
++	down_read(&card->controls_rwsem);
++	kctl = snd_ctl_find_numid(card, tlv.numid);
++	if (kctl == NULL) {
++		err = -ENOENT;
++		goto __kctl_end;
++	}
++	if (kctl->tlv.p == NULL) {
++		err = -ENXIO;
++		goto __kctl_end;
++	}
++	vd = &kctl->vd[tlv.numid - kctl->id.numid];
++	if ((op_flag == 0 && (vd->access & SNDRV_CTL_ELEM_ACCESS_TLV_READ) == 0) ||
++	    (op_flag > 0 && (vd->access & SNDRV_CTL_ELEM_ACCESS_TLV_WRITE) == 0) ||
++	    (op_flag < 0 && (vd->access & SNDRV_CTL_ELEM_ACCESS_TLV_COMMAND) == 0)) {
++	    	err = -ENXIO;
++	    	goto __kctl_end;
++	}
++	if (vd->access & SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK) {
++		if (file && vd->owner != NULL && vd->owner != file) {
++			err = -EPERM;
++			goto __kctl_end;
++		}
++		err = kctl->tlv.c(kctl, op_flag, tlv.length, _tlv->tlv); 
++		if (err > 0) {
++			up_read(&card->controls_rwsem);
++			snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_TLV, &kctl->id);
++			return 0;
++		}
++	} else {
++		if (op_flag) {
++			err = -ENXIO;
++			goto __kctl_end;
++		}
++		len = kctl->tlv.p[1] + 2 * sizeof(unsigned int);
++		if (tlv.length < len) {
++			err = -ENOMEM;
++			goto __kctl_end;
++		}
++		if (copy_to_user(_tlv->tlv, kctl->tlv.p, len))
++			err = -EFAULT;
++	}
+       __kctl_end:
+-        up_read(&card->controls_rwsem);
+-        return err;
++	up_read(&card->controls_rwsem);
++	return err;
+ }
+ 
+ static long snd_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+@@ -1141,8 +1216,12 @@ static long snd_ctl_ioctl(struct file *f
+ 		return snd_ctl_elem_remove(ctl, argp);
+ 	case SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS:
+ 		return snd_ctl_subscribe_events(ctl, ip);
+-        case SNDRV_CTL_IOCTL_TLV_READ:
+-                return snd_ctl_tlv_read(card, argp);
++	case SNDRV_CTL_IOCTL_TLV_READ:
++		return snd_ctl_tlv_ioctl(ctl, argp, 0);
++	case SNDRV_CTL_IOCTL_TLV_WRITE:
++		return snd_ctl_tlv_ioctl(ctl, argp, 1);
++	case SNDRV_CTL_IOCTL_TLV_COMMAND:
++		return snd_ctl_tlv_ioctl(ctl, argp, -1);
+ 	case SNDRV_CTL_IOCTL_POWER:
+ 		return -ENOPROTOOPT;
+ 	case SNDRV_CTL_IOCTL_POWER_STATE:
+Index: linux-2.6.18/mvl_patches/pro50-2086.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2086.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2086);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

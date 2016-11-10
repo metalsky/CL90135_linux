@@ -1,0 +1,981 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Add_support_for_SRP_HNP_and_basic_host_i
+# Date: Fri Sep 19 14:06:18 2008
+# From 3b2e8f517751265c3b2925fa18bc8b90b923ec20 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Fri, 29 Jun 2007 00:09:52 -0700
+# Subject: [PATCH] musb_hdrc: Add support for SRP, HNP and basic host idling
+# 
+# Several changes, mostly affecting tusb:
+# 
+# - Make SRP and HNP mostly work
+# - Add a timer for handling OTG events
+# - Add a timeout for turning off VBUS in host mode via sysfs
+# 
+# Only tested on tusb.
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 7f15a09266167698b3627865456f1f880aa83cba)
+
+PATCHNUM=1654
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 3b2e8f517751265c3b2925fa18bc8b90b923ec20 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Fri, 29 Jun 2007 00:09:52 -0700
+Subject: [PATCH] musb_hdrc: Add support for SRP, HNP and basic host idling
+
+Several changes, mostly affecting tusb:
+
+- Make SRP and HNP mostly work
+- Add a timer for handling OTG events
+- Add a timeout for turning off VBUS in host mode via sysfs
+
+Only tested on tusb.
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 7f15a09266167698b3627865456f1f880aa83cba)
+Index: linux-2.6.18/drivers/usb/musb/g_ep0.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/g_ep0.c
++++ linux-2.6.18/drivers/usb/musb/g_ep0.c
+@@ -201,6 +201,19 @@ static void musb_g_ep0_giveback(struct m
+ }
+ 
+ /*
++ * Tries to start B-device HNP negotiation if enabled via sysfs
++ */
++static inline void musb_try_b_hnp_enable(struct musb *musb)
++{
++	void __iomem	*pBase = musb->pRegs;
++	u8		devctl;
++
++	DBG(1, "HNP: Setting HR\n");
++	devctl = musb_readb(pBase, MGC_O_HDRC_DEVCTL);
++	musb_writeb(pBase, MGC_O_HDRC_DEVCTL, devctl | MGC_M_DEVCTL_HR);
++}
++
++/*
+  * Handle all control requests with no DATA stage, including standard
+  * requests such as:
+  * USB_REQ_SET_CONFIGURATION, USB_REQ_SET_INTERFACE, unrecognized
+@@ -326,17 +339,8 @@ __acquires(musb->Lock)
+ 				case USB_DEVICE_B_HNP_ENABLE:
+ 					if (!musb->g.is_otg)
+ 						goto stall;
+-					{ u8 devctl;
+ 					musb->g.b_hnp_enable = 1;
+-					devctl = musb_readb(pBase,
+-							MGC_O_HDRC_DEVCTL);
+-					/* NOTE:  at least DaVinci doesn't
+-					 * like to set HR ...
+-					 */
+-					DBG(1, "set HR\n");
+-					musb_writeb(pBase, MGC_O_HDRC_DEVCTL,
+-						devctl | MGC_M_DEVCTL_HR);
+-					}
++					musb_try_b_hnp_enable(musb);
+ 					break;
+ 				case USB_DEVICE_A_HNP_SUPPORT:
+ 					if (!musb->g.is_otg)
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -1462,10 +1462,15 @@ static int musb_gadget_wakeup(struct usb
+ 		goto done;
+ 	case OTG_STATE_B_IDLE:
+ 		/* Start SRP ... OTG not required. */
++		DBG(2, "Sending SRP\n");
+ 		devctl = musb_readb(mregs, MGC_O_HDRC_DEVCTL);
+ 		devctl |= MGC_M_DEVCTL_SESSION;
+ 		musb_writeb(mregs, MGC_O_HDRC_DEVCTL, devctl);
+-		DBG(2, "SRP\n");
++
++		/* Block idling for at least 1s */
++		musb_platform_try_idle(musb,
++			msecs_to_jiffies(1 * HZ));
++
+ 		status = 0;
+ 		goto done;
+ 	default:
+@@ -1689,7 +1694,7 @@ int __init musb_gadget_setup(struct musb
+ 	musb_g_init_endpoints(musb);
+ 
+ 	musb->is_active = 0;
+-	musb_platform_try_idle(musb);
++	musb_platform_try_idle(musb, 0);
+ 
+ 	status = device_register(&musb->g.dev);
+ 	if (status != 0)
+@@ -1872,6 +1877,11 @@ int usb_gadget_unregister_driver(struct 
+ 	 */
+ 
+ 	spin_lock_irqsave(&musb->Lock, flags);
++
++#ifdef	CONFIG_USB_MUSB_OTG
++	musb_hnp_stop(musb);
++#endif
++
+ 	if (musb->pGadgetDriver == driver) {
+ 		musb->xceiv.state = OTG_STATE_UNDEFINED;
+ 		stop_activity(musb, driver);
+@@ -1885,7 +1895,7 @@ int usb_gadget_unregister_driver(struct 
+ 		musb->g.dev.driver = NULL;
+ 
+ 		musb->is_active = 0;
+-		musb_platform_try_idle(musb);
++		musb_platform_try_idle(musb, 0);
+ 	} else
+ 		retval = -EINVAL;
+ 	spin_unlock_irqrestore(&musb->Lock, flags);
+@@ -1958,6 +1968,12 @@ void musb_g_suspend(struct musb *musb)
+ 	}
+ }
+ 
++/* Called during SRP. Caller must hold lock */
++void musb_g_wakeup(struct musb *musb)
++{
++	musb_gadget_wakeup(&musb->g);
++}
++
+ /* called when VBUS drops below session threshold, and in other cases */
+ void musb_g_disconnect(struct musb *musb)
+ {
+@@ -1984,6 +2000,9 @@ void musb_g_disconnect(struct musb *musb
+ #ifdef	CONFIG_USB_MUSB_OTG
+ 		musb->xceiv.state = OTG_STATE_A_IDLE;
+ 		break;
++	case OTG_STATE_A_PERIPHERAL:
++		musb->xceiv.state = OTG_STATE_A_WAIT_VFALL;
++		break;
+ 	case OTG_STATE_B_WAIT_ACON:
+ 	case OTG_STATE_B_HOST:
+ #endif
+Index: linux-2.6.18/drivers/usb/musb/musb_procfs.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_procfs.c
++++ linux-2.6.18/drivers/usb/musb/musb_procfs.c
+@@ -773,7 +773,7 @@ static int musb_proc_write(struct file *
+ 		break;
+ 	}
+ 
+-	musb_platform_try_idle(musb);
++	musb_platform_try_idle(musb, 0);
+ 
+ 	return count;
+ }
+@@ -811,7 +811,7 @@ static int musb_proc_read(char *page, ch
+ 		}
+ 	}
+ 
+-	musb_platform_try_idle(pThis);
++	musb_platform_try_idle(pThis, 0);
+ 
+ 	spin_unlock_irqrestore(&pThis->Lock, flags);
+ 	*eof = 1;
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -124,6 +124,7 @@ extern void musb_g_rx(struct musb *, u8)
+ extern void musb_g_reset(struct musb *);
+ extern void musb_g_suspend(struct musb *);
+ extern void musb_g_resume(struct musb *);
++extern void musb_g_wakeup(struct musb *);
+ extern void musb_g_disconnect(struct musb *);
+ 
+ #else
+@@ -134,6 +135,7 @@ static inline irqreturn_t musb_g_ep0_irq
+ static inline void musb_g_reset(struct musb *m) {}
+ static inline void musb_g_suspend(struct musb *m) {}
+ static inline void musb_g_resume(struct musb *m) {}
++static inline void musb_g_wakeup(struct musb *m) {}
+ static inline void musb_g_disconnect(struct musb *m) {}
+ 
+ #endif
+@@ -417,6 +419,9 @@ struct musb {
+ 	unsigned bIsHost:1;
+ 	unsigned bIgnoreDisconnect:1;	/* during bus resets */
+ 
++	int			a_wait_bcon;	/* VBUS timeout in msecs */
++	unsigned long		idle_timeout;	/* Next timeout in jiffies */
++
+ #ifdef C_MP_TX
+ 	unsigned bBulkSplit:1;
+ #define	can_bulk_split(musb,type) \
+@@ -506,12 +511,14 @@ extern irqreturn_t musb_interrupt(struct
+ extern void musb_platform_enable(struct musb *musb);
+ extern void musb_platform_disable(struct musb *musb);
+ 
++extern void musb_hnp_stop(struct musb *musb);
++
+ #ifdef CONFIG_USB_TUSB6010
+-extern void musb_platform_try_idle(struct musb *musb);
++extern void musb_platform_try_idle(struct musb *musb, unsigned long timeout);
+ extern int musb_platform_get_vbus_status(struct musb *musb);
+ extern void musb_platform_set_mode(struct musb *musb, u8 musb_mode);
+ #else
+-#define musb_platform_try_idle(x)		do {} while (0)
++#define musb_platform_try_idle(x, y)		do {} while (0)
+ #define musb_platform_get_vbus_status(x)	0
+ #define musb_platform_set_mode(x, y)		do {} while (0)
+ #endif
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -281,6 +281,69 @@ void musb_load_testpacket(struct musb *m
+ 
+ /*-------------------------------------------------------------------------*/
+ 
++#ifdef	CONFIG_USB_MUSB_OTG
++
++/*
++ * See also USB_OTG_1-3.pdf 6.6.5 Timers
++ * REVISIT: Are the other timers done in the hardware?
++ */
++#define TB_ASE0_BRST		100	/* Min 3.125 ms */
++
++/*
++ * Handles OTG hnp timeouts, such as b_ase0_brst
++ */
++void musb_otg_timer_func(unsigned long data)
++{
++	struct musb	*musb = (struct musb *)data;
++	unsigned long	flags;
++
++	spin_lock_irqsave(&musb->Lock, flags);
++	if (musb->xceiv.state == OTG_STATE_B_WAIT_ACON) {
++		DBG(1, "HNP: B_WAIT_ACON timeout, going back to B_PERIPHERAL\n");
++		musb_g_disconnect(musb);
++		musb->xceiv.state = OTG_STATE_B_PERIPHERAL;
++		musb->is_active = 0;
++	}
++	spin_unlock_irqrestore(&musb->Lock, flags);
++}
++
++static DEFINE_TIMER(musb_otg_timer, musb_otg_timer_func, 0, 0);
++
++/*
++ * Stops the B-device HNP state. Caller must take care of locking.
++ */
++void musb_hnp_stop(struct musb *musb)
++{
++	struct usb_hcd	*hcd = musb_to_hcd(musb);
++	void __iomem	*pBase = musb->pRegs;
++	u8	reg;
++
++	switch (musb->xceiv.state) {
++	case OTG_STATE_A_PERIPHERAL:
++	case OTG_STATE_A_WAIT_VFALL:
++		DBG(1, "HNP: Switching back to A-host\n");
++		musb_g_disconnect(musb);
++		musb_root_disconnect(musb);
++		musb->xceiv.state = OTG_STATE_A_IDLE;
++		musb->is_active = 0;
++		break;
++	case OTG_STATE_B_HOST:
++		DBG(1, "HNP: Disabling HR\n");
++		hcd->self.is_b_host = 0;
++		musb->xceiv.state = OTG_STATE_B_PERIPHERAL;
++		reg = musb_readb(pBase, MGC_O_HDRC_POWER);
++		reg |= MGC_M_POWER_SUSPENDM;
++		musb_writeb(pBase, MGC_O_HDRC_POWER, reg);
++		/* REVISIT: Start SESSION_REQUEST here? */
++		break;
++	default:
++		DBG(1, "HNP: Stopping in unknown state %s\n",
++			otg_state_string(musb));
++	}
++}
++
++#endif
++
+ /*
+  * Interrupt Service Routine to record USB "global" interrupts.
+  * Since these do not happen often and signify things of
+@@ -519,12 +582,16 @@ static irqreturn_t musb_stage0_irq(struc
+ 		/* indicate new connection to OTG machine */
+ 		switch (pThis->xceiv.state) {
+ 		case OTG_STATE_B_WAIT_ACON:
++			DBG(1, "HNP: Waiting to switch to b_host state\n");
+ 			pThis->xceiv.state = OTG_STATE_B_HOST;
++			hcd->self.is_b_host = 1;
+ 			break;
+ 		default:
+ 			if ((devctl & MGC_M_DEVCTL_VBUS)
+-					== (3 << MGC_S_DEVCTL_VBUS))
++					== (3 << MGC_S_DEVCTL_VBUS)) {
+ 				pThis->xceiv.state = OTG_STATE_A_HOST;
++				hcd->self.is_b_host = 0;
++			}
+ 			break;
+ 		}
+ 		DBG(1, "CONNECT (%s) devctl %02x\n",
+@@ -633,11 +700,17 @@ static irqreturn_t musb_stage2_irq(struc
+ 		case OTG_STATE_A_HOST:
+ 		case OTG_STATE_A_SUSPEND:
+ 			musb_root_disconnect(pThis);
++			if (pThis->a_wait_bcon != 0)
++				musb_platform_try_idle(pThis, jiffies
++					+ msecs_to_jiffies(pThis->a_wait_bcon));
+ 			break;
+ #endif	/* HOST */
+ #ifdef CONFIG_USB_MUSB_OTG
+-		case OTG_STATE_A_PERIPHERAL:
+ 		case OTG_STATE_B_HOST:
++			musb_hnp_stop(pThis);
++			break;
++			/* FALLTHROUGH */
++		case OTG_STATE_A_PERIPHERAL:
+ 			musb_root_disconnect(pThis);
+ 			/* FALLTHROUGH */
+ 		case OTG_STATE_B_WAIT_ACON:
+@@ -662,20 +735,37 @@ static irqreturn_t musb_stage2_irq(struc
+ 		handled = IRQ_HANDLED;
+ 
+ 		switch (pThis->xceiv.state) {
++		case OTG_STATE_A_PERIPHERAL:
++			musb_hnp_stop(pThis);
++			break;
+ 		case OTG_STATE_B_PERIPHERAL:
+ 			musb_g_suspend(pThis);
+ 			pThis->is_active = is_otg_enabled(pThis)
+ 					&& pThis->xceiv.gadget->b_hnp_enable;
+ 			if (pThis->is_active) {
+ 				pThis->xceiv.state = OTG_STATE_B_WAIT_ACON;
+-				/* REVISIT timeout for b_ase0_brst, etc */
++#ifdef	CONFIG_USB_MUSB_OTG
++				DBG(1, "HNP: Setting timer for b_ase0_brst\n");
++				musb_otg_timer.data = (unsigned long)pThis;
++				mod_timer(&musb_otg_timer, jiffies
++					+ msecs_to_jiffies(TB_ASE0_BRST));
++#endif
+ 			}
+ 			break;
++		case OTG_STATE_A_WAIT_BCON:
++			if (pThis->a_wait_bcon != 0)
++				musb_platform_try_idle(pThis, jiffies
++					+ msecs_to_jiffies(pThis->a_wait_bcon));
++			break;
+ 		case OTG_STATE_A_HOST:
+ 			pThis->xceiv.state = OTG_STATE_A_SUSPEND;
+ 			pThis->is_active = is_otg_enabled(pThis)
+ 					&& pThis->xceiv.host->b_hnp_enable;
+ 			break;
++		case OTG_STATE_B_HOST:
++			/* Transition to B_PERIPHERAL, see 6.8.2.6 p 44 */
++			DBG(1, "REVISIT: SUSPEND as B_HOST\n");
++			break;
+ 		default:
+ 			/* "should not happen" */
+ 			pThis->is_active = 0;
+@@ -783,7 +873,7 @@ void musb_stop(struct musb *musb)
+ 	 *    OTG mode, gadget driver module rmmod/modprobe cycles that
+ 	 *  - ...
+ 	 */
+-	musb_platform_try_idle(musb);
++	musb_platform_try_idle(musb, 0);
+ }
+ 
+ static void musb_shutdown(struct platform_device *pdev)
+@@ -1567,13 +1657,72 @@ musb_cable_show(struct device *dev, stru
+ 	} else	/* VBUS level below A-Valid */
+ 		v2 = "disconnected";
+ #endif
+-	musb_platform_try_idle(musb);
++	musb_platform_try_idle(musb, 0);
+ 	spin_unlock_irqrestore(&musb->Lock, flags);
+ 
+ 	return sprintf(buf, "%s%s\n", v1, v2);
+ }
+ static DEVICE_ATTR(cable, S_IRUGO, musb_cable_show, NULL);
+ 
++static ssize_t
++musb_vbus_store(struct device *dev, struct device_attribute *attr,
++		const char *buf, size_t n)
++{
++	struct musb	*musb = dev_to_musb(dev);
++	unsigned long	flags;
++	unsigned long	val;
++
++	spin_lock_irqsave(&musb->Lock, flags);
++	if (sscanf(buf, "%lu", &val) < 1) {
++		printk(KERN_ERR "Invalid VBUS timeout ms value\n");
++		return -EINVAL;
++	}
++	musb->a_wait_bcon = val;
++	if (musb->xceiv.state == OTG_STATE_A_WAIT_BCON)
++		musb->is_active = 0;
++	musb_platform_try_idle(musb, jiffies + msecs_to_jiffies(val));
++	spin_unlock_irqrestore(&musb->Lock, flags);
++
++	return n;
++}
++
++static ssize_t
++musb_vbus_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct musb	*musb = dev_to_musb(dev);
++	unsigned long	flags;
++	unsigned long	val;
++
++	spin_lock_irqsave(&musb->Lock, flags);
++	val = musb->a_wait_bcon;
++	spin_unlock_irqrestore(&musb->Lock, flags);
++
++	return sprintf(buf, "%lu\n", val);
++}
++static DEVICE_ATTR(vbus, 0644, musb_vbus_show, musb_vbus_store);
++
++static ssize_t
++musb_srp_store(struct device *dev, struct device_attribute *attr,
++		const char *buf, size_t n)
++{
++	struct musb	*musb=dev_to_musb(dev);
++	unsigned long	flags;
++	unsigned short	srp;
++
++	if (sscanf(buf, "%hu", &srp) != 1
++			|| (srp != 1)) {
++		printk (KERN_ERR "SRP: Value must be 1\n");
++		return -EINVAL;
++	}
++
++	spin_lock_irqsave(&musb->Lock, flags);
++	if (srp == 1)
++		musb_g_wakeup(musb);
++	spin_unlock_irqrestore(&musb->Lock, flags);
++
++	return n;
++}
++static DEVICE_ATTR(srp, 0644, NULL, musb_srp_store);
+ #endif
+ 
+ /* Only used to provide cable state change events */
+@@ -1643,6 +1792,10 @@ static void musb_free(struct musb *musb)
+ #ifdef CONFIG_SYSFS
+ 	device_remove_file(musb->controller, &dev_attr_mode);
+ 	device_remove_file(musb->controller, &dev_attr_cable);
++	device_remove_file(musb->controller, &dev_attr_vbus);
++#ifdef CONFIG_USB_MUSB_OTG
++	device_remove_file(musb->controller, &dev_attr_srp);
++#endif
+ #endif
+ 
+ #ifdef CONFIG_USB_GADGET_MUSB_HDRC
+@@ -1871,6 +2024,10 @@ fail:
+ #ifdef CONFIG_SYSFS
+ 	status = device_create_file(dev, &dev_attr_mode);
+ 	status = device_create_file(dev, &dev_attr_cable);
++	status = device_create_file(dev, &dev_attr_vbus);
++#ifdef CONFIG_USB_MUSB_OTG
++	status = device_create_file(dev, &dev_attr_srp);
++#endif /* CONFIG_USB_MUSB_OTG */
+ 	status = 0;
+ #endif
+ 
+Index: linux-2.6.18/drivers/usb/musb/tusb6010.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010.c
++++ linux-2.6.18/drivers/usb/musb/tusb6010.c
+@@ -25,6 +25,8 @@
+ 
+ #include "musbdefs.h"
+ 
++static void tusb_source_power(struct musb *musb, int is_on);
++
+ /*
+  * Checks the revision. We need to use the DMA register as 3.0 does not
+  * have correct versions for TUSB_PRCM_REV or TUSB_INT_CTRL_REV.
+@@ -71,7 +73,7 @@ static void tusb_wbus_quirk(struct musb 
+ {
+ 	void __iomem	*base = musb->ctrl_base;
+ 	static u32	phy_otg_ctrl = 0, phy_otg_ena = 0;
+-	u32		int_src, tmp;
++	u32		tmp;
+ 
+ 	if (enabled) {
+ 		phy_otg_ctrl = musb_readl(base, TUSB_PHY_OTG_CTRL);
+@@ -321,7 +323,7 @@ static void tusb_set_clock_source(struct
+  * USB link is not suspended ... and tells us the relevant wakeup
+  * events.  SW_EN for voltage is handled separately.
+  */
+-static void tusb_allow_idle(struct musb *musb, u32 wakeup_enables)
++void tusb_allow_idle(struct musb *musb, u32 wakeup_enables)
+ {
+ 	void __iomem	*base = musb->ctrl_base;
+ 	u32		reg;
+@@ -393,6 +395,23 @@ static void musb_do_idle(unsigned long _
+ 	unsigned long	flags;
+ 
+ 	spin_lock_irqsave(&musb->Lock, flags);
++
++	switch (musb->xceiv.state) {
++	case OTG_STATE_A_WAIT_BCON:
++		if ((musb->a_wait_bcon != 0)
++			&& (musb->idle_timeout == 0
++				|| time_after(jiffies, musb->idle_timeout))) {
++			DBG(4, "Nothing connected %s, turning off VBUS\n",
++					otg_state_string(musb));
++			tusb_source_power(musb, 0);
++			musb->xceiv.state = OTG_STATE_A_IDLE;
++			musb->is_active = 0;
++		}
++		break;
++	default:
++		break;
++	}
++
+ 	if (!musb->is_active) {
+ 		u32	wakeups;
+ 
+@@ -434,12 +453,35 @@ done:
+  * we don't want to treat that full speed J as a wakeup event.
+  * ... peripherals must draw only suspend current after 10 msec.
+  */
+-void musb_platform_try_idle(struct musb *musb)
++void musb_platform_try_idle(struct musb *musb, unsigned long timeout)
+ {
+-	if (musb->is_active)
++	unsigned long		default_timeout = jiffies + msecs_to_jiffies(3);
++	static unsigned long	last_timer = 0;
++
++	if (timeout == 0)
++		timeout = default_timeout;
++
++	if (musb->is_active) {
++		DBG(4, "%s active, deleting timer\n", otg_state_string(musb));
+ 		del_timer(&musb_idle_timer);
+-	else
+-		mod_timer(&musb_idle_timer, jiffies + msecs_to_jiffies(3));
++		last_timer = jiffies;
++		return;
++	}
++
++	if (time_after(last_timer, timeout)) {
++		if (!timer_pending(&musb_idle_timer))
++			last_timer = timeout;
++		else {
++			DBG(4, "Longer idle timer already pending, ignoring\n");
++			return;
++		}
++	}
++	last_timer = timeout;
++
++	DBG(4, "%s inactive, for idle timer for %lu ms\n",
++		otg_state_string(musb),
++		(unsigned long)jiffies_to_msecs(timeout - jiffies));
++	mod_timer(&musb_idle_timer, timeout);
+ }
+ 
+ /* ticks of 60 MHz clock */
+@@ -467,7 +509,6 @@ static void tusb_source_power(struct mus
+ 	if (is_on) {
+ 		musb->is_active = 1;
+ 		timer = OTG_TIMER_MS(OTG_TIME_A_WAIT_VRISE);
+-
+ 		musb->xceiv.default_a = 1;
+ 		musb->xceiv.state = OTG_STATE_A_WAIT_VRISE;
+ 		devctl |= MGC_M_DEVCTL_SESSION;
+@@ -575,10 +616,11 @@ void musb_platform_set_mode(struct musb 
+ 			"otg_stat: %08x\n", otg_stat);
+ }
+ 
+-static inline void
++static inline unsigned long
+ tusb_otg_ints(struct musb *musb, u32 int_src, void __iomem *base)
+ {
+-	u32	otg_stat = musb_readl(base, TUSB_DEV_OTG_STAT);
++	u32		otg_stat = musb_readl(base, TUSB_DEV_OTG_STAT);
++	unsigned long	idle_timeout = 0;
+ 
+ 	/* ID pin */
+ 	if ((int_src & TUSB_INT_SRC_ID_STATUS_CHNG)) {
+@@ -591,6 +633,10 @@ tusb_otg_ints(struct musb *musb, u32 int
+ 		DBG(2, "Default-%c\n", default_a ? 'A' : 'B');
+ 		musb->xceiv.default_a = default_a;
+ 		tusb_source_power(musb, default_a);
++
++		/* Don't allow idling immediately */
++		if (default_a)
++			idle_timeout = jiffies + (HZ * 3);
+ 	}
+ 
+ 	/* VBUS state change */
+@@ -621,13 +667,34 @@ tusb_otg_ints(struct musb *musb, u32 int
+ 			}
+ 			DBG(2, "vbus change, %s, otg %03x\n",
+ 				otg_state_string(musb), otg_stat);
++			idle_timeout = jiffies + (1 * HZ);
+ 			schedule_work(&musb->irq_work);
+ 
+ 		} else /* A-dev state machine */ {
++			u8	devctl;
++
+ 			DBG(2, "vbus change, %s, otg %03x\n",
+ 				otg_state_string(musb), otg_stat);
+ 
+ 			switch (musb->xceiv.state) {
++			case OTG_STATE_A_IDLE:
++				DBG(2, "Got SRP, turning on VBUS\n");
++				devctl = musb_readb(musb->pRegs,
++							MGC_O_HDRC_DEVCTL);
++				devctl |= MGC_M_DEVCTL_SESSION;
++				musb_writeb(musb->pRegs, MGC_O_HDRC_DEVCTL,
++							devctl);
++				musb->xceiv.state = OTG_STATE_A_WAIT_VRISE;
++
++				/* CONNECT can wake if a_wait_bcon is set */
++				if (musb->a_wait_bcon != 0)
++					musb->is_active = 0;
++				else
++					musb->is_active = 1;
++
++				idle_timeout = jiffies
++					+ msecs_to_jiffies(musb->a_wait_bcon);
++				break;
+ 			case OTG_STATE_A_WAIT_VRISE:
+ 				/* ignore; A-session-valid < VBUS_VALID/2,
+ 				 * we monitor this with the timer
+@@ -661,25 +728,19 @@ tusb_otg_ints(struct musb *musb, u32 int
+ 			 */
+ 			devctl = musb_readb(musb->pRegs, MGC_O_HDRC_DEVCTL);
+ 			if (otg_stat & TUSB_DEV_OTG_STAT_VBUS_VALID) {
+-				u32	timer;
+-
+ 				if ((devctl & MGC_M_DEVCTL_VBUS)
+ 						!= MGC_M_DEVCTL_VBUS) {
+ 					DBG(2, "devctl %02x\n", devctl);
+ 					break;
+ 				}
+ 				musb->xceiv.state = OTG_STATE_A_WAIT_BCON;
+-
+-				/* REVISIT: if nothing is connected yet,
+-				 * mark controller as inactive so that
+-				 * we can suspend the TUSB chip.
+-				 */
+-
+-				/* timeout 0 == infinite (like non-OTG hosts) */
+-				timer = OTG_TIMER_MS(OTG_TIME_A_WAIT_BCON);
+-				if (timer)
+-					musb_writel(base, TUSB_DEV_OTG_TIMER,
+-							timer);
++				/* CONNECT can wake if a_wait_bcon is set */
++				if (musb->a_wait_bcon != 0)
++					musb->is_active = 0;
++				else
++					musb->is_active = 1;
++				idle_timeout = jiffies
++					+ msecs_to_jiffies(musb->a_wait_bcon);
+ 			} else {
+ 				/* REVISIT report overcurrent to hub? */
+ 				ERR("vbus too slow, devctl %02x\n", devctl);
+@@ -687,8 +748,9 @@ tusb_otg_ints(struct musb *musb, u32 int
+ 			}
+ 			break;
+ 		case OTG_STATE_A_WAIT_BCON:
+-			if (OTG_TIME_A_WAIT_BCON)
+-				tusb_source_power(musb, 0);
++			if (musb->a_wait_bcon != 0)
++				idle_timeout = jiffies
++					+ msecs_to_jiffies(musb->a_wait_bcon);
+ 			break;
+ 		case OTG_STATE_A_SUSPEND:
+ 			break;
+@@ -698,13 +760,15 @@ tusb_otg_ints(struct musb *musb, u32 int
+ 			break;
+ 		}
+ 	}
++
++	return idle_timeout;
+ }
+ 
+ static irqreturn_t tusb_interrupt(int irq, void *__hci)
+ {
+ 	struct musb	*musb = __hci;
+ 	void __iomem	*base = musb->ctrl_base;
+-	unsigned long	flags;
++	unsigned long	flags, idle_timeout = 0;
+ 	u32		int_mask, int_src;
+ 
+ 	spin_lock_irqsave(&musb->Lock, flags);
+@@ -753,11 +817,14 @@ static irqreturn_t tusb_interrupt(int ir
+ 		// REVISIT host side TUSB_PRCM_WHOSTDISCON, TUSB_PRCM_WBUS
+ 	}
+ 
++	if (int_src & TUSB_INT_SRC_USB_IP_CONN)
++		del_timer(&musb_idle_timer);
++
+ 	/* OTG state change reports (annoyingly) not issued by Mentor core */
+ 	if (int_src & (TUSB_INT_SRC_VBUS_SENSE_CHNG
+ 				| TUSB_INT_SRC_OTG_TIMEOUT
+ 				| TUSB_INT_SRC_ID_STATUS_CHNG))
+-		tusb_otg_ints(musb, int_src, base);
++		idle_timeout = tusb_otg_ints(musb, int_src, base);
+ 
+ 	/* TX dma callback must be handled here, RX dma callback is
+ 	 * handled in tusb_omap_dma_cb.
+@@ -799,7 +866,7 @@ static irqreturn_t tusb_interrupt(int ir
+ 	musb_writel(base, TUSB_INT_SRC_CLEAR,
+ 		int_src & ~TUSB_INT_MASK_RESERVED_BITS);
+ 
+-	musb_platform_try_idle(musb);
++	musb_platform_try_idle(musb, idle_timeout);
+ 
+ 	musb_writel(base, TUSB_INT_MASK, int_mask);
+ 	spin_unlock_irqrestore(&musb->Lock, flags);
+Index: linux-2.6.18/drivers/usb/musb/virthub.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/virthub.c
++++ linux-2.6.18/drivers/usb/musb/virthub.c
+@@ -61,10 +61,20 @@ static void musb_port_suspend(struct mus
+ 	 */
+ 	power = musb_readb(pBase, MGC_O_HDRC_POWER);
+ 	if (bSuspend) {
++		int retries = 10000;
++
+ 		power &= ~MGC_M_POWER_RESUME;
+ 		power |= MGC_M_POWER_SUSPENDM;
+ 		musb_writeb(pBase, MGC_O_HDRC_POWER, power);
+ 
++		/* Needed for OPT A tests */
++		power = musb_readb(pBase, MGC_O_HDRC_POWER);
++		while (power & MGC_M_POWER_SUSPENDM) {
++			power = musb_readb(pBase, MGC_O_HDRC_POWER);
++			if (retries-- < 1)
++				break;
++		}
++
+ 		DBG(3, "Root port suspended, power %02x\n", power);
+ 
+ 		musb->port1_status |= USB_PORT_STAT_SUSPEND;
+@@ -73,7 +83,7 @@ static void musb_port_suspend(struct mus
+ 			musb->xceiv.state = OTG_STATE_A_SUSPEND;
+ 			musb->is_active = is_otg_enabled(musb)
+ 					&& musb->xceiv.host->b_hnp_enable;
+-			musb_platform_try_idle(musb);
++			musb_platform_try_idle(musb, 0);
+ 			break;
+ 		case OTG_STATE_B_HOST:
+ 			musb->xceiv.state = OTG_STATE_B_PERIPHERAL;
+@@ -362,7 +372,11 @@ int musb_hub_control(
+ 				temp = MGC_M_TEST_FORCE_HOST
+ 					| MGC_M_TEST_FORCE_HS;
+ 
+-				/* FIXME and enable a session too */
++				musb_writeb(musb->pRegs, MGC_O_HDRC_DEVCTL, MGC_M_DEVCTL_SESSION);
++				break;
++			case 6:
++				pr_debug("TEST_FIFO_ACCESS\n");
++				temp = MGC_M_TEST_FIFO_ACCESS;
+ 				break;
+ 			default:
+ 				goto error;
+Index: linux-2.6.18/mvl_patches/pro50-1654.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1654.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1654);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

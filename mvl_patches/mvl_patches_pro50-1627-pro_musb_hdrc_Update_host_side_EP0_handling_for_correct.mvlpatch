@@ -1,0 +1,431 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Update_host_side_EP0_handling_for_correct
+# Date: Fri Sep 19 14:04:22 2008
+# From cfd720be10e7aa5e28ee292306cbdf83eff8f422 Mon Sep 17 00:00:00 2001
+# From: David Brownell <dbrownell@users.sourceforge.net>
+# Date: Fri, 23 Mar 2007 09:56:36 -0400
+# Subject: [PATCH] musb_hdrc: Update host side EP0 handling for correctness
+# 
+# Update host side EP0 handling for correctness:  handle zero-length data
+# stages and continuations of ep0out transfers explicitly, clean up the state
+# machine a bit.  This means that the full set of host-side ep0 tests pass.
+# Usbtest cases #9 and #10 were ok before; now case #14 works too.
+# 
+# There is however a curious protocol problem in some full speed tests, at
+# least on DaVinci:  sometimes the controller won't ack an IN DATA packet,
+# causing a retry.  If the peripheral doesn't resend that data correctly,
+# that causes a test failure.  (And my test rig doesn't resend correctly...)
+# 
+# This is based on a patch from "ZHENG LEI <realthunder@pmail.ntu.edu.sg>"
+# against 2.6.10 code, resolving some of the ep0out problems.
+# 
+# Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+# (cherry picked from commit ea4c46f2bab83dea26ce343763fc65270ca537a6)
+
+PATCHNUM=1627
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From cfd720be10e7aa5e28ee292306cbdf83eff8f422 Mon Sep 17 00:00:00 2001
+From: David Brownell <dbrownell@users.sourceforge.net>
+Date: Fri, 23 Mar 2007 09:56:36 -0400
+Subject: [PATCH] musb_hdrc: Update host side EP0 handling for correctness
+
+Update host side EP0 handling for correctness:  handle zero-length data
+stages and continuations of ep0out transfers explicitly, clean up the state
+machine a bit.  This means that the full set of host-side ep0 tests pass.
+Usbtest cases #9 and #10 were ok before; now case #14 works too.
+
+There is however a curious protocol problem in some full speed tests, at
+least on DaVinci:  sometimes the controller won't ack an IN DATA packet,
+causing a retry.  If the peripheral doesn't resend that data correctly,
+that causes a test failure.  (And my test rig doesn't resend correctly...)
+
+This is based on a patch from "ZHENG LEI <realthunder@pmail.ntu.edu.sg>"
+against 2.6.10 code, resolving some of the ep0out problems.
+
+Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+(cherry picked from commit ea4c46f2bab83dea26ce343763fc65270ca537a6)
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -936,21 +936,20 @@ static void musb_ep_program(struct musb 
+ 
+ /*
+  * Service the default endpoint (ep0) as host.
+- * return TRUE if more packets are required for this transaction
++ * Return TRUE until it's time to start the status stage.
+  */
+-static u8 musb_h_ep0_continue(struct musb *pThis,
++static int musb_h_ep0_continue(struct musb *pThis,
+ 				u16 wCount, struct urb *pUrb)
+ {
+-	u8 bMore = FALSE;
++	int			 bMore = FALSE;
+ 	u8 *pFifoDest = NULL;
+ 	u16 wFifoCount = 0;
+ 	struct musb_hw_ep	*pEnd = pThis->control_ep;
+ 	struct musb_qh		*qh = pEnd->in_qh;
+ 	struct usb_ctrlrequest	*pRequest;
+ 
+-	pRequest = (struct usb_ctrlrequest *) pUrb->setup_packet;
+-	if (MGC_END0_IN == pThis->bEnd0Stage) {
+-		/* we are receiving from peripheral */
++	switch (pThis->bEnd0Stage) {
++	case MGC_END0_IN:
+ 		pFifoDest = pUrb->transfer_buffer + pUrb->actual_length;
+ 		wFifoCount = min(wCount, ((u16) (pUrb->transfer_buffer_length
+ 					- pUrb->actual_length)));
+@@ -964,50 +963,46 @@ static u8 musb_h_ep0_continue(struct mus
+ 			/* always terminate on short read; it's
+ 			 * rarely reported as an error.
+ 			 */
+-			if ((pUrb->transfer_flags & URB_SHORT_NOT_OK)
+-					&& (pUrb->actual_length <
+-						pUrb->transfer_buffer_length))
+-				pUrb->status = -EREMOTEIO;
+ 		} else if (pUrb->actual_length <
+ 				pUrb->transfer_buffer_length)
+ 			bMore = TRUE;
+-	} else {
+-/*
+-	DBG(3, "%s hw%d urb %p spd%d dev%d ep%d%s "
+-				"hub%d port%d%s bytes %d\n",
+-			is_out ? "-->" : "<--",
+-			bEnd, pUrb, pUrb->dev->speed,
+-			bAddress, qh->epnum, is_out ? "out" : "in",
+-			bHubAddr, bHubPort + 1,
+-			bIsMulti ? " multi" : "",
+-			dwLength);
+-*/
+-		if ((MGC_END0_START == pThis->bEnd0Stage)
+-				&& (pRequest->bRequestType & USB_DIR_IN)) {
+-			/* this means we just did setup; switch to IN */
++		break;
++	case MGC_END0_START:
++		pRequest = (struct usb_ctrlrequest *) pUrb->setup_packet;
++
++		if (!pRequest->wLength) {
++			DBG(4, "start no-DATA\n");
++			break;
++		} else if (pRequest->bRequestType & USB_DIR_IN) {
+ 			DBG(4, "start IN-DATA\n");
+ 			pThis->bEnd0Stage = MGC_END0_IN;
+ 			bMore = TRUE;
+-
+-		} else if (pRequest->wLength
+-				&& (MGC_END0_START == pThis->bEnd0Stage)) {
++			break;
++		} else {
++			DBG(4, "start OUT-DATA\n");
+ 			pThis->bEnd0Stage = MGC_END0_OUT;
++			bMore = TRUE;
++		}
++		/* FALLTHROUGH */
++	case MGC_END0_OUT:
++		wFifoCount = min(qh->maxpacket, ((u16)
++				(pUrb->transfer_buffer_length
++				- pUrb->actual_length)));
++
++		if (wFifoCount) {
+ 			pFifoDest = (u8 *) (pUrb->transfer_buffer
+ 					+ pUrb->actual_length);
+-			wFifoCount = min(qh->maxpacket, ((u16)
+-					(pUrb->transfer_buffer_length
+-					- pUrb->actual_length)));
+ 			DBG(3, "Sending %d bytes to %p\n",
+ 					wFifoCount, pFifoDest);
+ 			musb_write_fifo(pEnd, wFifoCount, pFifoDest);
+ 
+-			qh->segsize = wFifoCount;
+ 			pUrb->actual_length += wFifoCount;
+-			if (pUrb->actual_length
+-					< pUrb->transfer_buffer_length) {
+-				bMore = TRUE;
+-			}
++			bMore = TRUE;
+ 		}
++		break;
++	default:
++		ERR("bogus ep0 stage %d\n", pThis->bEnd0Stage);
++		break;
+ 	}
+ 
+ 	return bMore;
+@@ -1036,7 +1031,9 @@ irqreturn_t musb_h_ep0_irq(struct musb *
+ 
+ 	MGC_SelectEnd(pBase, 0);
+ 	wCsrVal = musb_readw(epio, MGC_O_HDRC_CSR0);
+-	wCount = musb_readb(epio, MGC_O_HDRC_COUNT0);
++	wCount = (wCsrVal & MGC_M_CSR0_RXPKTRDY)
++			? musb_readb(epio, MGC_O_HDRC_COUNT0)
++			: 0;
+ 
+ 	DBG(4, "<== csr0 %04x, qh %p, count %d, urb %p, stage %d\n",
+ 		wCsrVal, qh, wCount, pUrb, pThis->bEnd0Stage);
+@@ -1117,10 +1114,14 @@ irqreturn_t musb_h_ep0_irq(struct musb *
+ 				?  MGC_M_CSR0_H_REQPKT : MGC_M_CSR0_TXPKTRDY;
+ 		} else {
+ 			/* data transfer complete; perform status phase */
+-			wCsrVal = MGC_M_CSR0_H_STATUSPKT
+-				| (usb_pipeout(pUrb->pipe)
+-					? MGC_M_CSR0_H_REQPKT
+-					: MGC_M_CSR0_TXPKTRDY);
++			if (usb_pipeout(pUrb->pipe)
++					|| !pUrb->transfer_buffer_length)
++				wCsrVal = MGC_M_CSR0_H_STATUSPKT
++					| MGC_M_CSR0_H_REQPKT;
++			else
++				wCsrVal = MGC_M_CSR0_H_STATUSPKT
++					| MGC_M_CSR0_TXPKTRDY;
++
+ 			/* flag status stage */
+ 			pThis->bEnd0Stage = MGC_END0_STATUS;
+ 
+@@ -1129,7 +1130,8 @@ irqreturn_t musb_h_ep0_irq(struct musb *
+ 		}
+ 		musb_writew(epio, MGC_O_HDRC_CSR0, wCsrVal);
+ 		retval = IRQ_HANDLED;
+-	}
++	} else
++		pThis->bEnd0Stage = MGC_END0_IDLE;
+ 
+ 	/* call completion handler if done */
+ 	if (bComplete)
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -176,10 +176,13 @@ static inline void musb_host_rx(struct m
+ #endif
+ 
+ /* host side ep0 states */
+-#define MGC_END0_START  0x0
+-#define MGC_END0_OUT    0x2
+-#define MGC_END0_IN     0x4
+-#define MGC_END0_STATUS 0x8
++enum musb_h_ep0_state {
++	MGC_END0_IDLE,
++	MGC_END0_START,			/* expect ack of setup */
++	MGC_END0_IN,			/* expect IN DATA */
++	MGC_END0_OUT,			/* expect ack of OUT DATA */
++	MGC_END0_STATUS,		/* expect ack of STATUS */
++} __attribute__ ((packed));
+ 
+ /* peripheral side ep0 states */
+ enum musb_g_ep0_state {
+@@ -347,7 +350,7 @@ struct musb {
+ 	u32			port1_status;
+ 	unsigned long		rh_timer;
+ 
+-	u8 bEnd0Stage;		/* end0 stage while in host */
++	enum musb_h_ep0_state	bEnd0Stage;
+ 
+ 	/* bulk traffic normally dedicates endpoint hardware, and each
+ 	 * direction has its own ring of host side endpoints.
+Index: linux-2.6.18/mvl_patches/pro50-1627.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1627.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1627);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

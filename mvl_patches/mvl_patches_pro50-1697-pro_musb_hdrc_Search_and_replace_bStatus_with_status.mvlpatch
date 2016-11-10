@@ -1,0 +1,563 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_bStatus_with_status
+# Date: Fri Sep 19 14:09:19 2008
+# From 74088cfe5d7be29811acd253fbdc0ebe59148c2f Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Mon, 13 Aug 2007 04:54:53 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace bStatus with status
+# 
+# Search and replace bStatus with status
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 0efb01c862387808f8ff8f48c0e2bfd697bee837)
+
+PATCHNUM=1697
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 74088cfe5d7be29811acd253fbdc0ebe59148c2f Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Mon, 13 Aug 2007 04:54:53 -0700
+Subject: [PATCH] musb_hdrc: Search and replace bStatus with status
+
+Search and replace bStatus with status
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 0efb01c862387808f8ff8f48c0e2bfd697bee837)
+Index: linux-2.6.18/drivers/usb/musb/cppi_dma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/cppi_dma.c
++++ linux-2.6.18/drivers/usb/musb/cppi_dma.c
+@@ -99,7 +99,7 @@ static void __init cppi_pool_init(struct
+ 	c->activeQueueHead = NULL;
+ 	c->activeQueueTail = NULL;
+ 	c->lastHwBDProcessed = NULL;
+-	c->Channel.bStatus = MGC_DMA_STATUS_UNKNOWN;
++	c->Channel.status = MGC_DMA_STATUS_UNKNOWN;
+ 	c->pController = cppi;
+ 	c->bLastModeRndis = 0;
+ 	c->Channel.private_data = c;
+@@ -124,7 +124,7 @@ static void cppi_pool_free(struct cppi_c
+ 	struct cppi_descriptor	*bd;
+ 
+ 	(void) cppi_channel_abort(&c->Channel);
+-	c->Channel.bStatus = MGC_DMA_STATUS_UNKNOWN;
++	c->Channel.status = MGC_DMA_STATUS_UNKNOWN;
+ 	c->pController = NULL;
+ 
+ 	/* free all its bds */
+@@ -322,7 +322,7 @@ cppi_channel_allocate(struct dma_control
+ 		DBG(1, "re-allocating DMA%d %cX channel %p\n",
+ 				chNum, bTransmit ? 'T' : 'R', otgCh);
+ 	otgCh->hw_ep = ep;
+-	otgCh->Channel.bStatus = MGC_DMA_STATUS_FREE;
++	otgCh->Channel.status = MGC_DMA_STATUS_FREE;
+ 
+ 	DBG(4, "Allocate CPPI%d %cX\n", chNum, bTransmit ? 'T' : 'R');
+ 	otgCh->Channel.private_data = otgCh;
+@@ -348,7 +348,7 @@ static void cppi_channel_release(struct 
+ 
+ 	/* for now, leave its cppi IRQ enabled (we won't trigger it) */
+ 	c->hw_ep = NULL;
+-	channel->bStatus = MGC_DMA_STATUS_UNKNOWN;
++	channel->status = MGC_DMA_STATUS_UNKNOWN;
+ }
+ 
+ /* Context: controller irqlocked */
+@@ -957,7 +957,7 @@ static int cppi_channel_program(struct d
+ 	struct cppi		*pController = otgChannel->pController;
+ 	struct musb		*musb = pController->musb;
+ 
+-	switch (pChannel->bStatus) {
++	switch (pChannel->status) {
+ 	case MGC_DMA_STATUS_BUS_ABORT:
+ 	case MGC_DMA_STATUS_CORE_ABORT:
+ 		/* fault irq handler should have handled cleanup */
+@@ -981,7 +981,7 @@ static int cppi_channel_program(struct d
+ 		break;
+ 	}
+ 
+-	pChannel->bStatus = MGC_DMA_STATUS_BUSY;
++	pChannel->status = MGC_DMA_STATUS_BUSY;
+ 
+ 	/* set transfer parameters, then queue up its first segment */
+ 	otgChannel->startAddr = dma_addr;
+@@ -1224,7 +1224,7 @@ void cppi_completion(struct musb *musb, 
+ 						>= txChannel->transferSize) {
+ 					txChannel->activeQueueHead = NULL;
+ 					txChannel->activeQueueTail = NULL;
+-					txChannel->Channel.bStatus =
++					txChannel->Channel.status =
+ 							MGC_DMA_STATUS_FREE;
+ 
+ 					hw_ep = txChannel->hw_ep;
+@@ -1288,7 +1288,7 @@ void cppi_completion(struct musb *musb, 
+ 			}
+ 
+ 			/* all segments completed! */
+-			rxChannel->Channel.bStatus = MGC_DMA_STATUS_FREE;
++			rxChannel->Channel.status = MGC_DMA_STATUS_FREE;
+ 
+ 			hw_ep = rxChannel->hw_ep;
+ 
+@@ -1375,7 +1375,7 @@ static int cppi_channel_abort(struct dma
+ 	pController = otgCh->pController;
+ 	chNum = otgCh->chNo;
+ 
+-	switch (channel->bStatus) {
++	switch (channel->status) {
+ 	case MGC_DMA_STATUS_BUS_ABORT:
+ 	case MGC_DMA_STATUS_CORE_ABORT:
+ 		/* from RX or TX fault irq handler */
+@@ -1515,7 +1515,7 @@ static int cppi_channel_abort(struct dma
+ 		 * refers to an entire "DMA packet" not just emptying the
+ 		 * current fifo; most segments need multiple usb packets.
+ 		 */
+-		if (channel->bStatus == MGC_DMA_STATUS_BUSY)
++		if (channel->status == MGC_DMA_STATUS_BUSY)
+ 			udelay(50);
+ 
+ 		/* scan the current list, reporting any data that was
+@@ -1552,7 +1552,7 @@ static int cppi_channel_abort(struct dma
+ 		}
+ 	}
+ 
+-	channel->bStatus = MGC_DMA_STATUS_FREE;
++	channel->status = MGC_DMA_STATUS_FREE;
+ 	otgCh->startAddr = 0;
+ 	otgCh->currOffset = 0;
+ 	otgCh->transferSize = 0;
+Index: linux-2.6.18/drivers/usb/musb/dma.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/dma.h
++++ linux-2.6.18/drivers/usb/musb/dma.h
+@@ -104,7 +104,7 @@ struct dma_controller;
+  * @wMaxLength: the maximum number of bytes the channel can move in one
+  *	transaction (typically representing many USB maximum-sized packets)
+  * @actual_len: how many bytes have been transferred
+- * @bStatus: current channel status (updated e.g. on interrupt)
++ * @status: current channel status (updated e.g. on interrupt)
+  * @bDesiredMode: TRUE if mode 1 is desired; FALSE if mode 0 is desired
+  *
+  * channels are associated with an endpoint for the duration of at least
+@@ -115,7 +115,7 @@ struct dma_channel {
+ 	// FIXME not void* private_data, but a dma_controller *
+ 	size_t			max_len;
+ 	size_t			actual_len;
+-	enum dma_channel_status	bStatus;
++	enum dma_channel_status	status;
+ 	u8			bDesiredMode;
+ };
+ 
+@@ -151,7 +151,7 @@ typedef int (*MGC_pfDmaProgramChannel) (
+ static inline enum dma_channel_status
+ dma_channel_status(struct dma_channel *c)
+ {
+-	return (is_dma_capable() && c) ? c->bStatus : MGC_DMA_STATUS_UNKNOWN;
++	return (is_dma_capable() && c) ? c->status : MGC_DMA_STATUS_UNKNOWN;
+ }
+ 
+ /**
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -427,7 +427,7 @@ void musb_g_tx(struct musb *musb, u8 epn
+ 			wCsrVal &= ~MGC_M_TXCSR_P_SENTSTALL;
+ 			musb_writew(epio, MGC_O_HDRC_TXCSR, wCsrVal);
+ 			if (dma_channel_status(dma) == MGC_DMA_STATUS_BUSY) {
+-				dma->bStatus = MGC_DMA_STATUS_CORE_ABORT;
++				dma->status = MGC_DMA_STATUS_CORE_ABORT;
+ 				musb->dma_controller->channel_abort(dma);
+ 			}
+ 
+@@ -753,7 +753,7 @@ void musb_g_rx(struct musb *musb, u8 epn
+ 
+ 	if (wCsrVal & MGC_M_RXCSR_P_SENTSTALL) {
+ 		if (dma_channel_status(dma) == MGC_DMA_STATUS_BUSY) {
+-			dma->bStatus = MGC_DMA_STATUS_CORE_ABORT;
++			dma->status = MGC_DMA_STATUS_CORE_ABORT;
+ 			(void) musb->dma_controller->channel_abort(dma);
+ 			pRequest->actual += musb_ep->dma->actual_len;
+ 		}
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -1226,7 +1226,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 
+ 	if (status) {
+ 		if (dma_channel_status(dma) == MGC_DMA_STATUS_BUSY) {
+-			dma->bStatus = MGC_DMA_STATUS_CORE_ABORT;
++			dma->status = MGC_DMA_STATUS_CORE_ABORT;
+ 			(void) musb->dma_controller->channel_abort(dma);
+ 		}
+ 
+@@ -1460,7 +1460,7 @@ void musb_host_rx(struct musb *musb, u8 
+ 	if (status) {
+ 		/* clean up dma and collect transfer count */
+ 		if (dma_channel_status(dma) == MGC_DMA_STATUS_BUSY) {
+-			dma->bStatus = MGC_DMA_STATUS_CORE_ABORT;
++			dma->status = MGC_DMA_STATUS_CORE_ABORT;
+ 			(void) musb->dma_controller->channel_abort(dma);
+ 			xfer_len = dma->actual_len;
+ 		}
+@@ -1491,7 +1491,7 @@ void musb_host_rx(struct musb *musb, u8 
+ 		 * shouldn't this be the "half full" double buffer case?
+ 		 */
+ 		if (dma_channel_status(dma) == MGC_DMA_STATUS_BUSY) {
+-			dma->bStatus = MGC_DMA_STATUS_CORE_ABORT;
++			dma->status = MGC_DMA_STATUS_CORE_ABORT;
+ 			(void) musb->dma_controller->channel_abort(dma);
+ 			xfer_len = dma->actual_len;
+ 			bDone = TRUE;
+Index: linux-2.6.18/drivers/usb/musb/musbhsdma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbhsdma.c
++++ linux-2.6.18/drivers/usb/musb/musbhsdma.c
+@@ -144,7 +144,7 @@ static struct dma_channel* dma_channel_a
+ 			pImplChannel->bTransmit = bTransmit;
+ 			pChannel = &(pImplChannel->Channel);
+ 			pChannel->private_data = pImplChannel;
+-			pChannel->bStatus = MGC_DMA_STATUS_FREE;
++			pChannel->status = MGC_DMA_STATUS_FREE;
+ 			pChannel->max_len = 0x10000;
+ 			/* Tx => mode 1; Rx => mode 0 */
+ 			pChannel->bDesiredMode = bTransmit;
+@@ -167,7 +167,7 @@ static void dma_channel_release(struct d
+ 	pImplChannel->pController->bmUsedChannels &=
+ 		~(1 << pImplChannel->bIndex);
+ 
+-	pChannel->bStatus = MGC_DMA_STATUS_UNKNOWN;
++	pChannel->status = MGC_DMA_STATUS_UNKNOWN;
+ }
+ 
+ static void configure_channel(struct dma_channel *pChannel,
+@@ -232,14 +232,14 @@ static int dma_channel_program(struct dm
+ 		pImplChannel->bTransmit ? "Tx" : "Rx",
+ 		wPacketSize, dma_addr, dwLength, bMode);
+ 
+-	BUG_ON(pChannel->bStatus == MGC_DMA_STATUS_UNKNOWN ||
+-		pChannel->bStatus == MGC_DMA_STATUS_BUSY);
++	BUG_ON(pChannel->status == MGC_DMA_STATUS_UNKNOWN ||
++		pChannel->status == MGC_DMA_STATUS_BUSY);
+ 
+ 	pChannel->actual_len = 0;
+ 	pImplChannel->dwStartAddress = dma_addr;
+ 	pImplChannel->len = dwLength;
+ 	pImplChannel->wMaxPacketSize = wPacketSize;
+-	pChannel->bStatus = MGC_DMA_STATUS_BUSY;
++	pChannel->status = MGC_DMA_STATUS_BUSY;
+ 
+ 	if ((bMode == 1) && (dwLength >= wPacketSize)) {
+ 		configure_channel(pChannel, wPacketSize, 1, dma_addr,
+@@ -259,7 +259,7 @@ static int dma_channel_abort(struct dma_
+ 	u8 *mbase = pImplChannel->pController->pCoreBase;
+ 	u16 csr;
+ 
+-	if (pChannel->bStatus == MGC_DMA_STATUS_BUSY) {
++	if (pChannel->status == MGC_DMA_STATUS_BUSY) {
+ 		if (pImplChannel->bTransmit) {
+ 
+ 			csr = musb_readw(mbase,
+@@ -289,7 +289,7 @@ static int dma_channel_abort(struct dma_
+ 		musb_writel(mbase,
+ 		   MGC_HSDMA_CHANNEL_OFFSET(bChannel, MGC_O_HSDMA_COUNT), 0);
+ 
+-		pChannel->bStatus = MGC_DMA_STATUS_FREE;
++		pChannel->status = MGC_DMA_STATUS_FREE;
+ 	}
+ 	return 0;
+ }
+@@ -322,7 +322,7 @@ static irqreturn_t dma_controller_irq(in
+ 							MGC_O_HSDMA_CONTROL));
+ 
+ 			if (wCsr & (1 << MGC_S_HSDMA_BUSERROR)) {
+-				pImplChannel->Channel.bStatus =
++				pImplChannel->Channel.status =
+ 				    MGC_DMA_STATUS_BUS_ABORT;
+ 			} else {
+ 				dwAddress = musb_readl(mbase,
+@@ -343,7 +343,7 @@ static irqreturn_t dma_controller_irq(in
+ 				u8 devctl = musb_readb(mbase,
+ 						MGC_O_HDRC_DEVCTL);
+ 
+-				pChannel->bStatus = MGC_DMA_STATUS_FREE;
++				pChannel->status = MGC_DMA_STATUS_FREE;
+ 
+ 				/* completed */
+ 				if ((devctl & MGC_M_DEVCTL_HM)
+Index: linux-2.6.18/drivers/usb/musb/tusb6010_omap.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010_omap.c
++++ linux-2.6.18/drivers/usb/musb/tusb6010_omap.c
+@@ -202,7 +202,7 @@ static void tusb_omap_dma_cb(int lch, u1
+ 	if (!dmareq_works())
+ 		tusb_omap_free_shared_dmareq(chdat);
+ 
+-	channel->bStatus = MGC_DMA_STATUS_FREE;
++	channel->status = MGC_DMA_STATUS_FREE;
+ 
+ 	/* Handle only RX callbacks here. TX callbacks musb be handled based
+ 	 * on the TUSB DMA status interrupt.
+@@ -296,7 +296,7 @@ static int tusb_omap_dma_program(struct 
+ 	chdat->len = len;
+ 	channel->actual_len = 0;
+ 	chdat->dma_addr = (void __iomem *)dma_addr;
+-	channel->bStatus = MGC_DMA_STATUS_BUSY;
++	channel->status = MGC_DMA_STATUS_BUSY;
+ 
+ 	/* Since we're recycling dma areas, we need to clean or invalidate */
+ 	if (chdat->tx) {
+@@ -430,7 +430,7 @@ static int tusb_omap_dma_abort(struct dm
+ 		tusb_dma->sync_dev = -1;
+ 	}
+ 
+-	channel->bStatus = MGC_DMA_STATUS_FREE;
++	channel->status = MGC_DMA_STATUS_FREE;
+ 
+ 	return 0;
+ }
+@@ -521,8 +521,8 @@ tusb_omap_dma_allocate(struct dma_contro
+ 
+ 	for (i = 0; i < MAX_DMAREQ; i++) {
+ 		struct dma_channel *ch = dma_channel_pool[i];
+-		if (ch->bStatus == MGC_DMA_STATUS_UNKNOWN) {
+-			ch->bStatus = MGC_DMA_STATUS_FREE;
++		if (ch->status == MGC_DMA_STATUS_UNKNOWN) {
++			ch->status = MGC_DMA_STATUS_FREE;
+ 			channel = ch;
+ 			chdat = ch->private_data;
+ 			break;
+@@ -589,7 +589,7 @@ free_dmareq:
+ 	tusb_omap_dma_free_dmareq(chdat);
+ 
+ 	DBG(3, "ep%i: Could not get a DMA channel\n", chdat->epnum);
+-	channel->bStatus = MGC_DMA_STATUS_UNKNOWN;
++	channel->status = MGC_DMA_STATUS_UNKNOWN;
+ 
+ 	return NULL;
+ }
+@@ -617,7 +617,7 @@ static void tusb_omap_dma_release(struct
+ 		reg |= (1 << (chdat->epnum + 15));
+ 	musb_writel(tusb_base, TUSB_DMA_INT_CLEAR, reg);
+ 
+-	channel->bStatus = MGC_DMA_STATUS_UNKNOWN;
++	channel->status = MGC_DMA_STATUS_UNKNOWN;
+ 
+ 	if (chdat->ch >= 0) {
+ 		omap_stop_dma(chdat->ch);
+@@ -702,7 +702,7 @@ dma_controller_create(struct musb *musb,
+ 		if (!chdat)
+ 			goto cleanup;
+ 
+-		ch->bStatus = MGC_DMA_STATUS_UNKNOWN;
++		ch->status = MGC_DMA_STATUS_UNKNOWN;
+ 		ch->private_data = chdat;
+ 	}
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1697.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1697.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1697);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

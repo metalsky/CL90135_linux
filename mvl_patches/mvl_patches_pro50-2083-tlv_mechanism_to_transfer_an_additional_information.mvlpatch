@@ -1,0 +1,475 @@
+#! /usr/bin/env bash
+# Patch: -tlv_mechanism_to_transfer_an_additional_information
+# Date: Thu Feb 19 14:59:18 2009
+# Source: kernel.org
+# MR: 28687
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Steve Chen <schen@mvista.com>
+# Description:
+# 
+# [ALSA] Control API - TLV implementation for additional information like dB scale
+# 
+# This patch implements a TLV mechanism to transfer an additional information
+# like dB scale to the user space. The types might be extended in future.
+# Acked-by: Takashi Iwai <tiwai@suse.de>
+# 
+# Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+# 
+# commit 42750b04c5baa7c5ffdf0a8be2b9b320efdf069f
+# tree 52aea8f1eeb44405b67bc5b381cce6bc20e2bff6
+# parent 3eeab61aa3ddd3c0bedb7449ada1599de22fdb5a
+# author Jaroslav Kysela <perex@suse.cz> Thu, 01 Jun 2006 18:34:01 +0200
+# committer Jaroslav Kysela <perex@suse.cz> Sat, 23 Sep 2006 10:36:42 +0200
+# 
+#  include/sound/asound.h          |    9 +++++++-
+#  include/sound/control.h         |    2 ++
+#  include/sound/tlv.h             |   43 +++++++++++++++++++++++++++++++++++++++
+#  sound/core/control.c            |   41 +++++++++++++++++++++++++++++++++++--
+#  sound/pci/ca0106/ca0106_mixer.c |    4 ++++
+#  5 files changed, 96 insertions(+), 3 deletions(-)
+# 
+
+PATCHNUM=2083
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 28687
+Type: Enhancement
+Disposition: local
+Signed-off-by: Steve Chen <schen@mvista.com>
+Description:
+
+[ALSA] Control API - TLV implementation for additional information like dB scale
+
+This patch implements a TLV mechanism to transfer an additional information
+like dB scale to the user space. The types might be extended in future.
+Acked-by: Takashi Iwai <tiwai@suse.de>
+
+Signed-off-by: Jaroslav Kysela <perex@suse.cz>
+
+commit 42750b04c5baa7c5ffdf0a8be2b9b320efdf069f
+tree 52aea8f1eeb44405b67bc5b381cce6bc20e2bff6
+parent 3eeab61aa3ddd3c0bedb7449ada1599de22fdb5a
+author Jaroslav Kysela <perex@suse.cz> Thu, 01 Jun 2006 18:34:01 +0200
+committer Jaroslav Kysela <perex@suse.cz> Sat, 23 Sep 2006 10:36:42 +0200
+
+ include/sound/asound.h          |    9 +++++++-
+ include/sound/control.h         |    2 +
+ include/sound/tlv.h             |   43 ++++++++++++++++++++++++++++++++++++++++
+ mvl_patches/pro50-2083.c        |   16 ++++++++++++++
+ sound/core/control.c            |   41 ++++++++++++++++++++++++++++++++++++--
+ sound/pci/ca0106/ca0106_mixer.c |    4 +++
+ 6 files changed, 112 insertions(+), 3 deletions(-)
+
+diff --git a/include/sound/asound.h b/include/sound/asound.h
+index 41885f4..76a2040 100644
+Index: linux-2.6.18/include/sound/asound.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/asound.h
++++ linux-2.6.18/include/sound/asound.h
+@@ -688,7 +688,7 @@ struct snd_timer_tread {
+  *                                                                          *
+  ****************************************************************************/
+ 
+-#define SNDRV_CTL_VERSION		SNDRV_PROTOCOL_VERSION(2, 0, 3)
++#define SNDRV_CTL_VERSION		SNDRV_PROTOCOL_VERSION(2, 0, 4)
+ 
+ struct snd_ctl_card_info {
+ 	int card;			/* card number */
+@@ -818,6 +818,12 @@ struct snd_ctl_elem_value {
+         unsigned char reserved[128-sizeof(struct timespec)];
+ };
+ 
++struct snd_ctl_tlv {
++        unsigned int numid;	/* control element numeric identification */
++        unsigned int length;	/* in bytes aligned to 4 */
++        unsigned int tlv[0];	/* first TLV */
++};
++
+ enum {
+ 	SNDRV_CTL_IOCTL_PVERSION = _IOR('U', 0x00, int),
+ 	SNDRV_CTL_IOCTL_CARD_INFO = _IOR('U', 0x01, struct snd_ctl_card_info),
+@@ -831,6 +837,7 @@ enum {
+ 	SNDRV_CTL_IOCTL_ELEM_ADD = _IOWR('U', 0x17, struct snd_ctl_elem_info),
+ 	SNDRV_CTL_IOCTL_ELEM_REPLACE = _IOWR('U', 0x18, struct snd_ctl_elem_info),
+ 	SNDRV_CTL_IOCTL_ELEM_REMOVE = _IOWR('U', 0x19, struct snd_ctl_elem_id),
++	SNDRV_CTL_IOCTL_TLV_READ = _IOWR('U', 0x1a, struct snd_ctl_tlv),
+ 	SNDRV_CTL_IOCTL_HWDEP_NEXT_DEVICE = _IOWR('U', 0x20, int),
+ 	SNDRV_CTL_IOCTL_HWDEP_INFO = _IOR('U', 0x21, struct snd_hwdep_info),
+ 	SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE = _IOR('U', 0x30, int),
+Index: linux-2.6.18/include/sound/control.h
+===================================================================
+--- linux-2.6.18.orig/include/sound/control.h
++++ linux-2.6.18/include/sound/control.h
+@@ -42,6 +42,7 @@ struct snd_kcontrol_new {
+ 	snd_kcontrol_info_t *info;
+ 	snd_kcontrol_get_t *get;
+ 	snd_kcontrol_put_t *put;
++	unsigned int *tlv;
+ 	unsigned long private_value;
+ };
+ 
+@@ -58,6 +59,7 @@ struct snd_kcontrol {
+ 	snd_kcontrol_info_t *info;
+ 	snd_kcontrol_get_t *get;
+ 	snd_kcontrol_put_t *put;
++	unsigned int *tlv;
+ 	unsigned long private_value;
+ 	void *private_data;
+ 	void (*private_free)(struct snd_kcontrol *kcontrol);
+Index: linux-2.6.18/include/sound/tlv.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/sound/tlv.h
+@@ -0,0 +1,43 @@
++#ifndef __SOUND_TLV_H
++#define __SOUND_TLV_H
++
++/*
++ *  Advanced Linux Sound Architecture - ALSA - Driver
++ *  Copyright (c) 2006 by Jaroslav Kysela <perex@suse.cz>
++ *
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 2 of the License, or
++ *   (at your option) any later version.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program; if not, write to the Free Software
++ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
++ *
++ */
++
++/*
++ * TLV structure is right behind the struct snd_ctl_tlv:
++ *   unsigned int type  	- see SNDRV_CTL_TLVT_*
++ *   unsigned int length
++ *   .... data aligned to sizeof(unsigned int), use
++ *        block_length = (length + (sizeof(unsigned int) - 1)) &
++ *                       ~(sizeof(unsigned int) - 1)) ....
++ */
++
++#define SNDRV_CTL_TLVT_CONTAINER 0	/* one level down - group of TLVs */
++#define SNDRV_CTL_TLVT_DB_SCALE	1       /* dB scale */
++
++#define DECLARE_TLV_DB_SCALE(name, min, step, mute) \
++unsigned int name[] = { \
++        SNDRV_CTL_TLVT_DB_SCALE, 2 * sizeof(unsigned int), \
++        (min), ((step) & 0xffff) | ((mute) ? 0x10000 : 0) \
++}
++
++#endif /* __SOUND_TLV_H */
+Index: linux-2.6.18/sound/core/control.c
+===================================================================
+--- linux-2.6.18.orig/sound/core/control.c
++++ linux-2.6.18/sound/core/control.c
+@@ -241,6 +241,7 @@ struct snd_kcontrol *snd_ctl_new1(const 
+ 	kctl.info = ncontrol->info;
+ 	kctl.get = ncontrol->get;
+ 	kctl.put = ncontrol->put;
++	kctl.tlv = ncontrol->tlv;
+ 	kctl.private_value = ncontrol->private_value;
+ 	kctl.private_data = private_data;
+ 	return snd_ctl_new(&kctl, access);
+@@ -1068,6 +1069,40 @@ static int snd_ctl_subscribe_events(stru
+ 	return 0;
+ }
+ 
++static int snd_ctl_tlv_read(struct snd_card *card,
++                            struct snd_ctl_tlv __user *_tlv)
++{
++	struct snd_ctl_tlv tlv;
++	struct snd_kcontrol *kctl;
++	unsigned int len;
++	int err = 0;
++
++	if (copy_from_user(&tlv, _tlv, sizeof(tlv)))
++		return -EFAULT;
++        if (tlv.length < sizeof(unsigned int) * 3)
++                return -EINVAL;
++        down_read(&card->controls_rwsem);
++        kctl = snd_ctl_find_numid(card, tlv.numid);
++        if (kctl == NULL) {
++                err = -ENOENT;
++                goto __kctl_end;
++        }
++        if (kctl->tlv == NULL) {
++                err = -ENXIO;
++                goto __kctl_end;
++        }
++        len = kctl->tlv[1] + 2 * sizeof(unsigned int);
++        if (tlv.length < len) {
++                err = -ENOMEM;
++                goto __kctl_end;
++        }
++        if (copy_to_user(_tlv->tlv, kctl->tlv, len))
++        	err = -EFAULT;
++      __kctl_end:
++        up_read(&card->controls_rwsem);
++        return err;
++}
++
+ static long snd_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ {
+ 	struct snd_ctl_file *ctl;
+@@ -1087,11 +1122,11 @@ static long snd_ctl_ioctl(struct file *f
+ 	case SNDRV_CTL_IOCTL_CARD_INFO:
+ 		return snd_ctl_card_info(card, ctl, cmd, argp);
+ 	case SNDRV_CTL_IOCTL_ELEM_LIST:
+-		return snd_ctl_elem_list(ctl->card, argp);
++		return snd_ctl_elem_list(card, argp);
+ 	case SNDRV_CTL_IOCTL_ELEM_INFO:
+ 		return snd_ctl_elem_info_user(ctl, argp);
+ 	case SNDRV_CTL_IOCTL_ELEM_READ:
+-		return snd_ctl_elem_read_user(ctl->card, argp);
++		return snd_ctl_elem_read_user(card, argp);
+ 	case SNDRV_CTL_IOCTL_ELEM_WRITE:
+ 		return snd_ctl_elem_write_user(ctl, argp);
+ 	case SNDRV_CTL_IOCTL_ELEM_LOCK:
+@@ -1106,6 +1141,8 @@ static long snd_ctl_ioctl(struct file *f
+ 		return snd_ctl_elem_remove(ctl, argp);
+ 	case SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS:
+ 		return snd_ctl_subscribe_events(ctl, ip);
++        case SNDRV_CTL_IOCTL_TLV_READ:
++                return snd_ctl_tlv_read(card, argp);
+ 	case SNDRV_CTL_IOCTL_POWER:
+ 		return -ENOPROTOOPT;
+ 	case SNDRV_CTL_IOCTL_POWER_STATE:
+Index: linux-2.6.18/sound/pci/ca0106/ca0106_mixer.c
+===================================================================
+--- linux-2.6.18.orig/sound/pci/ca0106/ca0106_mixer.c
++++ linux-2.6.18/sound/pci/ca0106/ca0106_mixer.c
+@@ -70,9 +70,12 @@
+ #include <sound/pcm.h>
+ #include <sound/ac97_codec.h>
+ #include <sound/info.h>
++#include <sound/tlv.h>
+ 
+ #include "ca0106.h"
+ 
++static DECLARE_TLV_DB_SCALE(snd_ca0106_db_scale, -5150, 75, 1);
++
+ static int snd_ca0106_shared_spdif_info(struct snd_kcontrol *kcontrol,
+ 					struct snd_ctl_elem_info *uinfo)
+ {
+@@ -472,6 +475,7 @@ static int snd_ca0106_i2c_volume_put(str
+ 	.info =	 snd_ca0106_volume_info,			\
+ 	.get =   snd_ca0106_volume_get,				\
+ 	.put =   snd_ca0106_volume_put,				\
++	.tlv =	 snd_ca0106_db_scale,				\
+ 	.private_value = ((chid) << 8) | (reg)			\
+ }
+ 
+Index: linux-2.6.18/mvl_patches/pro50-2083.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2083.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2083);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

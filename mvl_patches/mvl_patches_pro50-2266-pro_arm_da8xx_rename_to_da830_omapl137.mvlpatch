@@ -1,0 +1,435 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_da8xx_rename_to_da830_omapl137
+# Date: Thu Feb 19 15:12:26 2009
+# Source: MontaVista Software, Inc.
+# MR: 32048
+# Type: Enhancement
+# Disposition: needs submitting to davinci community
+# Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+# Description:
+# 
+#     As per TI's request, change all occurrences of "DA8xx" in menuconfig
+#     prompts to "DA830/OMAP-L137".
+# 
+#  arch/arm/mach-da8xx/Kconfig   |   10 +++++-----
+#  arch/arm/plat-davinci/Kconfig |    2 +-
+#  drivers/char/Kconfig          |    4 ++--
+#  drivers/rtc/Kconfig           |    4 ++--
+#  drivers/spi/Kconfig           |    3 ++-
+#  drivers/usb/musb/Kconfig      |    2 +-
+#  drivers/video/Kconfig         |    6 +++---
+#  sound/soc/davinci/Kconfig     |   14 +++++++-------
+#  8 files changed, 23 insertions(+), 22 deletions(-)
+# 
+
+PATCHNUM=2266
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 32048
+Type: Enhancement
+Disposition: needs submitting to davinci community
+Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+Description:
+
+    As per TI's request, change all occurrences of "DA8xx" in menuconfig
+    prompts to "DA830/OMAP-L137".
+
+ arch/arm/mach-da8xx/Kconfig   |   10 +++++-----
+ arch/arm/plat-davinci/Kconfig |    2 +-
+ drivers/char/Kconfig          |    4 ++--
+ drivers/rtc/Kconfig           |    4 ++--
+ drivers/spi/Kconfig           |    3 ++-
+ drivers/usb/musb/Kconfig      |    2 +-
+ drivers/video/Kconfig         |    6 +++---
+ mvl_patches/pro50-2266.c      |   16 ++++++++++++++++
+ sound/soc/davinci/Kconfig     |   14 +++++++-------
+ 9 files changed, 39 insertions(+), 22 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-da8xx/Kconfig
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-da8xx/Kconfig
++++ linux-2.6.18/arch/arm/mach-da8xx/Kconfig
+@@ -6,26 +6,26 @@ config	TI_CPPI41
+ 	  Configure this option to include the CPPI 4.1 support.
+ 
+ choice
+-	prompt "DA8xx Board Type"
++	prompt "DA830/OMAP-L137 Board Type"
+ 	default MACH_DA8XX_EVM
+ 
+ config MACH_DA8XX_EVM
+-	bool "TI DA8xx EVM"
++	bool "TI DA830/OMAP-L137 EVM"
+ 	help
+ 	  Configure this option to specify the whether the board used
+-	  for development is a DA8xx EVM.
++	  for development is a DA830/OMAP-L137 EVM.
+ 
+ endchoice
+ 
+ config DA8XX_UI
+-	bool "DA8xx UI (User Interface) board support"
++	bool "DA830/OMAP-L137 UI (User Interface) board support"
+ 	depends on MACH_DA8XX_EVM
+ 	select DAVINCI_I2C_EXPANDER
+ 	help
+ 	  Support for the periferials located on User Interface board.
+ 
+ choice
+-	prompt "Select DA8xx UI board peripheral"
++	prompt "Select DA830/OMAP-L137 UI board peripheral"
+ 	depends on DA8XX_UI
+ 
+ config DA8XX_UI_LCD
+Index: linux-2.6.18/arch/arm/plat-davinci/Kconfig
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/Kconfig
++++ linux-2.6.18/arch/arm/plat-davinci/Kconfig
+@@ -10,7 +10,7 @@ config ARCH_DAVINCI_TRUE
+ 	bool "True DaVinci Core"
+ 
+ config ARCH_DA8XX
+-	bool "DA8xx DaVinci-like Core"
++	bool "DA830/OMAP-L137 DaVinci-like Core"
+ 	select TI_CP_INTC
+ 
+ endchoice
+Index: linux-2.6.18/drivers/char/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/char/Kconfig
++++ linux-2.6.18/drivers/char/Kconfig
+@@ -1216,11 +1216,11 @@ config  DAVINCI_DM646X_TSIF
+ 	depends on MACH_DAVINCI_DM6467_EVM
+ 
+ config  DA8XX_LCD
+-	tristate "DA8xx Character LCD Support"
++	tristate "DA830/OMAP-L137 Character LCD Support"
+ 	default n
+ 	depends on MACH_DA8XX_EVM && !FB_DA8XX
+ 	help
+-	  DA8xx Character LCD support.
++	  DA830/OMAP-L137 Character LCD support.
+ 
+ endmenu
+ 
+Index: linux-2.6.18/drivers/rtc/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/rtc/Kconfig
++++ linux-2.6.18/drivers/rtc/Kconfig
+@@ -389,11 +389,11 @@ config RTC_DRV_V3020
+ 	  will be called rtc-v3020.
+ 
+ config RTC_DRV_DA8XX
+-	tristate "TI DA8xx RTC"
++	tristate "TI DA830/OMAP-L137 RTC"
+ 	depends on RTC_CLASS
+ 	help
+ 	  If you say yes here you will get support for the
+-	  TI RealTime Clock controller on DA8xx SoC's.
++	  TI RealTime Clock controller on DA830/OMAP-L137 SoC's.
+ 
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called rtc-da8xx.
+Index: linux-2.6.18/drivers/spi/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/spi/Kconfig
++++ linux-2.6.18/drivers/spi/Kconfig
+@@ -58,7 +58,8 @@ config SPI_DAVINCI
+ 	default y
+ 	help
+ 	  SPI master controller for DaVinci MibSPI modules.  Currently,
+-	  SPI is only officially supported for DM646x, DM355 and DA8xx.
++	  SPI is only officially supported for DM646x, DM355 and
++	  DA830/OMAP-L137.
+ 
+ config SPI_DAVINCI_DMA
+ 	bool "Set DaVinci SPI to DMA mode"
+Index: linux-2.6.18/drivers/usb/musb/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/Kconfig
++++ linux-2.6.18/drivers/usb/musb/Kconfig
+@@ -39,7 +39,7 @@ config USB_MUSB_SOC
+ comment "DaVinci 644x USB support"
+ 	depends on USB_MUSB_HDRC && ARCH_DAVINCI_TRUE
+ 
+-comment "DA8xx USB support"
++comment "DA830/OMAP-L137 USB support"
+ 	depends on USB_MUSB_HDRC && ARCH_DA8XX
+ 
+ comment "OMAP 243x high speed USB support"
+Index: linux-2.6.18/drivers/video/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/video/Kconfig
++++ linux-2.6.18/drivers/video/Kconfig
+@@ -1640,14 +1640,14 @@ config FB_DAVINCI
+ 	  If unsure, say N.
+ 
+ config FB_DA8XX
+-        tristate "DA8XX Framebuffer support"
+-        depends on FB && MACH_DA8XX_EVM
++	tristate "DA830/OMAP-L137 Framebuffer support"
++	depends on FB && MACH_DA8XX_EVM
+ 	select FB_CFB_FILLRECT
+ 	select FB_CFB_COPYAREA
+ 	select FB_CFB_IMAGEBLIT
+ 	---help---
+           This is the frame buffer device driver for the TI LCD controller
+-	  found on DA8xx EVM board.
++	  found on DA830/OMAP-L137 SoC.
+           If unsure, say N.
+ 
+ config GLCD_SHARP_COLOR
+Index: linux-2.6.18/sound/soc/davinci/Kconfig
+===================================================================
+--- linux-2.6.18.orig/sound/soc/davinci/Kconfig
++++ linux-2.6.18/sound/soc/davinci/Kconfig
+@@ -46,35 +46,35 @@ config SND_DM6467_SOC_EVM
+ 	  DaVinci DM646x EVM platform.
+ 
+ config SND_DA8XX_SOC_EVM
+-	tristate "SoC Audio support for DA8XX EVM"
++	tristate "SoC Audio support for DA830/OMAP-L137 EVM"
+ 	depends on SND_DAVINCI_SOC && MACH_DA8XX_EVM
+ 	select SND_DAVINCI_SOC_I2S
+ 	select SND_DAVINCI_SOC_I2S_MCASP
+ 	select SND_SOC_CODEC_STUBS
+ 	help
+-	  Say Y if you want to add support for SoC audio on TI DA8xx EVM
+-	  platform.
++	  Say Y if you want to add support for SoC audio on TI
++	  DA830/OMAP-L137 EVM platform.
+ 
+ config SND_DAVINCI_SOC_MCASP0_ARM_CNTL
+-	bool "DA8xx McASP0 controlled by ARM"
++	bool "DA830/OMAP-L137 McASP0 controlled by ARM"
+ 	depends on SND_DAVINCI_SOC && ARCH_DA8XX
+ 	help
+ 	  Say Y if McASP0 controlled by ARM, and N if McASP0 controlled by DSP.
+ 
+ config SND_DAVINCI_SOC_MCASP1_ARM_CNTL
+-	bool "DA8xx McASP1 controlled by ARM"
++	bool "DA830/OMAP-L137 McASP1 controlled by ARM"
+ 	depends on SND_DAVINCI_SOC && ARCH_DA8XX
+ 	help
+ 	  Say Y if McASP1 controlled by ARM, and N if McASP1 controlled by DSP.
+ 
+ config SND_DAVINCI_SOC_MCASP2_ARM_CNTL
+-	bool "DA8xx McASP2 controlled by ARM"
++	bool "DA830/OMAP-L137 McASP2 controlled by ARM"
+ 	depends on SND_DAVINCI_SOC && ARCH_DA8XX
+ 	help
+ 	  Say Y if McASP2 controlled by ARM, and N if McASP2 controlled by DSP.
+ 
+ choice
+-	prompt "DA8xx EVM: Codec To Use"
++	prompt "DA830/OMAP-L137 EVM: Codec To Use"
+ 	depends on SND_DA8XX_SOC_EVM
+ 	default SND_DA8XX_AIC3106_CODEC
+ 
+Index: linux-2.6.18/mvl_patches/pro50-2266.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2266.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2266);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

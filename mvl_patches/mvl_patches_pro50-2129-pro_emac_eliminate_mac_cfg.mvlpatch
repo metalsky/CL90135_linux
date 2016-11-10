@@ -1,0 +1,486 @@
+#! /usr/bin/env bash
+# Patch: -pro_emac_eliminate_mac_cfg
+# Date: Thu Feb 19 15:02:37 2009
+# Source: MontaVista Software, Inc.
+# MR: 28780	
+# Type: Enhancement
+# Disposition: needs submitting to
+# Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+# Description:
+# The structure mac_cfg (struct emac_mac_cfg) is eliminated; emac_device structure is used instead.
+# 
+
+PATCHNUM=2129
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28780	
+Type: Enhancement
+Disposition: needs submitting to
+Signed-off-by: Mikhail Cherkashin <mcherkashin@ru.mvista.com>
+Description:
+The structure mac_cfg (struct emac_mac_cfg) is eliminated; emac_device structure is used instead.
+
+Index: linux-2.6.18/drivers/net/davinci_emac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/davinci_emac.c
++++ linux-2.6.18/drivers/net/davinci_emac.c
+@@ -384,7 +384,6 @@ typedef void *emac_net_data_token;
+ #define EMAC_IOCTL_GET_SWVER             (EMAC_IOCTL_BASE + 2)
+ #define EMAC_IOCTL_GET_HWVER             (EMAC_IOCTL_BASE + 3)
+ #define EMAC_IOCTL_SET_RXCFG             (EMAC_IOCTL_BASE + 4)
+-#define EMAC_IOCTL_SET_MACCFG            (EMAC_IOCTL_BASE + 5)
+ #define EMAC_IOCTL_GET_STATUS            (EMAC_IOCTL_BASE + 6)
+ #define EMAC_IOCTL_READ_PHY_REG          (EMAC_IOCTL_BASE + 7)
+ #define EMAC_IOCTL_WRITE_PHY_REG         (EMAC_IOCTL_BASE + 8)
+@@ -1293,6 +1292,7 @@ struct emac_dev {
+ 	bool rx_teardown_pending[EMAC_MAX_RX_CHANNELS];
+ 	int tx_int_threshold[EMAC_MAX_TX_CHANNELS];
+ 	bool tx_interrupt_disable;
++	bool giga_bit_enable;
+ 
+ 	/* register mirror values - maintained to avoid costly
+ 	 * register access for reads */
+@@ -1578,8 +1578,6 @@ static void emac_str_to_ethaddr(unsigned
+ static int emac_control_cb(struct emac_dev *dev, int cmd,
+ 			   void *cmd_arg, void *param)
+ {
+-	struct emac_mac_config *cfg;
+-
+ 	switch (cmd) {
+ 	case EMAC_IOCTL_TIMER_START:
+ 		{
+@@ -1632,12 +1630,11 @@ static int emac_control_cb(struct emac_d
+ 					netif_carrier_on(netdev);
+ 				}
+ 
+-				cfg = &dev->init_cfg.mac_cfg;
+-				cfg->giga_bit_enable = FALSE;
++				dev->giga_bit_enable = FALSE;
+ 
+ 				if (status->phy_speed == 1000) {
+ 					dev->link_speed = 1000000000;
+-					cfg->giga_bit_enable = TRUE;
++					dev->giga_bit_enable = TRUE;
+ 				} else if (status->phy_speed == 100) {
+ 					dev->link_speed = 100000000;
+ 				} else {
+@@ -1817,21 +1814,12 @@ static void emac_net_get_config(struct e
+ 	i_cfg->rx_cfg.broadcast_channel = EMAC_DEFAULT_BROADCAST_CHANNEL;
+ 	i_cfg->rx_cfg.multicast_channel = EMAC_DEFAULT_MULTICAST_CHANNEL;
+ 	i_cfg->rx_cfg.buffer_offset = EMAC_DEFAULT_BUFFER_OFFSET;
+-	i_cfg->mac_cfg.priority_is_fixed = 1;
+-	i_cfg->mac_cfg.tx_short_gap_enable = FALSE;
+ 
+ 	if (g_link_speed == 1000)
+-		i_cfg->mac_cfg.giga_bit_enable = TRUE;
++		dev->giga_bit_enable = TRUE;
+ 	else
+-		i_cfg->mac_cfg.giga_bit_enable = FALSE;
++		dev->giga_bit_enable = FALSE;
+ 
+-	i_cfg->mac_cfg.tx_pacing_enable = EMAC_DEFAULT_TX_PACING_ENABLE;
+-	i_cfg->mac_cfg.mii_enable = EMAC_DEFAULT_MII_ENABLE;
+-	i_cfg->mac_cfg.tx_flow_enable = EMAC_DEFAULT_TX_FLOW_ENABLE;
+-	i_cfg->mac_cfg.rx_flow_enable = EMAC_DEFAULT_RX_FLOW_ENABLE;
+-	i_cfg->mac_cfg.loopback_enable = EMAC_DEFAULT_LOOPBACK_ENABLE;
+-	i_cfg->mac_cfg.full_duplex_enable = EMAC_DEFAULT_FULL_DUPLEX_ENABLE;
+-	i_cfg->mac_cfg.tx_interrupt_disable = EMAC_DEFAULT_TX_INTERRUPT_DISABLE;
+ 	tx_ch_cfg->ch_num = EMAC_DEFAULT_TX_CHANNEL;
+ 	tx_ch_cfg->ch_dir = NET_CH_DIR_TX;
+ 	tx_ch_cfg->ch_state = NET_CH_UNINITIALIZED;
+@@ -1974,9 +1962,6 @@ static int emac_dump_config(char *buf, c
+ 		    sprintf(buf + len, "mdioResetLine      = %d\n",
+ 			    dev->init_cfg.mdio_reset_line);
+ 		len +=
+-		    sprintf(buf + len, "PhyMask            = %08X\n",
+-			    dev->init_cfg.phy_mask);
+-		len +=
+ 		    sprintf(buf + len, "MLinkMask          = %08X\n",
+ 			    dev->init_cfg.m_link_mask);
+ 		len +=
+@@ -2033,33 +2018,6 @@ static int emac_dump_config(char *buf, c
+ 		len +=
+ 		    sprintf(buf + len, "bufferOffset       = %d\n",
+ 			    dev->init_cfg.rx_cfg.buffer_offset);
+-		len +=
+-		    sprintf(buf + len, "pType              = %d\n",
+-			    dev->init_cfg.mac_cfg.priority_is_fixed);
+-		len +=
+-		    sprintf(buf + len, "txShortGapEnable   = %d\n",
+-			    dev->init_cfg.mac_cfg.tx_short_gap_enable);
+-		len +=
+-		    sprintf(buf + len, "gigaBitEnable      = %d\n",
+-			    dev->init_cfg.mac_cfg.giga_bit_enable);
+-		len +=
+-		    sprintf(buf + len, "txPacingEnable     = %d\n",
+-			    dev->init_cfg.mac_cfg.tx_pacing_enable);
+-		len +=
+-		    sprintf(buf + len, "miiEnable          = %d\n",
+-			    dev->init_cfg.mac_cfg.mii_enable);
+-		len +=
+-		    sprintf(buf + len, "txFlowEnable       = %d\n",
+-			    dev->init_cfg.mac_cfg.tx_flow_enable);
+-		len +=
+-		    sprintf(buf + len, "rxFlowEnable       = %d\n",
+-			    dev->init_cfg.mac_cfg.rx_flow_enable);
+-		len +=
+-		    sprintf(buf + len, "loopbackEnable     = %d\n",
+-			    dev->init_cfg.mac_cfg.loopback_enable);
+-		len +=
+-		    sprintf(buf + len, "fullDuplexEnable   = %d\n",
+-			    dev->init_cfg.mac_cfg.full_duplex_enable);
+ 	}
+ 
+ 	return len;
+@@ -3828,44 +3786,6 @@ void emac_set_rx_hw_cfg(struct emac_dev 
+ 	       "Rx_MBP_Enable = 0x%08x\n", rx_mbp_enable);
+ }
+ 
+-/* set MAC configuration - MACControl register */
+-static void emac_set_mac_hw_cfg(struct emac_dev *dev)
+-{
+-	struct emac_mac_config *mac_cfg;
+-	u32 mac_control;
+-
+-	if (dev->drv_state != DRV_OPENED) {
+-		LOGERR("Function called when device is NOT in open state");
+-		return;
+-	}
+-
+-	mac_cfg = &dev->init_cfg.mac_cfg;
+-	mac_control =
+-	    ((mac_cfg->
+-	      tx_short_gap_enable & 0x1) << EMAC_MACCONTROL_TXSHORTGAPEN_SHIFT)
+-	    | ((mac_cfg->priority_is_fixed ? 0x1 : 0) <<
+-	       EMAC_MACCONTROL_TXPTYPE_SHIFT)
+-	    | ((mac_cfg->giga_bit_enable & 0x1) <<
+-	       EMAC_MACCONTROL_GIGABITEN_SHIFT) | ((mac_cfg->
+-						    tx_pacing_enable & 0x1) <<
+-						   EMAC_MACCONTROL_TXPACEEN_SHIFT)
+-	    |
+-	    /* THIS LINE FOR REFERENCE ONLY ((mac_cfg->mii_enable & 0x1) << EMAC_MACCONTROL_MIIEN_SHIFT) | */
+-	    (dev->mac_control & EMAC_MACCONTROL_MIIEN_MASK) |
+-	    ((mac_cfg->
+-	      tx_flow_enable & 0x1) << EMAC_MACCONTROL_TXFLOWEN_SHIFT) |
+-	    ((mac_cfg->
+-	      rx_flow_enable & 0x1) << EMAC_MACCONTROL_RXFLOWEN_SHIFT) |
+-	    ((mac_cfg->
+-	      loopback_enable & 0x1) << EMAC_MACCONTROL_LOOPBKEN_SHIFT) |
+-	    (dev->mac_control & EMAC_MACCONTROL_FULLDUPLEXEN_MASK);
+-
+-	if (dev->mac_control != mac_control) {
+-		dev->mac_control = mac_control;
+-		dev->regs->mac_control = mac_control;
+-	}
+-}
+-
+ /**
+  * EMAC DDC Open
+  *  - Brings module out of reset
+@@ -3942,9 +3862,6 @@ static int emac_open(struct emac_dev *de
+ 	/* set device state - opened - useful when opening channels */
+ 	dev->drv_state = DRV_OPENED;
+ 
+-	/* set the mac_control register */
+-	emac_set_mac_hw_cfg(dev);
+-
+ 	/* start MDIO autonegotiation and set phy mode */
+ 	emac_mdio_get_ver(dev->mdio_base_address,
+ 			  &mii_mod_id, &mii_rev_maj, &mii_rev_min);
+@@ -3964,6 +3881,11 @@ static int emac_open(struct emac_dev *de
+ 		       (emac_debug & EMAC_DEBUG_MII)
+ 	    );
+ 
++	/* set the mac_control register */
++	dev->mac_control = (1 << EMAC_MACCONTROL_TXPTYPE_SHIFT) |
++	((dev->giga_bit_enable ? 1 : 0) << EMAC_MACCONTROL_GIGABITEN_SHIFT);
++	dev->regs->mac_control = dev->mac_control;
++
+ 	/* set the PHY to a given mode - as per config parameters and
+ 	 * update DDA layer */
+ 	emac_set_phy_mode(dev);
+@@ -4174,18 +4096,6 @@ emac_control(struct emac_dev *dev, int c
+ 		}
+ 		break;
+ 
+-	case EMAC_IOCTL_SET_MACCFG:
+-		/* mac configuration structure passed in a structure
+-		 * pointed by cmd_arg, params not used */
+-		if (cmd_arg != NULL) {
+-			dev->init_cfg.mac_cfg =
+-				*((struct emac_mac_config *) cmd_arg);
+-			emac_set_mac_hw_cfg(dev);
+-		} else {
+-			return (EMAC_INVALID_PARAM);
+-		}
+-		break;
+-
+ 	case EMAC_IOCTL_GET_STATUS:
+ 		/* returns emac_status structure back in cmd_arg
+ 		 * pointer pointed structure */
+@@ -4810,10 +4720,7 @@ static int emac_enable_channel(struct em
+ 		/* init head descriptor pointer */
+ 		dev->regs->tx_HDP[channel] = 0;
+ 		{
+-			struct emac_mac_config *mac_cfg;
+-
+-			mac_cfg = &dev->init_cfg.mac_cfg;
+-			if (mac_cfg->tx_interrupt_disable == TRUE) {
++			if (dev->tx_interrupt_disable == TRUE) {
+ 				/* disable channel interrupt */
+ 				dev->regs->tx_int_mask_clear = (1 << channel);
+ 				if (device_is_dm646x) {
+Index: linux-2.6.18/include/linux/davinci_emac.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/davinci_emac.h
++++ linux-2.6.18/include/linux/davinci_emac.h
+@@ -36,26 +36,6 @@ struct emac_rx_config {
+ };
+ 
+ /**
+- *  EMAC MAC configuration
+- *
+- *  This data structure configures the MAC module parameters of the device
+- */
+-struct emac_mac_config {
+-	bool priority_is_fixed;
+-	bool tx_short_gap_enable;
+-	bool giga_bit_enable;
+-	bool tx_pacing_enable;
+-	bool mii_enable;	/* DEBUG ONLY - ALWAYS SET TO TRUE */
+-	bool tx_flow_enable;
+-	bool rx_flow_enable;
+-	bool loopback_enable;
+-	bool full_duplex_enable;	/* DEBUG ONLY - based upon phy_mode */
+-	bool tx_interrupt_disable;
+-};
+-
+-#define EMAC_MAX_INTERRUPTS 4
+-#define EMAC_MAX_INTNAME_LENTH 20
+-/**
+  *  EMAC Init Configuration
+  *
+  *  Configuration information provided to DDC layer during
+@@ -72,7 +52,6 @@ struct emac_init_config {
+ 	u32 e_wrap_base_address;
+ 	u32 intr_line;
+ 	u32 num_intr_lines;
+-	char interrupt_name[EMAC_MAX_INTERRUPTS][EMAC_MAX_INTNAME_LENTH];
+ 	u32 reset_line;
+ 	u32 mdio_base_address;
+ 	u32 mdio_reset_line;
+@@ -85,7 +64,6 @@ struct emac_init_config {
+ 	u32 mib64cnt_msec;
+ 	u32 phy_mode;
+ 	struct emac_rx_config rx_cfg;
+-	struct emac_mac_config mac_cfg;
+ };
+ 
+ #endif
+Index: linux-2.6.18/mvl_patches/pro50-2129.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2129.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2129);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

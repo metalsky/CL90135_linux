@@ -1,0 +1,314 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Fixes_for_OPT_HS_A_tests
+# Date: Fri Sep 19 14:06:26 2008
+# From 7b35e10c6ac6455d8eb291b33c2202139f234beb Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Tue, 7 Aug 2007 05:20:06 -0700
+# Subject: [PATCH] musb_hdrc: Fixes for OPT HS A tests
+# 
+# If RESUME is cleared too soon, OPT HS A 6.8 tests will fail.
+# 
+# This patch removes the check for RESUME bit before SUSPEND
+# is set, and makes virthub sleep until RESUME has been held
+# for 20 ms. Additionally virthub waits after clearing RESUME
+# to allow musb to start generating SOFs before RESET.
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 58e45f3e55e2a5b46ed76c6d153ea62a2db56eb4)
+
+PATCHNUM=1656
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 7b35e10c6ac6455d8eb291b33c2202139f234beb Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Tue, 7 Aug 2007 05:20:06 -0700
+Subject: [PATCH] musb_hdrc: Fixes for OPT HS A tests
+
+If RESUME is cleared too soon, OPT HS A 6.8 tests will fail.
+
+This patch removes the check for RESUME bit before SUSPEND
+is set, and makes virthub sleep until RESUME has been held
+for 20 ms. Additionally virthub waits after clearing RESUME
+to allow musb to start generating SOFs before RESET.
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 58e45f3e55e2a5b46ed76c6d153ea62a2db56eb4)
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -386,26 +386,27 @@ static irqreturn_t musb_stage0_irq(struc
+ 				/* remote wakeup?  later, GetPortStatus
+ 				 * will stop RESUME signaling
+ 				 */
+-				if (power & MGC_M_POWER_RESUME) {
+-					power &= ~MGC_M_POWER_SUSPENDM;
+-					musb_writeb(pBase, MGC_O_HDRC_POWER,
++
++				if (power & MGC_M_POWER_SUSPENDM) {
++					/* spurious */
++					pThis->int_usb &= ~MGC_M_INTR_SUSPEND;
++					DBG(2, "Spurious SUSPENDM\n");
++					break;
++				}
++
++				power &= ~MGC_M_POWER_SUSPENDM;
++				musb_writeb(pBase, MGC_O_HDRC_POWER,
+ 						power | MGC_M_POWER_RESUME);
+ 
+-					pThis->port1_status |=
++				pThis->port1_status |=
+ 						(USB_PORT_STAT_C_SUSPEND << 16)
+ 						| MUSB_PORT_STAT_RESUME;
+-					pThis->rh_timer = jiffies
++				pThis->rh_timer = jiffies
+ 						+ msecs_to_jiffies(20);
+ 
+-					pThis->xceiv.state = OTG_STATE_A_HOST;
+-					pThis->is_active = 1;
+-					usb_hcd_resume_root_hub(
+-							musb_to_hcd(pThis));
+-
+-				} else if (power & MGC_M_POWER_SUSPENDM) {
+-					/* spurious */
+-					pThis->int_usb &= ~MGC_M_INTR_SUSPEND;
+-				}
++				pThis->xceiv.state = OTG_STATE_A_HOST;
++				pThis->is_active = 1;
++				usb_hcd_resume_root_hub(musb_to_hcd(pThis));
+ 				break;
+ 			case OTG_STATE_B_WAIT_ACON:
+ 				pThis->xceiv.state = OTG_STATE_B_PERIPHERAL;
+Index: linux-2.6.18/drivers/usb/musb/virthub.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/virthub.c
++++ linux-2.6.18/drivers/usb/musb/virthub.c
+@@ -129,6 +129,22 @@ static void musb_port_reset(struct musb 
+ 	 */
+ 	power = musb_readb(pBase, MGC_O_HDRC_POWER);
+ 	if (bReset) {
++
++		/*
++		 * If RESUME is set, we must make sure it stays minimum 20 ms.
++		 * Then we must clear RESUME and wait a bit to let musb start
++		 * generating SOFs. If we don't do this, OPT HS A 6.8 tests
++		 * fail with "Error! Did not receive an SOF before suspend
++		 * detected".
++		 */
++		if (power &  MGC_M_POWER_RESUME) {
++			while (time_before(jiffies, musb->rh_timer))
++				msleep(1);
++			musb_writeb(pBase, MGC_O_HDRC_POWER,
++				power & ~MGC_M_POWER_RESUME);
++			msleep(1);
++		}
++
+ 		musb->bIgnoreDisconnect = TRUE;
+ 		power &= 0xf0;
+ 		musb_writeb(pBase, MGC_O_HDRC_POWER,
+Index: linux-2.6.18/mvl_patches/pro50-1656.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1656.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1656);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

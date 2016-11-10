@@ -1,0 +1,433 @@
+#! /usr/bin/env bash
+# Patch: -zd1211rw_Support_for_multicast_addresses
+# Date: Thu Feb 19 15:08:27 2009
+# MR: 29923
+# From 344a0f09552c825f23badec100795a925c4f2e22 Mon Sep 17 00:00:00 2001
+# Subject: [PATCH] [PATCH] zd1211rw: Support for multicast addresses
+# 
+# author	Ulrich Kunitz <kune@deine-taler.de>
+# 	Fri, 1 Dec 2006 00:58:07 +0000 (00:58 +0000)
+# committer	John W. Linville <linville@tuxdriver.com>
+# 	Wed, 6 Dec 2006 00:31:32 +0000 (19:31 -0500)
+# commit	9cdac9657fda58ae39c2bbc8be396f5530ed8398
+# 
+
+PATCHNUM=2213
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From 344a0f09552c825f23badec100795a925c4f2e22 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] [PATCH] zd1211rw: Support for multicast addresses
+
+author	Ulrich Kunitz <kune@deine-taler.de>
+	Fri, 1 Dec 2006 00:58:07 +0000 (00:58 +0000)
+committer	John W. Linville <linville@tuxdriver.com>
+	Wed, 6 Dec 2006 00:31:32 +0000 (19:31 -0500)
+commit	9cdac9657fda58ae39c2bbc8be396f5530ed8398
+
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_chip.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.c
+@@ -1673,3 +1673,16 @@ int zd_rfwritev_cr_locked(struct zd_chip
+ 
+ 	return 0;
+ }
++
++int zd_chip_set_multicast_hash(struct zd_chip *chip,
++	                       struct zd_mc_hash *hash)
++{
++	struct zd_ioreq32 ioreqs[] = {
++		{ CR_GROUP_HASH_P1, hash->low },
++		{ CR_GROUP_HASH_P2, hash->high },
++	};
++
++	dev_dbg_f(zd_chip_dev(chip), "hash l 0x%08x h 0x%08x\n",
++		ioreqs[0].value, ioreqs[1].value);
++	return zd_iowrite32a(chip, ioreqs, ARRAY_SIZE(ioreqs));
++}
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_chip.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_chip.h
+@@ -390,10 +390,19 @@
+ #define CR_BSSID_P1			CTL_REG(0x0618)
+ #define CR_BSSID_P2			CTL_REG(0x061C)
+ #define CR_BCN_PLCP_CFG			CTL_REG(0x0620)
++
++/* Group hash table for filtering incoming packets.
++ *
++ * The group hash table is 64 bit large and split over two parts. The first
++ * part is the lower part. The upper 6 bits of the last byte of the target
++ * address are used as index. Packets are received if the hash table bit is
++ * set. This is used for multicast handling, but for broadcasts (address
++ * ff:ff:ff:ff:ff:ff) the highest bit in the second table must also be set.
++ */
+ #define CR_GROUP_HASH_P1		CTL_REG(0x0624)
+ #define CR_GROUP_HASH_P2		CTL_REG(0x0628)
+-#define CR_RX_TIMEOUT			CTL_REG(0x062C)
+ 
++#define CR_RX_TIMEOUT			CTL_REG(0x062C)
+ /* Basic rates supported by the BSS. When producing ACK or CTS messages, the
+  * device will use a rate in this table that is less than or equal to the rate
+  * of the incoming frame which prompted the response */
+@@ -864,4 +873,36 @@ u8 zd_rx_strength_percent(u8 rssi);
+ 
+ u16 zd_rx_rate(const void *rx_frame, const struct rx_status *status);
+ 
++struct zd_mc_hash {
++	u32 low;
++	u32 high;
++};
++
++static inline void zd_mc_clear(struct zd_mc_hash *hash)
++{
++	hash->low = 0;
++	/* The interfaces must always received broadcasts.
++	 * The hash of the broadcast address ff:ff:ff:ff:ff:ff is 63.
++	 */
++	hash->high = 0x80000000;
++}
++
++static inline void zd_mc_add_all(struct zd_mc_hash *hash)
++{
++	hash->low = hash->high = 0xffffffff;
++}
++
++static inline void zd_mc_add_addr(struct zd_mc_hash *hash, u8 *addr)
++{
++	unsigned int i = addr[5] >> 2;
++	if (i < 32) {
++		hash->low |= 1 << i;
++	} else {
++		hash->high |= 1 << (i-32);
++	}
++}
++
++int zd_chip_set_multicast_hash(struct zd_chip *chip,
++	                       struct zd_mc_hash *hash);
++
+ #endif /* _ZD_CHIP_H */
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.c
+@@ -39,6 +39,8 @@ static void housekeeping_init(struct zd_
+ static void housekeeping_enable(struct zd_mac *mac);
+ static void housekeeping_disable(struct zd_mac *mac);
+ 
++static void set_multicast_hash_handler(void *mac_ptr);
++
+ int zd_mac_init(struct zd_mac *mac,
+ 	        struct net_device *netdev,
+ 	        struct usb_interface *intf)
+@@ -55,6 +57,8 @@ int zd_mac_init(struct zd_mac *mac,
+ 	softmac_init(ieee80211_priv(netdev));
+ 	zd_chip_init(&mac->chip, netdev, intf);
+ 	housekeeping_init(mac);
++	INIT_WORK(&mac->set_multicast_hash_work, set_multicast_hash_handler,
++		  mac);
+ 	return 0;
+ }
+ 
+@@ -136,6 +140,7 @@ out:
+ 
+ void zd_mac_clear(struct zd_mac *mac)
+ {
++	flush_workqueue(zd_workqueue);
+ 	zd_chip_clear(&mac->chip);
+ 	ZD_ASSERT(!spin_is_locked(&mac->lock));
+ 	ZD_MEMCLEAR(mac, sizeof(struct zd_mac));
+@@ -256,6 +261,42 @@ int zd_mac_set_mac_address(struct net_de
+ 	return 0;
+ }
+ 
++static void set_multicast_hash_handler(void *mac_ptr)
++{
++	struct zd_mac *mac = mac_ptr;
++	struct zd_mc_hash hash;
++
++	spin_lock_irq(&mac->lock);
++	hash = mac->multicast_hash;
++	spin_unlock_irq(&mac->lock);
++
++	zd_chip_set_multicast_hash(&mac->chip, &hash);
++}
++
++void zd_mac_set_multicast_list(struct net_device *dev)
++{
++	struct zd_mc_hash hash;
++	struct zd_mac *mac = zd_netdev_mac(dev);
++	struct dev_mc_list *mc;
++	unsigned long flags;
++
++	if (dev->flags & (IFF_PROMISC|IFF_ALLMULTI)) {
++		zd_mc_add_all(&hash);
++	} else {
++		zd_mc_clear(&hash);
++		for (mc = dev->mc_list; mc; mc = mc->next) {
++			dev_dbg_f(zd_mac_dev(mac), "mc addr " MAC_FMT "\n",
++				  MAC_ARG(mc->dmi_addr));
++			zd_mc_add_addr(&hash, mc->dmi_addr);
++		}
++	}
++
++	spin_lock_irqsave(&mac->lock, flags);
++	mac->multicast_hash = hash;
++	spin_unlock_irqrestore(&mac->lock, flags);
++	queue_work(zd_workqueue, &mac->set_multicast_hash_work);
++}
++
+ int zd_mac_set_regdomain(struct zd_mac *mac, u8 regdomain)
+ {
+ 	int r;
+@@ -930,7 +971,8 @@ static int is_data_packet_for_us(struct 
+ 	}
+ 
+ 	return memcmp(hdr->addr1, netdev->dev_addr, ETH_ALEN) == 0 ||
+-	       is_multicast_ether_addr(hdr->addr1) ||
++	       (is_multicast_ether_addr(hdr->addr1) &&
++		memcmp(hdr->addr3, netdev->dev_addr, ETH_ALEN) != 0) ||
+ 	       (netdev->flags & IFF_PROMISC);
+ }
+ 
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.h
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_mac.h
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_mac.h
+@@ -133,6 +133,8 @@ struct zd_mac {
+ 	struct iw_statistics iw_stats;
+ 
+ 	struct housekeeping housekeeping;
++	struct work_struct set_multicast_hash_work;
++	struct zd_mc_hash multicast_hash;
+ 	struct work_struct set_rts_cts_work;
+ 	struct work_struct set_basic_rates_work;
+ 
+@@ -189,6 +191,7 @@ int zd_mac_init_hw(struct zd_mac *mac, u
+ int zd_mac_open(struct net_device *netdev);
+ int zd_mac_stop(struct net_device *netdev);
+ int zd_mac_set_mac_address(struct net_device *dev, void *p);
++void zd_mac_set_multicast_list(struct net_device *netdev);
+ 
+ int zd_mac_rx(struct zd_mac *mac, const u8 *buffer, unsigned int length);
+ 
+Index: linux-2.6.18/drivers/net/wireless/zd1211rw/zd_netdev.c
+===================================================================
+--- linux-2.6.18.orig/drivers/net/wireless/zd1211rw/zd_netdev.c
++++ linux-2.6.18/drivers/net/wireless/zd1211rw/zd_netdev.c
+@@ -242,7 +242,7 @@ struct net_device *zd_netdev_alloc(struc
+ 	netdev->open = zd_mac_open;
+ 	netdev->stop = zd_mac_stop;
+ 	/* netdev->get_stats = */
+-	/* netdev->set_multicast_list = */
++	netdev->set_multicast_list = zd_mac_set_multicast_list;
+ 	netdev->set_mac_address = zd_mac_set_mac_address;
+ 	netdev->wireless_handlers = &iw_handler_def;
+ 	/* netdev->ethtool_ops = */
+Index: linux-2.6.18/mvl_patches/pro50-2213.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2213.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2213);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

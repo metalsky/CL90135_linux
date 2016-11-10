@@ -1,0 +1,404 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_wMaxPacketSizeTx_with
+# Date: Fri Sep 19 14:08:10 2008
+# From 9492a6bfe544b734df06667c33df3284f2e780fa Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Mon, 13 Aug 2007 04:16:20 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace wMaxPacketSizeTx with max_packet_sz_tx
+# 
+# Search and replace wMaxPacketSizeTx with max_packet_sz_tx
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit 2fd6f3145642589c66913fc1cdcfd42871a667ea)
+
+PATCHNUM=1681
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 9492a6bfe544b734df06667c33df3284f2e780fa Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Mon, 13 Aug 2007 04:16:20 -0700
+Subject: [PATCH] musb_hdrc: Search and replace wMaxPacketSizeTx with max_packet_sz_tx
+
+Search and replace wMaxPacketSizeTx with max_packet_sz_tx
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit 2fd6f3145642589c66913fc1cdcfd42871a667ea)
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -203,7 +203,7 @@ static void nuke(struct musb_ep *ep, con
+ static inline int max_ep_writesize(struct musb *musb, struct musb_ep *ep)
+ {
+ 	if (can_bulk_split(musb, ep->type))
+-		return ep->hw_ep->wMaxPacketSizeTx;
++		return ep->hw_ep->max_packet_sz_tx;
+ 	else
+ 		return ep->wPacketSize;
+ }
+@@ -900,7 +900,7 @@ static int musb_gadget_enable(struct usb
+ 			musb_ep->is_in = 1;
+ 		if (!musb_ep->is_in)
+ 			goto fail;
+-		if (tmp > hw_ep->wMaxPacketSizeTx)
++		if (tmp > hw_ep->max_packet_sz_tx)
+ 			goto fail;
+ 
+ 		wIntrTxE |= (1 << epnum);
+@@ -1634,7 +1634,7 @@ init_peripheral_ep(struct musb *musb, st
+ 		musb->g.ep0 = &ep->end_point;
+ 	} else {
+ 		if (is_in)
+-			ep->end_point.maxpacket = hw_ep->wMaxPacketSizeTx;
++			ep->end_point.maxpacket = hw_ep->max_packet_sz_tx;
+ 		else
+ 			ep->end_point.maxpacket = hw_ep->wMaxPacketSizeRx;
+ 		ep->end_point.ops = &musb_ep_ops;
+@@ -1662,7 +1662,7 @@ static inline void __init musb_g_init_en
+ 			init_peripheral_ep(musb, &hw_ep->ep_in, epnum, 0);
+ 			count++;
+ 		} else {
+-			if (hw_ep->wMaxPacketSizeTx) {
++			if (hw_ep->max_packet_sz_tx) {
+ 				init_peripheral_ep(musb, &hw_ep->ep_in,
+ 							epnum, 1);
+ 				count++;
+@@ -1858,7 +1858,7 @@ stop_activity(struct musb *musb, struct 
+ 			if (hw_ep->is_shared_fifo /* || !epnum */) {
+ 				nuke(&hw_ep->ep_in, -ESHUTDOWN);
+ 			} else {
+-				if (hw_ep->wMaxPacketSizeTx)
++				if (hw_ep->max_packet_sz_tx)
+ 					nuke(&hw_ep->ep_in, -ESHUTDOWN);
+ 				if (hw_ep->wMaxPacketSizeRx)
+ 					nuke(&hw_ep->ep_out, -ESHUTDOWN);
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -740,7 +740,7 @@ static void musb_ep_program(struct musb 
+ 			if (can_bulk_split(musb, qh->type))
+ 				musb_writew(epio, MGC_O_HDRC_TXMAXP,
+ 					wPacketSize
+-					| ((hw_ep->wMaxPacketSizeTx /
++					| ((hw_ep->max_packet_sz_tx /
+ 						wPacketSize) - 1) << 11);
+ 			else
+ 				musb_writew(epio, MGC_O_HDRC_TXMAXP,
+@@ -754,7 +754,7 @@ static void musb_ep_program(struct musb 
+ 		}
+ 
+ 		if (can_bulk_split(musb, qh->type))
+-			wLoadCount = min((u32) hw_ep->wMaxPacketSizeTx,
++			wLoadCount = min((u32) hw_ep->max_packet_sz_tx,
+ 						dwLength);
+ 		else
+ 			wLoadCount = min((u32) wPacketSize, dwLength);
+@@ -1718,7 +1718,7 @@ static int musb_schedule(
+ 		if (is_in)
+ 			diff = hw_ep->wMaxPacketSizeRx - qh->maxpacket;
+ 		else
+-			diff = hw_ep->wMaxPacketSizeTx - qh->maxpacket;
++			diff = hw_ep->max_packet_sz_tx - qh->maxpacket;
+ 
+ 		if (diff > 0 && wBestDiff > diff) {
+ 			wBestDiff = diff;
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -269,7 +269,7 @@ struct musb_hw_ep {
+ 	u8			is_shared_fifo;
+ 	u8			tx_double_buffered;
+ 	u8			rx_double_buffered;
+-	u16			wMaxPacketSizeTx;
++	u16			max_packet_sz_tx;
+ 	u16			wMaxPacketSizeRx;
+ 
+ 	struct dma_channel	*tx_channel;
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -1059,7 +1059,7 @@ fifo_setup(struct musb *musb, struct mus
+ 		musb_writeb(mbase, MGC_O_HDRC_TXFIFOSZ, c_size);
+ 		musb_writew(mbase, MGC_O_HDRC_TXFIFOADD, c_off);
+ 		hw_ep->tx_double_buffered = !!(c_size & MGC_M_FIFOSZ_DPB);
+-		hw_ep->wMaxPacketSizeTx = maxpacket;
++		hw_ep->max_packet_sz_tx = maxpacket;
+ 		break;
+ 	case FIFO_RX:
+ 		musb_writeb(mbase, MGC_O_HDRC_RXFIFOSZ, c_size);
+@@ -1076,7 +1076,7 @@ fifo_setup(struct musb *musb, struct mus
+ 		musb_writeb(mbase, MGC_O_HDRC_RXFIFOSZ, c_size);
+ 		musb_writew(mbase, MGC_O_HDRC_RXFIFOADD, c_off);
+ 		hw_ep->tx_double_buffered = hw_ep->rx_double_buffered;
+-		hw_ep->wMaxPacketSizeTx = maxpacket;
++		hw_ep->max_packet_sz_tx = maxpacket;
+ 
+ 		hw_ep->is_shared_fifo = TRUE;
+ 		break;
+@@ -1199,11 +1199,11 @@ static int __init ep_config_from_hw(stru
+ 		musb->nr_endpoints++;
+ 		musb->wEndMask |= (1 << epnum);
+ 
+-		hw_ep->wMaxPacketSizeTx = 1 << (reg & 0x0f);
++		hw_ep->max_packet_sz_tx = 1 << (reg & 0x0f);
+ 
+ 		/* shared TX/RX FIFO? */
+ 		if ((reg & 0xf0) == 0xf0) {
+-			hw_ep->wMaxPacketSizeRx = hw_ep->wMaxPacketSizeTx;
++			hw_ep->wMaxPacketSizeRx = hw_ep->max_packet_sz_tx;
+ 			hw_ep->is_shared_fifo = TRUE;
+ 			continue;
+ 		} else {
+@@ -1215,7 +1215,7 @@ static int __init ep_config_from_hw(stru
+ 
+ #ifdef CONFIG_USB_MUSB_HDRC_HCD
+ 		/* pick an RX/TX endpoint for bulk */
+-		if (hw_ep->wMaxPacketSizeTx < 512
++		if (hw_ep->max_packet_sz_tx < 512
+ 				|| hw_ep->wMaxPacketSizeRx < 512)
+ 			continue;
+ 
+@@ -1334,7 +1334,7 @@ static int __init musb_core_init(u16 wTy
+ 			musb_driver_name, type, aRevision, aDate);
+ 
+ 	/* configure ep0 */
+-	musb->endpoints[0].wMaxPacketSizeTx = MGC_END0_FIFOSIZE;
++	musb->endpoints[0].max_packet_sz_tx = MGC_END0_FIFOSIZE;
+ 	musb->endpoints[0].wMaxPacketSizeRx = MGC_END0_FIFOSIZE;
+ 
+ 	/* discover endpoint configuration */
+@@ -1384,14 +1384,14 @@ static int __init musb_core_init(u16 wTy
+ 		hw_ep->tx_reinit = 1;
+ #endif
+ 
+-		if (hw_ep->wMaxPacketSizeTx) {
++		if (hw_ep->max_packet_sz_tx) {
+ 			printk(KERN_DEBUG
+ 				"%s: hw_ep %d%s, %smax %d\n",
+ 				musb_driver_name, i,
+ 				hw_ep->is_shared_fifo ? "shared" : "tx",
+ 				hw_ep->tx_double_buffered
+ 					? "doublebuffer, " : "",
+-				hw_ep->wMaxPacketSizeTx);
++				hw_ep->max_packet_sz_tx);
+ 		}
+ 		if (hw_ep->wMaxPacketSizeRx && !hw_ep->is_shared_fifo) {
+ 			printk(KERN_DEBUG
+@@ -1402,7 +1402,7 @@ static int __init musb_core_init(u16 wTy
+ 					? "doublebuffer, " : "",
+ 				hw_ep->wMaxPacketSizeRx);
+ 		}
+-		if (!(hw_ep->wMaxPacketSizeTx || hw_ep->wMaxPacketSizeRx))
++		if (!(hw_ep->max_packet_sz_tx || hw_ep->wMaxPacketSizeRx))
+ 			DBG(1, "hw_ep %d not configured\n", i);
+ 	}
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1681.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1681.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1681);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

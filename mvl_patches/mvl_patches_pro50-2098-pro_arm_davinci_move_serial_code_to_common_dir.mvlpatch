@@ -1,0 +1,761 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_move_serial_code_to_common_dir
+# Date: Thu Feb 19 15:00:19 2009
+# Source: MontaVista Software, Inc.
+# MR: 30941
+# Type: Enhancement
+# Disposition: needs submitting to DaVinci community
+# Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# 
+#     DaVinci: move serial code to common platform directory
+# 
+#     Move the common DaVinci serial code into arch/arm/plat-davinci/.
+#     Part of this involves moving the board specific serial code into the
+#     board file(s).   Also, instead of calling davinci_serial_init() directly,
+#     use platform_notify() hook to call it...
+# 
+#     Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+# 
+#  arch/arm/mach-davinci/serial.c            |  118 ------------------------------
+#  arch/arm/mach-davinci/Makefile            |    3 
+#  arch/arm/mach-davinci/board-dm355-evm.c   |   52 +++++++++++--
+#  arch/arm/mach-davinci/board-dm6467-evm.c  |   25 ++++--
+#  arch/arm/mach-davinci/board-evm.c         |   10 +-
+#  arch/arm/plat-davinci/Makefile            |    6 -
+#  arch/arm/plat-davinci/serial.c            |   50 ++++++++++++
+#  include/asm-arm/arch-davinci/serial.h     |    3 
+#  include/asm-arm/arch-davinci/uncompress.h |   11 ++
+#  9 files changed, 132 insertions(+), 146 deletions(-)
+# 
+
+PATCHNUM=2098
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 30941
+Type: Enhancement
+Disposition: needs submitting to DaVinci community
+Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+
+    DaVinci: move serial code to common platform directory
+
+    Move the common DaVinci serial code into arch/arm/plat-davinci/.
+    Part of this involves moving the board specific serial code into the
+    board file(s).   Also, instead of calling davinci_serial_init() directly,
+    use platform_notify() hook to call it...
+
+    Signed-off-by: Mark A. Greer <mgreer@mvista.com>
+
+ arch/arm/mach-davinci/Makefile            |    3 
+ arch/arm/mach-davinci/board-dm355-evm.c   |   52 +++++++++++--
+ arch/arm/mach-davinci/board-dm6467-evm.c  |   25 ++++--
+ arch/arm/mach-davinci/board-evm.c         |   10 +-
+ arch/arm/mach-davinci/serial.c            |  118 ------------------------------
+ arch/arm/plat-davinci/Makefile            |    6 -
+ arch/arm/plat-davinci/serial.c            |   50 ++++++++++++
+ include/asm-arm/arch-davinci/serial.h     |    3 
+ include/asm-arm/arch-davinci/uncompress.h |   11 ++
+ mvl_patches/pro50-2098.c                  |   16 ++++
+ 10 files changed, 148 insertions(+), 146 deletions(-)
+
+Index: linux-2.6.18/arch/arm/mach-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/Makefile
++++ linux-2.6.18/arch/arm/mach-davinci/Makefile
+@@ -4,8 +4,7 @@
+ #
+ 
+ # Common objects
+-obj-y := time.o irq.o clock.o serial.o io.o id.o mux.o mux_cfg.o dma.o \
+-	devices.o usb.o
++obj-y := time.o irq.o clock.o io.o id.o mux.o mux_cfg.o dma.o devices.o usb.o
+ 
+ # Board specific
+ obj-$(CONFIG_MACH_DAVINCI_EVM)		+= board-evm.o i2c-emac.o
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm355-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+@@ -26,7 +26,9 @@
+ #include <linux/mtd/mtd.h>
+ #include <linux/mtd/partitions.h>
+ #include <linux/mtd/nand.h>
++#include <linux/delay.h>
+ #include <linux/serial.h>
++#include <linux/serial_reg.h>
+ #include <linux/serial_8250.h>
+ 
+ #include <asm/setup.h>
+@@ -98,21 +100,20 @@ static struct platform_device serial_dev
+ 	.name = "serial8250",
+ 	.id = 0,
+ 	.dev = {
+-			.platform_data = serial_platform_data,
+-		},
++		.platform_data = serial_platform_data,
++	},
+ };
+ 
+ /**************************************************************************
+  * Public Functions
+  **************************************************************************/
++
+ int cpu_type(void)
+ {
+ 	return MACH_TYPE_DAVINCI_DM355_EVM;
+ }
+ EXPORT_SYMBOL(cpu_type);
+ 
+-void davinci_serial_init(struct platform_device *pdev);
+-
+ #if defined(CONFIG_MTD_NAND_DAVINCI) ||  defined(CONFIG_MTD_NAND_DAVINCI_MODULE)
+ 
+ 
+@@ -463,6 +464,7 @@ static const u8 dm355_default_priorities
+ 	[IRQ_COMMRX]			= 7,
+ 	[IRQ_EMUINT]			= 7,
+ };
++
+ static void board_init(void)
+ {
+ 	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_VPSSMSTR, 1);
+@@ -476,7 +478,6 @@ static void board_init(void)
+ 
+ 	/* Turn on WatchDog timer LPSC.  Needed for RESET to work */
+ 	davinci_psc_config(DAVINCI_GPSC_ARMDOMAIN, DAVINCI_LPSC_TIMER2, 1);
+-	davinci_serial_init(&serial_device);
+ 	davinci_writel(0x56837210, DAVINCI_VPSS_REGS_BASE + 0x810);
+ 	davinci_writel(0x7b3c0004, DAVINCI_VPSS_REGS_BASE + 0x814);
+ }
+@@ -532,6 +533,37 @@ static void dm355_setup_pinmux(unsigned 
+ 	}
+ }
+ 
++#define UART_DAVINCI_PWREMU 0x0c
++
++static inline unsigned int davinci_serial_in(struct plat_serial8250_port *up,
++					     int offset)
++{
++	offset <<= up->regshift;
++	return (unsigned int)__raw_readb(up->membase + offset);
++}
++
++static inline void davinci_serial_outp(struct plat_serial8250_port *p,
++				       int offset, int value)
++{
++	offset <<= p->regshift;
++	__raw_writeb(value, p->membase + offset);
++}
++
++void __init davinci_serial_reset(struct plat_serial8250_port *p)
++{
++	/* reset both transmitter and receiver: bits 14,13 = UTRST, URRST */
++	unsigned int pwremu = 0;
++
++	davinci_serial_outp(p, UART_IER, 0);  /* disable all interrupts */
++
++	davinci_serial_outp(p, UART_DAVINCI_PWREMU, pwremu);
++	mdelay(10);
++
++	pwremu |= 0x3 << 13;
++	pwremu |= 0x1;
++	davinci_serial_outp(p, UART_DAVINCI_PWREMU, pwremu);
++}
++
+ static void __init davinci_map_io(void)
+ {
+ 	davinci_pinmux_setup = dm355_setup_pinmux;
+@@ -547,17 +579,21 @@ static void __init davinci_map_io(void)
+ 
+ static __init void dm355_evm_init(void)
+ {
++	struct plat_serial8250_port *pspp;
++
+ 	/* Board-specific initialization */
+ 	board_init();
+ 
++	for (pspp = serial_platform_data; pspp->flags; pspp++)
++		davinci_serial_reset(pspp);
++
+ 	davinci_gpio_init();
+ 	setup_ethernet();
+ 	setup_mmc();
+ 	setup_nand();
+ 
+-	platform_add_devices(dm355_evm_devices,
+-		ARRAY_SIZE(dm355_evm_devices));
+-
++	platform_notify = davinci_serial_init;
++	platform_add_devices(dm355_evm_devices, ARRAY_SIZE(dm355_evm_devices));
+ }
+ 
+ static __init void davinci_dm355_evm_irq_init(void)
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm6467-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm6467-evm.c
+@@ -29,6 +29,7 @@
+ #include <linux/serial.h>
+ #include <linux/mtd/nand.h>
+ #include <linux/serial_8250.h>
++#include <linux/kgdb.h>
+ 
+ #include <asm/setup.h>
+ #include <asm/io.h>
+@@ -40,7 +41,6 @@
+ #include <asm/arch/irqs.h>
+ #include <asm/arch/hardware.h>
+ #include <asm/arch/edma.h>
+-#include <linux/kgdb.h>
+ #include <asm/arch/cpu.h>
+ #include <asm/arch/mux.h>
+ #include <asm/arch/nand.h>
+@@ -86,10 +86,10 @@ static struct plat_serial8250_port seria
+ 	},
+ };
+ 
+-static struct platform_device serial_device	= {
+-	.name			= "serial8250",
+-	.id			= 0,
+-	.dev			= {
++static struct platform_device serial_device = {
++	.name	= "serial8250",
++	.id	= 0,
++	.dev	= {
+ 		.platform_data	= serial_platform_data,
+ 	},
+ };
+@@ -97,7 +97,6 @@ static struct platform_device serial_dev
+ /**************************************************************************
+  * Public Functions
+  **************************************************************************/
+-//extern void davinci_serial_init(struct platform_device *pdev);
+ 
+ #if defined (CONFIG_MTD_NAND_DAVINCI) || defined(CONFIG_MTD_NAND_DAVINCI_MODULE)
+ static struct mtd_partition dm646x_nand_partitions[] = {
+@@ -326,6 +325,19 @@ static void dm646x_setup_pinmux(unsigned
+ 	}
+ }
+ 
++#define UART_DM6467_SCR               __REG(DAVINCI_UART0_BASE + 0x40)
++/*
++ * Internal UARTs need to be initialized for the 8250 autoconfig to work
++ * properly. Note that the TX watermark initialization may not be needed
++ * once the 8250.c watermark handling code is merged.
++ */
++static int __init dm646x_serial_reset(void)
++{
++	UART_DM6467_SCR = 0x08;
++	return 0;
++}
++late_initcall(dm646x_serial_reset);
++
+ extern const u8 *davinci_def_priorities;
+ 
+ void __init davinci_map_common_io(void);
+@@ -352,7 +364,6 @@ static __init void dm6467_evm_i2c_expand
+ #endif
+ }
+ 
+-
+ static __init void dm6467_evm_init(void)
+ {
+ 	davinci_gpio_init();
+Index: linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-evm.c
+@@ -22,6 +22,7 @@
+ #endif
+ #include <linux/serial.h>
+ #include <linux/serial_8250.h>
++#include <linux/kgdb.h>
+ 
+ #include <asm/setup.h>
+ #include <asm/io.h>
+@@ -42,7 +43,6 @@
+ #include <asm/arch/i2c-client.h>
+ 
+ /* other misc. init functions */
+-void __init davinci_serial_init(struct platform_device *pdev);
+ void __init davinci_irq_init(void);
+ void __init davinci_map_common_io(void);
+ void __init davinci_init_common_hw(void);
+@@ -63,9 +63,9 @@ static struct plat_serial8250_port seria
+ };
+ 
+ static struct platform_device serial_device = {
+-	.name			= "serial8250",
+-	.id			= PLAT8250_DEV_PLATFORM,
+-	.dev			= {
++	.name	= "serial8250",
++	.id	= PLAT8250_DEV_PLATFORM,
++	.dev	= {
+ 		.platform_data	= serial_platform_data,
+ 	},
+ };
+@@ -410,8 +410,8 @@ static __init void davinci_evm_init(void
+ 	       "but share pins.\n\tDisable NAND for NOR support.\n");
+ #endif
+ 
+-	davinci_serial_init(&serial_device);
+ 	setup_mmc();
++	platform_notify = davinci_serial_init;
+ 	platform_add_devices(davinci_evm_devices,
+ 			     ARRAY_SIZE(davinci_evm_devices));
+ }
+Index: linux-2.6.18/arch/arm/mach-davinci/serial.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/serial.c
++++ /dev/null
+@@ -1,118 +0,0 @@
+-/*
+- * TI DaVinci serial driver
+- *
+- * Copyright (C) 2006 Texas Instruments.
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License as published by
+- * the Free Software Foundation; either version 2 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the
+- * GNU General Public License for more details.
+- *
+- *  You should have received a copy of the GNU General Public License
+- *  along with this program; if not, write to the Free Software
+- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+- *
+- */
+-
+-#include <linux/kernel.h>
+-#include <linux/init.h>
+-#include <linux/serial_8250.h>
+-#include <linux/serial_reg.h>
+-#include <linux/platform_device.h>
+-#include <linux/delay.h>
+-#include <linux/clk.h>
+-
+-#include <asm/io.h>
+-#include <asm/irq.h>
+-#include <asm/hardware.h>
+-#include <asm/arch/serial.h>
+-#include <asm/arch/irqs.h>
+-#include <asm/arch/cpu.h>
+-
+-#define UART_DAVINCI_PWREMU 0x0c
+-
+-static inline unsigned int davinci_serial_in(struct plat_serial8250_port *up,
+-					  int offset)
+-{
+-	offset <<= up->regshift;
+-	return (unsigned int)__raw_readb(up->membase + offset);
+-}
+-
+-static inline void davinci_serial_outp(struct plat_serial8250_port *p,
+-				       int offset, int value)
+-{
+-	offset <<= p->regshift;
+-	__raw_writeb(value, p->membase + offset);
+-}
+-
+-static void __init davinci_serial_reset(struct plat_serial8250_port *p)
+-{
+-	/* reset both transmitter and receiver: bits 14,13 = UTRST, URRST */
+-	unsigned int pwremu = 0;
+-
+-	davinci_serial_outp(p, UART_IER, 0);  /* disable all interrupts */
+-
+-	davinci_serial_outp(p, UART_DAVINCI_PWREMU, pwremu);
+-	mdelay(10);
+-
+-	pwremu |= (0x3 << 13);
+-	pwremu |= 0x1;
+-	davinci_serial_outp(p, UART_DAVINCI_PWREMU, pwremu);
+-}
+-
+-#define UART_DM6467_SCR		__REG(DAVINCI_UART0_BASE + 0x40)
+-/*
+- * Internal UARTs need to be initialized for the 8250 autoconfig to work
+- * properly. Note that the TX watermark initialization may not be needed
+- * once the 8250.c watermark handling code is merged.
+- */
+-static int __init dm646x_serial_reset(void)
+-{
+-	UART_DM6467_SCR = 0x08;
+-	return 0;
+-}
+-
+-void __init davinci_serial_init(struct platform_device *pdev)
+-{
+-	struct clk *uart_clk;
+-	struct device *dev = &pdev->dev;
+-	struct plat_serial8250_port *p;
+-	int uart;
+-	char uart_name[6];
+-
+-	memset(uart_name, 0, sizeof(uart_name));
+-	for (p = dev->platform_data; p && p->flags; p++) {
+-		switch (p->mapbase) {
+-		case DAVINCI_UART0_BASE:
+-			uart = 0;
+-			break;
+-		case DAVINCI_UART1_BASE:
+-			uart = 1;
+-			break;
+-		case DAVINCI_UART2_BASE:
+-		case DM355_UART2_BASE:
+-			uart = 2;
+-			break;
+-		default:
+-			dev_err(dev,
+-				"Unknown UART base address 0x%08lx\n",
+-				p->mapbase);
+-			continue;
+-		}
+-		sprintf(uart_name, "UART%i", uart);
+-		uart_clk = clk_get(dev, uart_name);
+-		if (IS_ERR(uart_clk))
+-			dev_err(dev, "failed to get %s clock\n", uart_name);
+-		else
+-			clk_enable(uart_clk);
+-
+-		if (cpu_is_davinci_dm355())
+-			davinci_serial_reset(p);
+-	}
+-}
+-late_initcall(dm646x_serial_reset);
+Index: linux-2.6.18/arch/arm/plat-davinci/Makefile
+===================================================================
+--- linux-2.6.18.orig/arch/arm/plat-davinci/Makefile
++++ linux-2.6.18/arch/arm/plat-davinci/Makefile
+@@ -2,8 +2,8 @@
+ # Makefile for the linux kernel.
+ #
+ #
+-
+-# Common objects
+ obj-y := clock.o dma.o
+ 
+-obj-$(CONFIG_GENERIC_GPIO)		+= gpio.o
++# Common objects
++obj-$(CONFIG_GENERIC_GPIO)	+= gpio.o
++obj-$(CONFIG_SERIAL_8250)	+= serial.o
+Index: linux-2.6.18/arch/arm/plat-davinci/serial.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/arch/arm/plat-davinci/serial.c
+@@ -0,0 +1,50 @@
++/*
++ * TI DaVinci serial driver
++ *
++ * Copyright (C) 2006 Texas Instruments.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the
++ * GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++ *
++ */
++
++#include <linux/kernel.h>
++#include <linux/serial_8250.h>
++#include <linux/platform_device.h>
++#include <linux/clk.h>
++
++int davinci_serial_init(struct device *dev)
++{
++	struct clk *uart_clk;
++	char uart_name[6];
++	struct plat_serial8250_port *pspp;
++	int i;
++
++	if (dev && dev->bus_id && !strcmp(dev->bus_id, "serial8250.0")) {
++		for (i = 0, pspp = dev->platform_data; pspp->flags;
++				i++, pspp++) {
++			sprintf(uart_name, "UART%i", i);
++			uart_clk = clk_get(dev, uart_name);
++			if (IS_ERR(uart_clk))
++				goto err_out;
++
++			clk_enable(uart_clk);
++		}
++	}
++	return 0;
++
++err_out:
++	dev_err(dev, "failed to get %s clock\n", uart_name);
++	return -1;
++}
+Index: linux-2.6.18/include/asm-arm/arch-davinci/serial.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/serial.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/serial.h
+@@ -17,4 +17,7 @@
+ #define DAVINCI_UART1_BASE   (IO_PHYS + 0x20400)
+ #define DAVINCI_UART2_BASE   (IO_PHYS + 0x20800)
+ 
++struct device;
++extern int davinci_serial_init(struct device *dev);
++
+ #endif /* __ASM_ARCH_SERIAL_H */
+Index: linux-2.6.18/include/asm-arm/arch-davinci/uncompress.h
+===================================================================
+--- linux-2.6.18.orig/include/asm-arm/arch-davinci/uncompress.h
++++ linux-2.6.18/include/asm-arm/arch-davinci/uncompress.h
+@@ -3,6 +3,7 @@
+  *
+  *  Author:     Anant Gole
+  * (C) Copyright (C) 2006, Texas Instruments, Inc
++ * Copyright (C) 2008 MontaVista Software, Inc. <source@mvista.com>
+  *
+  * This file is licensed under the terms of the GNU General Public License
+  * version 2. This program is licensed "as is" without any warranty of any
+@@ -13,11 +14,14 @@
+ #include <linux/serial_reg.h>
+ #include <asm/arch/serial.h>
+ 
+-/* PORT_16C550A, in polled non-fifo mode */
++/* FIXME: this is actually board specific! */
++#define CONSOLE_UART_BASE	DAVINCI_UART0_BASE
++
++/* PORT_16C550A, in polled non-FIFO mode */
+ 
+ static void putc(char c)
+ {
+-	volatile u32 *uart = (volatile void *) DAVINCI_UART0_BASE;
++	volatile u32 *uart = (volatile u32 *)CONSOLE_UART_BASE;
+ 
+ 	while (!(uart[UART_LSR] & UART_LSR_THRE))
+ 		barrier();
+@@ -26,7 +30,8 @@ static void putc(char c)
+ 
+ static inline void flush(void)
+ {
+-	volatile u32 *uart = (volatile void *) DAVINCI_UART0_BASE;
++	volatile u32 *uart = (volatile u32 *)CONSOLE_UART_BASE;
++
+ 	while (!(uart[UART_LSR] & UART_LSR_THRE))
+ 		barrier();
+ }
+Index: linux-2.6.18/mvl_patches/pro50-2098.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2098.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2098);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,1090 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_Rename_virthub.c_musb_virthub.c
+# Date: Fri Sep 19 14:17:18 2008
+# From 862101c412153819c232e6f00bfe2670c0bb1221 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Mon, 20 Aug 2007 01:24:11 -0700
+# Subject: [PATCH] musb: Rename virthub.c musb_virthub.c
+# 
+# Rename virthub.c musb_virthub.c
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit ea42a6c7fe1313191e6f0cb6394dceda607cbb8a)
+
+PATCHNUM=1776
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 862101c412153819c232e6f00bfe2670c0bb1221 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Mon, 20 Aug 2007 01:24:11 -0700
+Subject: [PATCH] musb: Rename virthub.c musb_virthub.c
+
+Rename virthub.c musb_virthub.c
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit ea42a6c7fe1313191e6f0cb6394dceda607cbb8a)
+Index: linux-2.6.18/drivers/usb/musb/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/Makefile
++++ linux-2.6.18/drivers/usb/musb/Makefile
+@@ -23,7 +23,7 @@ ifeq ($(CONFIG_USB_GADGET_MUSB_HDRC),y)
+ endif
+ 
+ ifeq ($(CONFIG_USB_MUSB_HDRC_HCD),y)
+-	musb_hdrc-objs		+= virthub.o musb_host.o
++	musb_hdrc-objs		+= musb_virthub.o musb_host.o
+ endif
+ 
+ # the kconfig must guarantee that only one of the
+Index: linux-2.6.18/drivers/usb/musb/musb_virthub.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/usb/musb/musb_virthub.c
+@@ -0,0 +1,418 @@
++/*
++ * MUSB OTG driver virtual hub support
++ *
++ * Copyright 2005 Mentor Graphics Corporation
++ * Copyright (C) 2005-2006 by Texas Instruments
++ * Copyright (C) 2006-2007 Nokia Corporation
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
++ * 02110-1301 USA
++ *
++ * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
++ * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
++ * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
++ * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
++ * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ *
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/sched.h>
++#include <linux/slab.h>
++#include <linux/errno.h>
++#include <linux/init.h>
++#include <linux/time.h>
++#include <linux/timer.h>
++
++#include <asm/unaligned.h>
++
++#include "musb_core.h"
++
++
++static void musb_port_suspend(struct musb *musb, u8 bSuspend)
++{
++	u8		power;
++	void __iomem	*mbase = musb->mregs;
++
++	if (!is_host_active(musb))
++		return;
++
++	/* NOTE:  this doesn't necessarily put PHY into low power mode,
++	 * turning off its clock; that's a function of PHY integration and
++	 * MUSB_POWER_ENSUSPEND.  PHY may need a clock (sigh) to detect
++	 * SE0 changing to connect (J) or wakeup (K) states.
++	 */
++	power = musb_readb(mbase, MUSB_POWER);
++	if (bSuspend) {
++		int retries = 10000;
++
++		power &= ~MUSB_POWER_RESUME;
++		power |= MUSB_POWER_SUSPENDM;
++		musb_writeb(mbase, MUSB_POWER, power);
++
++		/* Needed for OPT A tests */
++		power = musb_readb(mbase, MUSB_POWER);
++		while (power & MUSB_POWER_SUSPENDM) {
++			power = musb_readb(mbase, MUSB_POWER);
++			if (retries-- < 1)
++				break;
++		}
++
++		DBG(3, "Root port suspended, power %02x\n", power);
++
++		musb->port1_status |= USB_PORT_STAT_SUSPEND;
++		switch (musb->xceiv.state) {
++		case OTG_STATE_A_HOST:
++			musb->xceiv.state = OTG_STATE_A_SUSPEND;
++			musb->is_active = is_otg_enabled(musb)
++					&& musb->xceiv.host->b_hnp_enable;
++			musb_platform_try_idle(musb, 0);
++			break;
++#ifdef	CONFIG_USB_MUSB_OTG
++		case OTG_STATE_B_HOST:
++			musb->xceiv.state = OTG_STATE_B_WAIT_ACON;
++			musb->is_active = is_otg_enabled(musb)
++					&& musb->xceiv.host->b_hnp_enable;
++			musb_platform_try_idle(musb, 0);
++			break;
++#endif
++		default:
++			DBG(1, "bogus rh suspend? %s\n",
++				otg_state_string(musb));
++		}
++	} else if (power & MUSB_POWER_SUSPENDM) {
++		power &= ~MUSB_POWER_SUSPENDM;
++		power |= MUSB_POWER_RESUME;
++		musb_writeb(mbase, MUSB_POWER, power);
++
++		DBG(3, "Root port resuming, power %02x\n", power);
++
++		/* later, GetPortStatus will stop RESUME signaling */
++		musb->port1_status |= MUSB_PORT_STAT_RESUME;
++		musb->rh_timer = jiffies + msecs_to_jiffies(20);
++	}
++}
++
++static void musb_port_reset(struct musb *musb, u8 bReset)
++{
++	u8		power;
++	void __iomem	*mbase = musb->mregs;
++
++#ifdef CONFIG_USB_MUSB_OTG
++	if (musb->xceiv.state == OTG_STATE_B_IDLE) {
++		DBG(2, "HNP: Returning from HNP, not resetting hub as b_idle\n");
++		musb->port1_status &= ~USB_PORT_STAT_RESET;
++		return;
++	}
++#endif
++
++	if (!is_host_active(musb))
++		return;
++
++	/* NOTE:  caller guarantees it will turn off the reset when
++	 * the appropriate amount of time has passed
++	 */
++	power = musb_readb(mbase, MUSB_POWER);
++	if (bReset) {
++
++		/*
++		 * If RESUME is set, we must make sure it stays minimum 20 ms.
++		 * Then we must clear RESUME and wait a bit to let musb start
++		 * generating SOFs. If we don't do this, OPT HS A 6.8 tests
++		 * fail with "Error! Did not receive an SOF before suspend
++		 * detected".
++		 */
++		if (power &  MUSB_POWER_RESUME) {
++			while (time_before(jiffies, musb->rh_timer))
++				msleep(1);
++			musb_writeb(mbase, MUSB_POWER,
++				power & ~MUSB_POWER_RESUME);
++			msleep(1);
++		}
++
++		musb->ignore_disconnect = TRUE;
++		power &= 0xf0;
++		musb_writeb(mbase, MUSB_POWER,
++				power | MUSB_POWER_RESET);
++
++		musb->port1_status |= USB_PORT_STAT_RESET;
++		musb->port1_status &= ~USB_PORT_STAT_ENABLE;
++		musb->rh_timer = jiffies + msecs_to_jiffies(50);
++	} else {
++		DBG(4, "root port reset stopped\n");
++		musb_writeb(mbase, MUSB_POWER,
++				power & ~MUSB_POWER_RESET);
++
++		musb->ignore_disconnect = FALSE;
++
++		power = musb_readb(mbase, MUSB_POWER);
++		if (power & MUSB_POWER_HSMODE) {
++			DBG(4, "high-speed device connected\n");
++			musb->port1_status |= USB_PORT_STAT_HIGH_SPEED;
++		}
++
++		musb->port1_status &= ~USB_PORT_STAT_RESET;
++		musb->port1_status |= USB_PORT_STAT_ENABLE
++					| (USB_PORT_STAT_C_RESET << 16)
++					| (USB_PORT_STAT_C_ENABLE << 16);
++		usb_hcd_poll_rh_status(musb_to_hcd(musb));
++
++		musb->vbuserr_retry = VBUSERR_RETRY_COUNT;
++	}
++}
++
++void musb_root_disconnect(struct musb *musb)
++{
++	musb->port1_status = (1 << USB_PORT_FEAT_POWER)
++			| (1 << USB_PORT_FEAT_C_CONNECTION);
++
++	usb_hcd_poll_rh_status(musb_to_hcd(musb));
++	musb->is_active = 0;
++
++	switch (musb->xceiv.state) {
++	case OTG_STATE_A_HOST:
++	case OTG_STATE_A_SUSPEND:
++		musb->xceiv.state = OTG_STATE_A_WAIT_BCON;
++		break;
++	case OTG_STATE_A_WAIT_VFALL:
++		musb->xceiv.state = OTG_STATE_B_IDLE;
++		break;
++	default:
++		DBG(1, "host disconnect (%s)\n", otg_state_string(musb));
++	}
++}
++
++
++/*---------------------------------------------------------------------*/
++
++int musb_hub_status_data(struct usb_hcd *hcd, char *buf)
++{
++	struct musb	*musb = hcd_to_musb(hcd);
++	int		retval = 0;
++
++	/* called in_irq() via usb_hcd_poll_rh_status() */
++	if (musb->port1_status & 0xffff0000) {
++		*buf = 0x02;
++		retval = 1;
++	}
++	return retval;
++}
++
++int musb_hub_control(
++	struct usb_hcd	*hcd,
++	u16		typeReq,
++	u16		wValue,
++	u16		wIndex,
++	char		*buf,
++	u16		wLength)
++{
++	struct musb	*musb = hcd_to_musb(hcd);
++	u32		temp;
++	int		retval = 0;
++	unsigned long	flags;
++
++	if (unlikely(!test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags)))
++		return -ESHUTDOWN;
++
++	/* hub features:  always zero, setting is a NOP
++	 * port features: reported, sometimes updated when host is active
++	 * no indicators
++	 */
++	spin_lock_irqsave(&musb->lock, flags);
++	switch (typeReq) {
++	case ClearHubFeature:
++	case SetHubFeature:
++		switch (wValue) {
++		case C_HUB_OVER_CURRENT:
++		case C_HUB_LOCAL_POWER:
++			break;
++		default:
++			goto error;
++		}
++		break;
++	case ClearPortFeature:
++		if (wIndex != 1)
++			goto error;
++
++		switch (wValue) {
++		case USB_PORT_FEAT_ENABLE:
++			break;
++		case USB_PORT_FEAT_SUSPEND:
++			musb_port_suspend(musb, FALSE);
++			break;
++		case USB_PORT_FEAT_POWER:
++			if (!(is_otg_enabled(musb) && hcd->self.is_b_host))
++				musb_set_vbus(musb, 0);
++			break;
++		case USB_PORT_FEAT_C_CONNECTION:
++		case USB_PORT_FEAT_C_ENABLE:
++		case USB_PORT_FEAT_C_OVER_CURRENT:
++		case USB_PORT_FEAT_C_RESET:
++		case USB_PORT_FEAT_C_SUSPEND:
++			break;
++		default:
++			goto error;
++		}
++		DBG(5, "clear feature %d\n", wValue);
++		musb->port1_status &= ~(1 << wValue);
++		break;
++	case GetHubDescriptor:
++		{
++		struct usb_hub_descriptor *desc = (void *)buf;
++
++		desc->bDescLength = 9;
++		desc->bDescriptorType = 0x29;
++		desc->bNbrPorts = 1;
++		desc->wHubCharacteristics = __constant_cpu_to_le16(
++				  0x0001	/* per-port power switching */
++				| 0x0010	/* no overcurrent reporting */
++				);
++		desc->bPwrOn2PwrGood = 5;	/* msec/2 */
++		desc->bHubContrCurrent = 0;
++
++		/* workaround bogus struct definition */
++		desc->DeviceRemovable[0] = 0x02;	/* port 1 */
++		desc->DeviceRemovable[1] = 0xff;
++		}
++		break;
++	case GetHubStatus:
++		temp = 0;
++		*(__le32 *) buf = cpu_to_le32 (temp);
++		break;
++	case GetPortStatus:
++		if (wIndex != 1)
++			goto error;
++
++		/* finish RESET signaling? */
++		if ((musb->port1_status & USB_PORT_STAT_RESET)
++				&& time_after(jiffies, musb->rh_timer))
++			musb_port_reset(musb, FALSE);
++
++		/* finish RESUME signaling? */
++		if ((musb->port1_status & MUSB_PORT_STAT_RESUME)
++				&& time_after(jiffies, musb->rh_timer)) {
++			u8		power;
++
++			power = musb_readb(musb->mregs, MUSB_POWER);
++			power &= ~MUSB_POWER_RESUME;
++			DBG(4, "root port resume stopped, power %02x\n",
++					power);
++			musb_writeb(musb->mregs, MUSB_POWER, power);
++
++			/* ISSUE:  DaVinci (RTL 1.300) disconnects after
++			 * resume of high speed peripherals (but not full
++			 * speed ones).
++			 */
++
++			musb->is_active = 1;
++			musb->port1_status &= ~(USB_PORT_STAT_SUSPEND
++					| MUSB_PORT_STAT_RESUME);
++			musb->port1_status |= USB_PORT_STAT_C_SUSPEND << 16;
++			usb_hcd_poll_rh_status(musb_to_hcd(musb));
++			/* NOTE: it might really be A_WAIT_BCON ... */
++			musb->xceiv.state = OTG_STATE_A_HOST;
++		}
++
++		put_unaligned(cpu_to_le32(musb->port1_status & ~MUSB_PORT_STAT_RESUME),
++				(__le32 *) buf);
++
++		/* port change status is more interesting */
++		DBG(get_unaligned((u16*)(buf+2)) ? 2 : 5, "port status %08x\n",
++				musb->port1_status);
++		break;
++	case SetPortFeature:
++		if ((wIndex & 0xff) != 1)
++			goto error;
++
++		switch (wValue) {
++		case USB_PORT_FEAT_POWER:
++			/* NOTE: this controller has a strange state machine
++			 * that involves "requesting sessions" according to
++			 * magic side effects from incompletely-described
++			 * rules about startup...
++			 *
++			 * This call is what really starts the host mode; be
++			 * very careful about side effects if you reorder any
++			 * initialization logic, e.g. for OTG, or change any
++			 * logic relating to VBUS power-up.
++			 */
++			if (!(is_otg_enabled(musb) && hcd->self.is_b_host))
++				musb_start(musb);
++			break;
++		case USB_PORT_FEAT_RESET:
++			musb_port_reset(musb, TRUE);
++			break;
++		case USB_PORT_FEAT_SUSPEND:
++			musb_port_suspend(musb, TRUE);
++			break;
++		case USB_PORT_FEAT_TEST:
++			if (unlikely(is_host_active(musb)))
++				goto error;
++
++			wIndex >>= 8;
++			switch (wIndex) {
++			case 1:
++				pr_debug("TEST_J\n");
++				temp = MUSB_TEST_J;
++				break;
++			case 2:
++				pr_debug("TEST_K\n");
++				temp = MUSB_TEST_K;
++				break;
++			case 3:
++				pr_debug("TEST_SE0_NAK\n");
++				temp = MUSB_TEST_SE0_NAK;
++				break;
++			case 4:
++				pr_debug("TEST_PACKET\n");
++				temp = MUSB_TEST_PACKET;
++				musb_load_testpacket(musb);
++				break;
++			case 5:
++				pr_debug("TEST_FORCE_ENABLE\n");
++				temp = MUSB_TEST_FORCE_HOST
++					| MUSB_TEST_FORCE_HS;
++
++				musb_writeb(musb->mregs, MUSB_DEVCTL, MUSB_DEVCTL_SESSION);
++				break;
++			case 6:
++				pr_debug("TEST_FIFO_ACCESS\n");
++				temp = MUSB_TEST_FIFO_ACCESS;
++				break;
++			default:
++				goto error;
++			}
++			musb_writeb(musb->mregs, MUSB_TESTMODE, temp);
++			break;
++		default:
++			goto error;
++		}
++		DBG(5, "set feature %d\n", wValue);
++		musb->port1_status |= 1 << wValue;
++		break;
++
++	default:
++error:
++		/* "protocol stall" on error */
++		retval = -EPIPE;
++	}
++	spin_unlock_irqrestore(&musb->lock, flags);
++	return retval;
++}
+Index: linux-2.6.18/drivers/usb/musb/virthub.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/virthub.c
++++ /dev/null
+@@ -1,418 +0,0 @@
+-/*
+- * MUSB OTG driver virtual hub support
+- *
+- * Copyright 2005 Mentor Graphics Corporation
+- * Copyright (C) 2005-2006 by Texas Instruments
+- * Copyright (C) 2006-2007 Nokia Corporation
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * version 2 as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+- * 02110-1301 USA
+- *
+- * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
+- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
+- * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+- * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+- *
+- */
+-
+-#include <linux/module.h>
+-#include <linux/kernel.h>
+-#include <linux/sched.h>
+-#include <linux/slab.h>
+-#include <linux/errno.h>
+-#include <linux/init.h>
+-#include <linux/time.h>
+-#include <linux/timer.h>
+-
+-#include <asm/unaligned.h>
+-
+-#include "musb_core.h"
+-
+-
+-static void musb_port_suspend(struct musb *musb, u8 bSuspend)
+-{
+-	u8		power;
+-	void __iomem	*mbase = musb->mregs;
+-
+-	if (!is_host_active(musb))
+-		return;
+-
+-	/* NOTE:  this doesn't necessarily put PHY into low power mode,
+-	 * turning off its clock; that's a function of PHY integration and
+-	 * MUSB_POWER_ENSUSPEND.  PHY may need a clock (sigh) to detect
+-	 * SE0 changing to connect (J) or wakeup (K) states.
+-	 */
+-	power = musb_readb(mbase, MUSB_POWER);
+-	if (bSuspend) {
+-		int retries = 10000;
+-
+-		power &= ~MUSB_POWER_RESUME;
+-		power |= MUSB_POWER_SUSPENDM;
+-		musb_writeb(mbase, MUSB_POWER, power);
+-
+-		/* Needed for OPT A tests */
+-		power = musb_readb(mbase, MUSB_POWER);
+-		while (power & MUSB_POWER_SUSPENDM) {
+-			power = musb_readb(mbase, MUSB_POWER);
+-			if (retries-- < 1)
+-				break;
+-		}
+-
+-		DBG(3, "Root port suspended, power %02x\n", power);
+-
+-		musb->port1_status |= USB_PORT_STAT_SUSPEND;
+-		switch (musb->xceiv.state) {
+-		case OTG_STATE_A_HOST:
+-			musb->xceiv.state = OTG_STATE_A_SUSPEND;
+-			musb->is_active = is_otg_enabled(musb)
+-					&& musb->xceiv.host->b_hnp_enable;
+-			musb_platform_try_idle(musb, 0);
+-			break;
+-#ifdef	CONFIG_USB_MUSB_OTG
+-		case OTG_STATE_B_HOST:
+-			musb->xceiv.state = OTG_STATE_B_WAIT_ACON;
+-			musb->is_active = is_otg_enabled(musb)
+-					&& musb->xceiv.host->b_hnp_enable;
+-			musb_platform_try_idle(musb, 0);
+-			break;
+-#endif
+-		default:
+-			DBG(1, "bogus rh suspend? %s\n",
+-				otg_state_string(musb));
+-		}
+-	} else if (power & MUSB_POWER_SUSPENDM) {
+-		power &= ~MUSB_POWER_SUSPENDM;
+-		power |= MUSB_POWER_RESUME;
+-		musb_writeb(mbase, MUSB_POWER, power);
+-
+-		DBG(3, "Root port resuming, power %02x\n", power);
+-
+-		/* later, GetPortStatus will stop RESUME signaling */
+-		musb->port1_status |= MUSB_PORT_STAT_RESUME;
+-		musb->rh_timer = jiffies + msecs_to_jiffies(20);
+-	}
+-}
+-
+-static void musb_port_reset(struct musb *musb, u8 bReset)
+-{
+-	u8		power;
+-	void __iomem	*mbase = musb->mregs;
+-
+-#ifdef CONFIG_USB_MUSB_OTG
+-	if (musb->xceiv.state == OTG_STATE_B_IDLE) {
+-		DBG(2, "HNP: Returning from HNP, not resetting hub as b_idle\n");
+-		musb->port1_status &= ~USB_PORT_STAT_RESET;
+-		return;
+-	}
+-#endif
+-
+-	if (!is_host_active(musb))
+-		return;
+-
+-	/* NOTE:  caller guarantees it will turn off the reset when
+-	 * the appropriate amount of time has passed
+-	 */
+-	power = musb_readb(mbase, MUSB_POWER);
+-	if (bReset) {
+-
+-		/*
+-		 * If RESUME is set, we must make sure it stays minimum 20 ms.
+-		 * Then we must clear RESUME and wait a bit to let musb start
+-		 * generating SOFs. If we don't do this, OPT HS A 6.8 tests
+-		 * fail with "Error! Did not receive an SOF before suspend
+-		 * detected".
+-		 */
+-		if (power &  MUSB_POWER_RESUME) {
+-			while (time_before(jiffies, musb->rh_timer))
+-				msleep(1);
+-			musb_writeb(mbase, MUSB_POWER,
+-				power & ~MUSB_POWER_RESUME);
+-			msleep(1);
+-		}
+-
+-		musb->ignore_disconnect = TRUE;
+-		power &= 0xf0;
+-		musb_writeb(mbase, MUSB_POWER,
+-				power | MUSB_POWER_RESET);
+-
+-		musb->port1_status |= USB_PORT_STAT_RESET;
+-		musb->port1_status &= ~USB_PORT_STAT_ENABLE;
+-		musb->rh_timer = jiffies + msecs_to_jiffies(50);
+-	} else {
+-		DBG(4, "root port reset stopped\n");
+-		musb_writeb(mbase, MUSB_POWER,
+-				power & ~MUSB_POWER_RESET);
+-
+-		musb->ignore_disconnect = FALSE;
+-
+-		power = musb_readb(mbase, MUSB_POWER);
+-		if (power & MUSB_POWER_HSMODE) {
+-			DBG(4, "high-speed device connected\n");
+-			musb->port1_status |= USB_PORT_STAT_HIGH_SPEED;
+-		}
+-
+-		musb->port1_status &= ~USB_PORT_STAT_RESET;
+-		musb->port1_status |= USB_PORT_STAT_ENABLE
+-					| (USB_PORT_STAT_C_RESET << 16)
+-					| (USB_PORT_STAT_C_ENABLE << 16);
+-		usb_hcd_poll_rh_status(musb_to_hcd(musb));
+-
+-		musb->vbuserr_retry = VBUSERR_RETRY_COUNT;
+-	}
+-}
+-
+-void musb_root_disconnect(struct musb *musb)
+-{
+-	musb->port1_status = (1 << USB_PORT_FEAT_POWER)
+-			| (1 << USB_PORT_FEAT_C_CONNECTION);
+-
+-	usb_hcd_poll_rh_status(musb_to_hcd(musb));
+-	musb->is_active = 0;
+-
+-	switch (musb->xceiv.state) {
+-	case OTG_STATE_A_HOST:
+-	case OTG_STATE_A_SUSPEND:
+-		musb->xceiv.state = OTG_STATE_A_WAIT_BCON;
+-		break;
+-	case OTG_STATE_A_WAIT_VFALL:
+-		musb->xceiv.state = OTG_STATE_B_IDLE;
+-		break;
+-	default:
+-		DBG(1, "host disconnect (%s)\n", otg_state_string(musb));
+-	}
+-}
+-
+-
+-/*---------------------------------------------------------------------*/
+-
+-int musb_hub_status_data(struct usb_hcd *hcd, char *buf)
+-{
+-	struct musb	*musb = hcd_to_musb(hcd);
+-	int		retval = 0;
+-
+-	/* called in_irq() via usb_hcd_poll_rh_status() */
+-	if (musb->port1_status & 0xffff0000) {
+-		*buf = 0x02;
+-		retval = 1;
+-	}
+-	return retval;
+-}
+-
+-int musb_hub_control(
+-	struct usb_hcd	*hcd,
+-	u16		typeReq,
+-	u16		wValue,
+-	u16		wIndex,
+-	char		*buf,
+-	u16		wLength)
+-{
+-	struct musb	*musb = hcd_to_musb(hcd);
+-	u32		temp;
+-	int		retval = 0;
+-	unsigned long	flags;
+-
+-	if (unlikely(!test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags)))
+-		return -ESHUTDOWN;
+-
+-	/* hub features:  always zero, setting is a NOP
+-	 * port features: reported, sometimes updated when host is active
+-	 * no indicators
+-	 */
+-	spin_lock_irqsave(&musb->lock, flags);
+-	switch (typeReq) {
+-	case ClearHubFeature:
+-	case SetHubFeature:
+-		switch (wValue) {
+-		case C_HUB_OVER_CURRENT:
+-		case C_HUB_LOCAL_POWER:
+-			break;
+-		default:
+-			goto error;
+-		}
+-		break;
+-	case ClearPortFeature:
+-		if (wIndex != 1)
+-			goto error;
+-
+-		switch (wValue) {
+-		case USB_PORT_FEAT_ENABLE:
+-			break;
+-		case USB_PORT_FEAT_SUSPEND:
+-			musb_port_suspend(musb, FALSE);
+-			break;
+-		case USB_PORT_FEAT_POWER:
+-			if (!(is_otg_enabled(musb) && hcd->self.is_b_host))
+-				musb_set_vbus(musb, 0);
+-			break;
+-		case USB_PORT_FEAT_C_CONNECTION:
+-		case USB_PORT_FEAT_C_ENABLE:
+-		case USB_PORT_FEAT_C_OVER_CURRENT:
+-		case USB_PORT_FEAT_C_RESET:
+-		case USB_PORT_FEAT_C_SUSPEND:
+-			break;
+-		default:
+-			goto error;
+-		}
+-		DBG(5, "clear feature %d\n", wValue);
+-		musb->port1_status &= ~(1 << wValue);
+-		break;
+-	case GetHubDescriptor:
+-		{
+-		struct usb_hub_descriptor *desc = (void *)buf;
+-
+-		desc->bDescLength = 9;
+-		desc->bDescriptorType = 0x29;
+-		desc->bNbrPorts = 1;
+-		desc->wHubCharacteristics = __constant_cpu_to_le16(
+-				  0x0001	/* per-port power switching */
+-				| 0x0010	/* no overcurrent reporting */
+-				);
+-		desc->bPwrOn2PwrGood = 5;	/* msec/2 */
+-		desc->bHubContrCurrent = 0;
+-
+-		/* workaround bogus struct definition */
+-		desc->DeviceRemovable[0] = 0x02;	/* port 1 */
+-		desc->DeviceRemovable[1] = 0xff;
+-		}
+-		break;
+-	case GetHubStatus:
+-		temp = 0;
+-		*(__le32 *) buf = cpu_to_le32 (temp);
+-		break;
+-	case GetPortStatus:
+-		if (wIndex != 1)
+-			goto error;
+-
+-		/* finish RESET signaling? */
+-		if ((musb->port1_status & USB_PORT_STAT_RESET)
+-				&& time_after(jiffies, musb->rh_timer))
+-			musb_port_reset(musb, FALSE);
+-
+-		/* finish RESUME signaling? */
+-		if ((musb->port1_status & MUSB_PORT_STAT_RESUME)
+-				&& time_after(jiffies, musb->rh_timer)) {
+-			u8		power;
+-
+-			power = musb_readb(musb->mregs, MUSB_POWER);
+-			power &= ~MUSB_POWER_RESUME;
+-			DBG(4, "root port resume stopped, power %02x\n",
+-					power);
+-			musb_writeb(musb->mregs, MUSB_POWER, power);
+-
+-			/* ISSUE:  DaVinci (RTL 1.300) disconnects after
+-			 * resume of high speed peripherals (but not full
+-			 * speed ones).
+-			 */
+-
+-			musb->is_active = 1;
+-			musb->port1_status &= ~(USB_PORT_STAT_SUSPEND
+-					| MUSB_PORT_STAT_RESUME);
+-			musb->port1_status |= USB_PORT_STAT_C_SUSPEND << 16;
+-			usb_hcd_poll_rh_status(musb_to_hcd(musb));
+-			/* NOTE: it might really be A_WAIT_BCON ... */
+-			musb->xceiv.state = OTG_STATE_A_HOST;
+-		}
+-
+-		put_unaligned(cpu_to_le32(musb->port1_status & ~MUSB_PORT_STAT_RESUME),
+-				(__le32 *) buf);
+-
+-		/* port change status is more interesting */
+-		DBG(get_unaligned((u16*)(buf+2)) ? 2 : 5, "port status %08x\n",
+-				musb->port1_status);
+-		break;
+-	case SetPortFeature:
+-		if ((wIndex & 0xff) != 1)
+-			goto error;
+-
+-		switch (wValue) {
+-		case USB_PORT_FEAT_POWER:
+-			/* NOTE: this controller has a strange state machine
+-			 * that involves "requesting sessions" according to
+-			 * magic side effects from incompletely-described
+-			 * rules about startup...
+-			 *
+-			 * This call is what really starts the host mode; be
+-			 * very careful about side effects if you reorder any
+-			 * initialization logic, e.g. for OTG, or change any
+-			 * logic relating to VBUS power-up.
+-			 */
+-			if (!(is_otg_enabled(musb) && hcd->self.is_b_host))
+-				musb_start(musb);
+-			break;
+-		case USB_PORT_FEAT_RESET:
+-			musb_port_reset(musb, TRUE);
+-			break;
+-		case USB_PORT_FEAT_SUSPEND:
+-			musb_port_suspend(musb, TRUE);
+-			break;
+-		case USB_PORT_FEAT_TEST:
+-			if (unlikely(is_host_active(musb)))
+-				goto error;
+-
+-			wIndex >>= 8;
+-			switch (wIndex) {
+-			case 1:
+-				pr_debug("TEST_J\n");
+-				temp = MUSB_TEST_J;
+-				break;
+-			case 2:
+-				pr_debug("TEST_K\n");
+-				temp = MUSB_TEST_K;
+-				break;
+-			case 3:
+-				pr_debug("TEST_SE0_NAK\n");
+-				temp = MUSB_TEST_SE0_NAK;
+-				break;
+-			case 4:
+-				pr_debug("TEST_PACKET\n");
+-				temp = MUSB_TEST_PACKET;
+-				musb_load_testpacket(musb);
+-				break;
+-			case 5:
+-				pr_debug("TEST_FORCE_ENABLE\n");
+-				temp = MUSB_TEST_FORCE_HOST
+-					| MUSB_TEST_FORCE_HS;
+-
+-				musb_writeb(musb->mregs, MUSB_DEVCTL, MUSB_DEVCTL_SESSION);
+-				break;
+-			case 6:
+-				pr_debug("TEST_FIFO_ACCESS\n");
+-				temp = MUSB_TEST_FIFO_ACCESS;
+-				break;
+-			default:
+-				goto error;
+-			}
+-			musb_writeb(musb->mregs, MUSB_TESTMODE, temp);
+-			break;
+-		default:
+-			goto error;
+-		}
+-		DBG(5, "set feature %d\n", wValue);
+-		musb->port1_status |= 1 << wValue;
+-		break;
+-
+-	default:
+-error:
+-		/* "protocol stall" on error */
+-		retval = -EPIPE;
+-	}
+-	spin_unlock_irqrestore(&musb->lock, flags);
+-	return retval;
+-}
+Index: linux-2.6.18/mvl_patches/pro50-1776.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1776.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1776);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

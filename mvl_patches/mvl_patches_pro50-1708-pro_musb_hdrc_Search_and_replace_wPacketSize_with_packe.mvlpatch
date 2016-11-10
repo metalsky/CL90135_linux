@@ -1,0 +1,572 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Search_and_replace_wPacketSize_with_packe
+# Date: Fri Sep 19 14:10:26 2008
+# From e34a1cfd9cc28e6e37c9bdfdbd1b0216252fc4d3 Mon Sep 17 00:00:00 2001
+# From: Tony Lindgren <tony@atomide.com>
+# Date: Mon, 13 Aug 2007 05:19:18 -0700
+# Subject: [PATCH] musb_hdrc: Search and replace wPacketSize with packet_sz
+# 
+# Search and replace wPacketSize with packet_sz
+# 
+# Signed-off-by: Tony Lindgren <tony@atomide.com>
+# (cherry picked from commit a5c7363bde9227cb05ae22098b3c4a3942ecb19e)
+
+PATCHNUM=1708
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From e34a1cfd9cc28e6e37c9bdfdbd1b0216252fc4d3 Mon Sep 17 00:00:00 2001
+From: Tony Lindgren <tony@atomide.com>
+Date: Mon, 13 Aug 2007 05:19:18 -0700
+Subject: [PATCH] musb_hdrc: Search and replace wPacketSize with packet_sz
+
+Search and replace wPacketSize with packet_sz
+
+Signed-off-by: Tony Lindgren <tony@atomide.com>
+(cherry picked from commit a5c7363bde9227cb05ae22098b3c4a3942ecb19e)
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -205,7 +205,7 @@ static inline int max_ep_writesize(struc
+ 	if (can_bulk_split(musb, ep->type))
+ 		return ep->hw_ep->max_packet_sz_tx;
+ 	else
+-		return ep->wPacketSize;
++		return ep->packet_sz;
+ }
+ 
+ 
+@@ -287,7 +287,7 @@ static void txstate(struct musb *musb, s
+ 	}
+ 
+ 	DBG(4, "hw_ep%d, maxpacket %d, fifo count %d, txcsr %03x\n",
+-			epnum, musb_ep->wPacketSize, fifo_count,
++			epnum, musb_ep->packet_sz, fifo_count,
+ 			csr);
+ 
+ #ifndef	CONFIG_USB_INVENTRA_FIFO
+@@ -305,13 +305,13 @@ static void txstate(struct musb *musb, s
+ 			/* setup DMA, then program endpoint CSR */
+ 			request_size = min(request->length,
+ 						musb_ep->dma->max_len);
+-			if (request_size <= musb_ep->wPacketSize)
++			if (request_size <= musb_ep->packet_sz)
+ 				musb_ep->dma->desired_mode = 0;
+ 			else
+ 				musb_ep->dma->desired_mode = 1;
+ 
+ 			use_dma = use_dma && c->channel_program(
+-					musb_ep->dma, musb_ep->wPacketSize,
++					musb_ep->dma, musb_ep->packet_sz,
+ 					musb_ep->dma->desired_mode,
+ 					request->dma, request_size);
+ 			if (use_dma) {
+@@ -359,7 +359,7 @@ static void txstate(struct musb *musb, s
+ 		 * except for the last-packet-is-already-short case.
+ 		 */
+ 		use_dma = use_dma && c->channel_program(
+-				musb_ep->dma, musb_ep->wPacketSize,
++				musb_ep->dma, musb_ep->packet_sz,
+ 				0,
+ 				request->dma,
+ 				request->length);
+@@ -372,7 +372,7 @@ static void txstate(struct musb *musb, s
+ 		}
+ #elif defined(CONFIG_USB_TUSB_OMAP_DMA)
+ 		use_dma = use_dma && c->channel_program(
+-				musb_ep->dma, musb_ep->wPacketSize,
++				musb_ep->dma, musb_ep->packet_sz,
+ 				request->zero,
+ 				request->dma,
+ 				request->length);
+@@ -483,13 +483,13 @@ void musb_g_tx(struct musb *musb, u8 epn
+ 				if ((request->zero
+ 						&& request->length
+ 						&& (request->length
+-							% musb_ep->wPacketSize)
++							% musb_ep->packet_sz)
+ 							== 0)
+ #ifdef CONFIG_USB_INVENTRA_DMA
+ 					|| (is_dma &&
+ 						((!dma->desired_mode) ||
+ 						    (request->actual &
+-						    (musb_ep->wPacketSize - 1))))
++						    (musb_ep->packet_sz - 1))))
+ #endif
+ 				) {
+ 					/* on dma completion, fifo may not
+@@ -578,7 +578,7 @@ static void rxstate(struct musb *musb, s
+ 	struct musb_ep		*musb_ep = &musb->endpoints[epnum].ep_out;
+ 	void __iomem		*epio = musb->endpoints[epnum].regs;
+ 	u16			fifo_count = 0;
+-	u16			len = musb_ep->wPacketSize;
++	u16			len = musb_ep->packet_sz;
+ 
+ 	csr = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 
+@@ -592,7 +592,7 @@ static void rxstate(struct musb *musb, s
+ 		 * faults will be handled correctly.
+ 		 */
+ 		if (c->channel_program(channel,
+-				musb_ep->wPacketSize,
++				musb_ep->packet_sz,
+ 				!request->short_not_ok,
+ 				request->dma + request->actual,
+ 				request->length - request->actual)) {
+@@ -665,14 +665,14 @@ static void rxstate(struct musb *musb, s
+ #else
+ 					transfer_size = len;
+ #endif
+-					if (transfer_size <= musb_ep->wPacketSize)
++					if (transfer_size <= musb_ep->packet_sz)
+ 						musb_ep->dma->desired_mode = 0;
+ 					else
+ 						musb_ep->dma->desired_mode = 1;
+ 
+ 					use_dma = c->channel_program(
+ 							channel,
+-							musb_ep->wPacketSize,
++							musb_ep->packet_sz,
+ 							channel->desired_mode,
+ 							request->dma
+ 							+ request->actual,
+@@ -688,7 +688,7 @@ static void rxstate(struct musb *musb, s
+ 			DBG(3, "%s OUT/RX pio fifo %d/%d, maxpacket %d\n",
+ 					musb_ep->end_point.name,
+ 					len, fifo_count,
+-					musb_ep->wPacketSize);
++					musb_ep->packet_sz);
+ 
+ 			fifo_count = min(len, fifo_count);
+ 
+@@ -700,7 +700,7 @@ static void rxstate(struct musb *musb, s
+ 				int ret;
+ 
+ 				ret = c->channel_program(channel,
+-						musb_ep->wPacketSize,
++						musb_ep->packet_sz,
+ 						channel->desired_mode,
+ 						dma_addr,
+ 						fifo_count);
+@@ -725,7 +725,7 @@ static void rxstate(struct musb *musb, s
+ 	}
+ 
+ 	/* reach the end or short packet detected */
+-	if (request->actual == request->length || len < musb_ep->wPacketSize)
++	if (request->actual == request->length || len < musb_ep->packet_sz)
+ 		musb_g_giveback(musb_ep, request, 0);
+ }
+ 
+@@ -807,7 +807,7 @@ void musb_g_rx(struct musb *musb, u8 epn
+ 		/* Autoclear doesn't clear RxPktRdy for short packets */
+ 		if ((dma->desired_mode == 0)
+ 				|| (dma->actual_len
+-					& (musb_ep->wPacketSize - 1))) {
++					& (musb_ep->packet_sz - 1))) {
+ 			/* ack the read! */
+ 			csr &= ~MGC_M_RXCSR_RXPKTRDY;
+ 			musb_writew(epio, MGC_O_HDRC_RXCSR, csr);
+@@ -816,7 +816,7 @@ void musb_g_rx(struct musb *musb, u8 epn
+ 		/* incomplete, and not short? wait for next IN packet */
+                 if ((request->actual < request->length)
+ 				&& (musb_ep->dma->actual_len
+-					== musb_ep->wPacketSize))
++					== musb_ep->packet_sz))
+ 			goto done;
+ #endif
+ 		musb_g_giveback(musb_ep, request, 0);
+@@ -887,7 +887,7 @@ static int musb_gadget_enable(struct usb
+ 	tmp = le16_to_cpu(desc->wMaxPacketSize);
+ 	if (tmp & ~0x07ff)
+ 		goto fail;
+-	musb_ep->wPacketSize = tmp;
++	musb_ep->packet_sz = tmp;
+ 
+ 	/* enable the interrupts for the endpoint, set the endpoint
+ 	 * packet size (or fail), set the mode, clear the fifo
+@@ -983,7 +983,7 @@ static int musb_gadget_enable(struct usb
+ 			}; s; }),
+ 			musb_ep->is_in ? "IN" : "OUT",
+ 			musb_ep->dma ? "dma, " : "",
+-			musb_ep->wPacketSize);
++			musb_ep->packet_sz);
+ 
+ 	schedule_work(&musb->irq_work);
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.h
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.h
+@@ -67,7 +67,7 @@ struct musb_ep {
+ 	/* ... when enabled/disabled ... */
+ 	u8				type;
+ 	u8				is_in;
+-	u16				wPacketSize;
++	u16				packet_sz;
+ 	const struct usb_endpoint_descriptor	*desc;
+ 	struct dma_channel		*dma;
+ 
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -634,14 +634,14 @@ static void musb_ep_program(struct musb 
+ 	struct musb_hw_ep	*hw_ep = musb->endpoints + epnum;
+ 	void __iomem		*epio = hw_ep->regs;
+ 	struct musb_qh		*qh;
+-	u16			wPacketSize;
++	u16			packet_sz;
+ 
+ 	if (!is_out || hw_ep->is_shared_fifo)
+ 		qh = hw_ep->in_qh;
+ 	else
+ 		qh = hw_ep->out_qh;
+ 
+-	wPacketSize = qh->maxpacket;
++	packet_sz = qh->maxpacket;
+ 
+ 	DBG(3, "%s hw%d urb %p spd%d dev%d ep%d%s "
+ 				"h_addr%02x h_port%02x bytes %d\n",
+@@ -739,12 +739,12 @@ static void musb_ep_program(struct musb 
+ 			musb_writeb(epio, MGC_O_HDRC_TXTYPE, qh->type_reg);
+ 			if (can_bulk_split(musb, qh->type))
+ 				musb_writew(epio, MGC_O_HDRC_TXMAXP,
+-					wPacketSize
++					packet_sz
+ 					| ((hw_ep->max_packet_sz_tx /
+-						wPacketSize) - 1) << 11);
++						packet_sz) - 1) << 11);
+ 			else
+ 				musb_writew(epio, MGC_O_HDRC_TXMAXP,
+-					wPacketSize);
++					packet_sz);
+ 			musb_writeb(epio, MGC_O_HDRC_TXINTERVAL, qh->intv_reg);
+ 		} else {
+ 			musb_writeb(epio, MGC_O_HDRC_NAKLIMIT0, qh->intv_reg);
+@@ -757,7 +757,7 @@ static void musb_ep_program(struct musb 
+ 			wLoadCount = min((u32) hw_ep->max_packet_sz_tx,
+ 						dwLength);
+ 		else
+-			wLoadCount = min((u32) wPacketSize, dwLength);
++			wLoadCount = min((u32) packet_sz, dwLength);
+ 
+ #ifdef CONFIG_USB_INVENTRA_DMA
+ 		if (pDmaChannel) {
+@@ -773,7 +773,7 @@ static void musb_ep_program(struct musb 
+ 
+ 			qh->segsize = min(dwLength, pDmaChannel->max_len);
+ 
+-			if (qh->segsize <= wPacketSize)
++			if (qh->segsize <= packet_sz)
+ 				pDmaChannel->desired_mode = 0;
+ 			else
+ 				pDmaChannel->desired_mode = 1;
+@@ -792,7 +792,7 @@ static void musb_ep_program(struct musb 
+ 			musb_writew(epio, MGC_O_HDRC_TXCSR, wCsr);
+ 
+ 			bDmaOk = dma_controller->channel_program(
+-					pDmaChannel, wPacketSize,
++					pDmaChannel, packet_sz,
+ 					pDmaChannel->desired_mode,
+ 					pUrb->transfer_dma,
+ 					qh->segsize);
+@@ -831,7 +831,7 @@ static void musb_ep_program(struct musb 
+ 			 * to identify the zero-length-final-packet case.
+ 			 */
+ 			bDmaOk = dma_controller->channel_program(
+-					pDmaChannel, wPacketSize,
++					pDmaChannel, packet_sz,
+ 					(pUrb->transfer_flags
+ 							& URB_ZERO_PACKET)
+ 						== URB_ZERO_PACKET,
+@@ -916,7 +916,7 @@ static void musb_ep_program(struct musb 
+ 				 * errors, we dare not queue multiple transfers.
+ 				 */
+ 				bDmaOk = dma_controller->channel_program(
+-						pDmaChannel, wPacketSize,
++						pDmaChannel, packet_sz,
+ 						!(pUrb->transfer_flags
+ 							& URB_SHORT_NOT_OK),
+ 						pUrb->transfer_dma,
+Index: linux-2.6.18/drivers/usb/musb/musbhsdma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbhsdma.c
++++ linux-2.6.18/drivers/usb/musb/musbhsdma.c
+@@ -171,7 +171,7 @@ static void dma_channel_release(struct d
+ }
+ 
+ static void configure_channel(struct dma_channel *pChannel,
+-				u16 wPacketSize, u8 mode,
++				u16 packet_sz, u8 mode,
+ 				dma_addr_t dma_addr, u32 dwLength)
+ {
+ 	struct musb_dma_channel *pImplChannel =
+@@ -182,20 +182,20 @@ static void configure_channel(struct dma
+ 	u16 wCsr = 0;
+ 
+ 	DBG(4, "%p, pkt_sz %d, addr 0x%x, len %d, mode %d\n",
+-	    pChannel, wPacketSize, dma_addr, dwLength, mode);
++	    pChannel, packet_sz, dma_addr, dwLength, mode);
+ 
+ 	if (mode) {
+ 		wCsr |= 1 << MGC_S_HSDMA_MODE1;
+-		if (dwLength < wPacketSize) {
++		if (dwLength < packet_sz) {
+ 			return FALSE;
+ 		}
+-		if (wPacketSize >= 64) {
++		if (packet_sz >= 64) {
+ 			wCsr |=
+ 			    MGC_HSDMA_BURSTMODE_INCR16 << MGC_S_HSDMA_BURSTMODE;
+-		} else if (wPacketSize >= 32) {
++		} else if (packet_sz >= 32) {
+ 			wCsr |=
+ 			    MGC_HSDMA_BURSTMODE_INCR8 << MGC_S_HSDMA_BURSTMODE;
+-		} else if (wPacketSize >= 16) {
++		} else if (packet_sz >= 16) {
+ 			wCsr |=
+ 			    MGC_HSDMA_BURSTMODE_INCR4 << MGC_S_HSDMA_BURSTMODE;
+ 		}
+@@ -221,7 +221,7 @@ static void configure_channel(struct dma
+ }
+ 
+ static int dma_channel_program(struct dma_channel * pChannel,
+-				u16 wPacketSize, u8 mode,
++				u16 packet_sz, u8 mode,
+ 				dma_addr_t dma_addr, u32 dwLength)
+ {
+ 	struct musb_dma_channel *pImplChannel =
+@@ -230,7 +230,7 @@ static int dma_channel_program(struct dm
+ 	DBG(2, "ep%d-%s pkt_sz %d, dma_addr 0x%x length %d, mode %d\n",
+ 		pImplChannel->epnum,
+ 		pImplChannel->bTransmit ? "Tx" : "Rx",
+-		wPacketSize, dma_addr, dwLength, mode);
++		packet_sz, dma_addr, dwLength, mode);
+ 
+ 	BUG_ON(pChannel->status == MGC_DMA_STATUS_UNKNOWN ||
+ 		pChannel->status == MGC_DMA_STATUS_BUSY);
+@@ -238,14 +238,14 @@ static int dma_channel_program(struct dm
+ 	pChannel->actual_len = 0;
+ 	pImplChannel->dwStartAddress = dma_addr;
+ 	pImplChannel->len = dwLength;
+-	pImplChannel->wMaxPacketSize = wPacketSize;
++	pImplChannel->wMaxPacketSize = packet_sz;
+ 	pChannel->status = MGC_DMA_STATUS_BUSY;
+ 
+-	if ((mode == 1) && (dwLength >= wPacketSize)) {
+-		configure_channel(pChannel, wPacketSize, 1, dma_addr,
++	if ((mode == 1) && (dwLength >= packet_sz)) {
++		configure_channel(pChannel, packet_sz, 1, dma_addr,
+ 				  dwLength);
+ 	} else
+-		configure_channel(pChannel, wPacketSize, 0, dma_addr,
++		configure_channel(pChannel, packet_sz, 0, dma_addr,
+ 				  dwLength);
+ 
+ 	return TRUE;
+Index: linux-2.6.18/mvl_patches/pro50-1708.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1708.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1708);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

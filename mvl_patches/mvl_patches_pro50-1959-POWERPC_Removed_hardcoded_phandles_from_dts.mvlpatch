@@ -1,0 +1,1049 @@
+#! /usr/bin/env bash
+# Patch: -POWERPC_Removed_hardcoded_phandles_from_dts
+# Date: Wed Dec  3 14:03:56 2008
+# Source: git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+# MR: 30078
+# Type: Enhancement
+# Disposition: backport
+# Signed-off-by: Randy Vinson <rvinson@mvista.com>
+# Description:
+# Changes:
+# arch/powerpc/boot/dts/kuroboxHD.dts			no file
+# 
+# From 5c1992f83304cf2d56934dd6c06709b96e1b0c81 Mon Sep 17 00:00:00 2001
+# From: Kumar Gala <galak@kernel.crashing.org>
+# Date: Tue, 15 May 2007 16:12:27 -0500
+# Subject: [PATCH] [POWERPC] Removed hardcoded phandles from dts
+# 
+# Remove explicit phandles and move to using references that autogenerate the
+# phandles when needed.
+# 
+# Signed-off-by: Kumar Gala <galak@kernel.crashing.org>
+
+PATCHNUM=1959
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux-2.6.git
+MR: 30078
+Type: Enhancement
+Disposition: backport
+Signed-off-by: Randy Vinson <rvinson@mvista.com>
+Description:
+Changes:
+arch/powerpc/boot/dts/kuroboxHD.dts			no file
+
+From 5c1992f83304cf2d56934dd6c06709b96e1b0c81 Mon Sep 17 00:00:00 2001
+From: Kumar Gala <galak@kernel.crashing.org>
+Date: Tue, 15 May 2007 16:12:27 -0500
+Subject: [PATCH] [POWERPC] Removed hardcoded phandles from dts
+
+Remove explicit phandles and move to using references that autogenerate the
+phandles when needed.
+
+Signed-off-by: Kumar Gala <galak@kernel.crashing.org>
+Index: linux-2.6.18/arch/powerpc/boot/dts/kuroboxHG.dts
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/boot/dts/kuroboxHG.dts
++++ linux-2.6.18/arch/powerpc/boot/dts/kuroboxHG.dts
+@@ -21,7 +21,6 @@ build with: "dtc -f -I dts -O dtb -o kur
+  */
+ 
+ / {
+-	linux,phandle = <1000>;
+ 	model = "KuroboxHG";
+ 	compatible = "linkstation";
+ 	#address-cells = <1>;
+@@ -34,12 +33,10 @@ build with: "dtc -f -I dts -O dtb -o kur
+ 	};
+ 
+ 	cpus {
+-		linux,phandle = <2000>;
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;
+ 
+ 		PowerPC,603e { /* Really 8241 */
+-			linux,phandle = <2100>;
+ 			device_type = "cpu";
+ 			reg = <0>;
+ 			clock-frequency = <fdad680>;	/* Fixed by bootwrapper */
+@@ -54,13 +51,11 @@ build with: "dtc -f -I dts -O dtb -o kur
+ 	};
+ 
+ 	memory {
+-		linux,phandle = <3000>;
+ 		device_type = "memory";
+ 		reg = <00000000 08000000>;
+ 	};
+ 
+ 	soc10x { /* AFAICT need to make soc for 8245's uarts to be defined */
+-		linux,phandle = <4000>;
+ 		#address-cells = <1>;
+ 		#size-cells = <1>;
+ 		#interrupt-cells = <2>;
+@@ -75,40 +70,37 @@ build with: "dtc -f -I dts -O dtb -o kur
+ 			  fef00000 fef00000 00100000>;	/* pci iack */
+ 
+ 		i2c@80003000 {
+-			linux,phandle = <4300>;
+ 			device_type = "i2c";
+ 			compatible = "fsl-i2c";
+ 			reg = <80003000 1000>;
+ 			interrupts = <5 2>;
+-			interrupt-parent = <4400>;
++			interrupt-parent = <&mpic>;
+ 		};
+ 
+ 		serial0: serial@80004500 {
+ 			cell-index = <0>;
+-			linux,phandle = <4511>;
+ 			device_type = "serial";
+ 			compatible = "ns16550";
+ 			reg = <80004500 8>;
+ 			clock-frequency = <7c044a8>;
+ 			current-speed = <2580>;
+ 			interrupts = <9 2>;
+-			interrupt-parent = <4400>;
++			interrupt-parent = <&mpic>;
+ 		};
+ 
+ 		serial1: serial@80004600 {
+ 			cell-index = <1>;
+-			linux,phandle = <4512>;
+ 			device_type = "serial";
+ 			compatible = "ns16550";
+ 			reg = <80004600 8>;
+ 			clock-frequency = <7c044a8>;
+ 			current-speed = <e100>;
+ 			interrupts = <a 0>;
+-			interrupt-parent = <4400>;
++			interrupt-parent = <&mpic>;
+ 		};
+ 
+-		pic@80040000 {
+-			linux,phandle = <4400>;
++		mpic: pic@80040000 {
++			interrupt-parent = <&mpic>;
+ 			#interrupt-cells = <2>;
+ 			#address-cells = <0>;
+ 			device_type = "open-pic";
+@@ -119,7 +111,6 @@ build with: "dtc -f -I dts -O dtb -o kur
+ 		};
+ 
+ 		pci0: pci@fec00000 {
+-			linux,phandle = <4500>;
+ 			#address-cells = <3>;
+ 			#size-cells = <2>;
+ 			#interrupt-cells = <1>;
+@@ -130,24 +121,24 @@ build with: "dtc -f -I dts -O dtb -o kur
+ 				  02000000 0 80000000 80000000 0 70000000>;
+ 			bus-range = <0 ff>;
+ 			clock-frequency = <7f28155>;
+-			interrupt-parent = <4400>;
++			interrupt-parent = <&mpic>;
+ 			interrupt-map-mask = <f800 0 0 7>;
+ 			interrupt-map = <
+ 				/* IDSEL 0x11 - IRQ0 ETH */
+-				5800 0 0 1 4400 0 1
+-				5800 0 0 2 4400 1 1
+-				5800 0 0 3 4400 2 1
+-				5800 0 0 4 4400 3 1
++				5800 0 0 1 &mpic 0 1
++				5800 0 0 2 &mpic 1 1
++				5800 0 0 3 &mpic 2 1
++				5800 0 0 4 &mpic 3 1
+ 				/* IDSEL 0x12 - IRQ1 IDE0 */
+-				6000 0 0 1 4400 1 1
+-				6000 0 0 2 4400 2 1
+-				6000 0 0 3 4400 3 1
+-				6000 0 0 4 4400 0 1
++				6000 0 0 1 &mpic 1 1
++				6000 0 0 2 &mpic 2 1
++				6000 0 0 3 &mpic 3 1
++				6000 0 0 4 &mpic 0 1
+ 				/* IDSEL 0x14 - IRQ3 USB2.0 */
+-				7000 0 0 1 4400 3 1
+-				7000 0 0 2 4400 3 1
+-				7000 0 0 3 4400 3 1
+-				7000 0 0 4 4400 3 1
++				7000 0 0 1 &mpic 3 1
++				7000 0 0 2 &mpic 3 1
++				7000 0 0 3 &mpic 3 1
++				7000 0 0 4 &mpic 3 1
+ 			>;
+ 		};
+ 	};
+Index: linux-2.6.18/arch/powerpc/boot/dts/lite5200.dts
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/boot/dts/lite5200.dts
++++ linux-2.6.18/arch/powerpc/boot/dts/lite5200.dts
+@@ -51,13 +51,12 @@
+ 			reg = <200 38>;
+ 		};
+ 
+-		pic@500 {
++		mpc5200_pic: pic@500 {
+ 			// 5200 interrupts are encoded into two levels;
+-			linux,phandle = <500>;
+ 			interrupt-controller;
+ 			#interrupt-cells = <3>;
+ 			device_type = "interrupt-controller";
+-			compatible = "mpc5200-pic\0mpc52xx-pic";
++			compatible = "mpc5200_pic";
+ 			reg = <500 80>;
+ 			built-in;
+ 		};
+@@ -67,7 +66,7 @@
+ 			device_type = "gpt";
+ 			reg = <600 10>;
+ 			interrupts = <1 9 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@610 {	// General Purpose Timer
+@@ -75,7 +74,7 @@
+ 			device_type = "gpt";
+ 			reg = <610 10>;
+ 			interrupts = <1 a 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@620 {	// General Purpose Timer
+@@ -83,7 +82,7 @@
+ 			device_type = "gpt";
+ 			reg = <620 10>;
+ 			interrupts = <1 b 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@630 {	// General Purpose Timer
+@@ -91,7 +90,7 @@
+ 			device_type = "gpt";
+ 			reg = <630 10>;
+ 			interrupts = <1 c 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@640 {	// General Purpose Timer
+@@ -99,7 +98,7 @@
+ 			device_type = "gpt";
+ 			reg = <640 10>;
+ 			interrupts = <1 d 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@650 {	// General Purpose Timer
+@@ -107,7 +106,7 @@
+ 			device_type = "gpt";
+ 			reg = <650 10>;
+ 			interrupts = <1 e 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@660 {	// General Purpose Timer
+@@ -115,7 +114,7 @@
+ 			device_type = "gpt";
+ 			reg = <660 10>;
+ 			interrupts = <1 f 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@670 {	// General Purpose Timer
+@@ -123,7 +122,7 @@
+ 			device_type = "gpt";
+ 			reg = <670 10>;
+ 			interrupts = <1 10 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		rtc@800 {	// Real time clock
+@@ -131,14 +130,14 @@
+ 			device_type = "rtc";
+ 			reg = <800 100>;
+ 			interrupts = <1 5 0 1 6 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		mscan@900 {
+ 			device_type = "mscan";
+ 			compatible = "mpc5200-mscan\0mpc52xx-mscan";
+ 			interrupts = <2 11 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 			reg = <900 80>;
+ 		};
+ 
+@@ -146,7 +145,7 @@
+ 			device_type = "mscan";
+ 			compatible = "mpc5200-mscan\0mpc52xx-mscan";
+ 			interrupts = <1 12 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 			reg = <980 80>;
+ 		};
+ 
+@@ -154,14 +153,14 @@
+ 			compatible = "mpc5200-gpio\0mpc52xx-gpio";
+ 			reg = <b00 40>;
+ 			interrupts = <1 7 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpio-wkup@b00 {
+ 			compatible = "mpc5200-gpio-wkup\0mpc52xx-gpio-wkup";
+ 			reg = <c00 40>;
+ 			interrupts = <1 8 0 0 3 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		spi@f00 {
+@@ -169,7 +168,7 @@
+ 			compatible = "mpc5200-spi\0mpc52xx-spi";
+ 			reg = <f00 20>;
+ 			interrupts = <2 d 0 2 e 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		usb@1000 {
+@@ -177,7 +176,7 @@
+ 			compatible = "mpc5200-ohci\0mpc52xx-ohci\0ohci-be";
+ 			reg = <1000 ff>;
+ 			interrupts = <2 6 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		bestcomm@1200 {
+@@ -188,7 +187,7 @@
+ 			              3 4 0  3 5 0  3 6 0  3 7 0
+ 			              3 8 0  3 9 0  3 a 0  3 b 0
+ 			              3 c 0  3 d 0  3 e 0  3 f 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		xlb@1f00 {
+@@ -202,7 +201,7 @@
+ 			port-number = <0>;  // Logical port assignment
+ 			reg = <2000 100>;
+ 			interrupts = <2 1 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		// PSC2 in spi mode example
+@@ -211,7 +210,7 @@
+ 			compatible = "mpc5200-psc-spi\0mpc52xx-psc-spi";
+ 			reg = <2200 100>;
+ 			interrupts = <2 2 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		// PSC3 in CODEC mode example
+@@ -220,7 +219,7 @@
+ 			compatible = "mpc5200-psc-i2s\0mpc52xx-psc-i2s";
+ 			reg = <2400 100>;
+ 			interrupts = <2 3 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		// PSC4 unconfigured
+@@ -247,7 +246,7 @@
+ 			compatible = "mpc5200-psc-ac97\0mpc52xx-psc-ac97";
+ 			reg = <2c00 100>;
+ 			interrupts = <2 4 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		ethernet@3000 {
+@@ -256,7 +255,7 @@
+ 			reg = <3000 800>;
+ 			mac-address = [ 02 03 04 05 06 07 ]; // Bad!
+ 			interrupts = <2 5 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		ata@3a00 {
+@@ -264,7 +263,7 @@
+ 			compatible = "mpc5200-ata\0mpc52xx-ata";
+ 			reg = <3a00 100>;
+ 			interrupts = <2 7 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		i2c@3d00 {
+@@ -272,7 +271,7 @@
+ 			compatible = "mpc5200-i2c\0mpc52xx-i2c";
+ 			reg = <3d00 40>;
+ 			interrupts = <2 f 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		i2c@3d40 {
+@@ -280,7 +279,7 @@
+ 			compatible = "mpc5200-i2c\0mpc52xx-i2c";
+ 			reg = <3d40 40>;
+ 			interrupts = <2 10 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 		sram@8000 {
+ 			device_type = "sram";
+Index: linux-2.6.18/arch/powerpc/boot/dts/lite5200b.dts
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/boot/dts/lite5200b.dts
++++ linux-2.6.18/arch/powerpc/boot/dts/lite5200b.dts
+@@ -51,13 +51,13 @@
+ 			reg = <200 38>;
+ 		};
+ 
+-		pic@500 {
++		mpc5200_pic: pic@500 {
+ 			// 5200 interrupts are encoded into two levels;
+-			linux,phandle = <500>;
++			linux,phandle = <&mpc5200_pic>;
+ 			interrupt-controller;
+ 			#interrupt-cells = <3>;
+ 			device_type = "interrupt-controller";
+-			compatible = "mpc5200b-pic\0mpc52xx-pic";
++			compatible = "mpc5200b-pic\0mpc5200_pic";
+ 			reg = <500 80>;
+ 			built-in;
+ 		};
+@@ -67,7 +67,7 @@
+ 			device_type = "gpt";
+ 			reg = <600 10>;
+ 			interrupts = <1 9 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@610 {	// General Purpose Timer
+@@ -75,7 +75,7 @@
+ 			device_type = "gpt";
+ 			reg = <610 10>;
+ 			interrupts = <1 a 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@620 {	// General Purpose Timer
+@@ -83,7 +83,7 @@
+ 			device_type = "gpt";
+ 			reg = <620 10>;
+ 			interrupts = <1 b 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@630 {	// General Purpose Timer
+@@ -91,7 +91,7 @@
+ 			device_type = "gpt";
+ 			reg = <630 10>;
+ 			interrupts = <1 c 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@640 {	// General Purpose Timer
+@@ -99,7 +99,7 @@
+ 			device_type = "gpt";
+ 			reg = <640 10>;
+ 			interrupts = <1 d 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@650 {	// General Purpose Timer
+@@ -107,7 +107,7 @@
+ 			device_type = "gpt";
+ 			reg = <650 10>;
+ 			interrupts = <1 e 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@660 {	// General Purpose Timer
+@@ -115,7 +115,7 @@
+ 			device_type = "gpt";
+ 			reg = <660 10>;
+ 			interrupts = <1 f 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpt@670 {	// General Purpose Timer
+@@ -123,7 +123,7 @@
+ 			device_type = "gpt";
+ 			reg = <670 10>;
+ 			interrupts = <1 10 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		rtc@800 {	// Real time clock
+@@ -131,14 +131,14 @@
+ 			device_type = "rtc";
+ 			reg = <800 100>;
+ 			interrupts = <1 5 0 1 6 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		mscan@900 {
+ 			device_type = "mscan";
+ 			compatible = "mpc5200b-mscan\0mpc52xx-mscan";
+ 			interrupts = <2 11 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 			reg = <900 80>;
+ 		};
+ 
+@@ -146,7 +146,7 @@
+ 			device_type = "mscan";
+ 			compatible = "mpc5200b-mscan\0mpc52xx-mscan";
+ 			interrupts = <1 12 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 			reg = <980 80>;
+ 		};
+ 
+@@ -154,14 +154,14 @@
+ 			compatible = "mpc5200b-gpio\0mpc52xx-gpio";
+ 			reg = <b00 40>;
+ 			interrupts = <1 7 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		gpio-wkup@b00 {
+ 			compatible = "mpc5200b-gpio-wkup\0mpc52xx-gpio-wkup";
+ 			reg = <c00 40>;
+ 			interrupts = <1 8 0 0 3 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		spi@f00 {
+@@ -169,7 +169,7 @@
+ 			compatible = "mpc5200b-spi\0mpc52xx-spi";
+ 			reg = <f00 20>;
+ 			interrupts = <2 d 0 2 e 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		usb@1000 {
+@@ -177,7 +177,7 @@
+ 			compatible = "mpc5200b-ohci\0mpc52xx-ohci\0ohci-be";
+ 			reg = <1000 ff>;
+ 			interrupts = <2 6 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		bestcomm@1200 {
+@@ -188,7 +188,7 @@
+ 			              3 4 0  3 5 0  3 6 0  3 7 0
+ 			              3 8 0  3 9 0  3 a 0  3 b 0
+ 			              3 c 0  3 d 0  3 e 0  3 f 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		xlb@1f00 {
+@@ -202,7 +202,7 @@
+ 			port-number = <0>;  // Logical port assignment
+ 			reg = <2000 100>;
+ 			interrupts = <2 1 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		// PSC2 in spi mode example
+@@ -211,7 +211,7 @@
+ 			compatible = "mpc5200b-psc-spi\0mpc52xx-psc-spi";
+ 			reg = <2200 100>;
+ 			interrupts = <2 2 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		// PSC3 in CODEC mode example
+@@ -220,7 +220,7 @@
+ 			compatible = "mpc5200b-psc-i2s\0mpc52xx-psc-i2s";
+ 			reg = <2400 100>;
+ 			interrupts = <2 3 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		// PSC4 unconfigured
+@@ -229,7 +229,7 @@
+ 		//	compatible = "mpc5200b-psc-uart\0mpc52xx-psc-uart";
+ 		//	reg = <2600 100>;
+ 		//	interrupts = <2 b 0>;
+-		//	interrupt-parent = <500>;
++		//	interrupt-parent = <&mpc5200_pic>;
+ 		//};
+ 
+ 		// PSC5 unconfigured
+@@ -238,7 +238,7 @@
+ 		//	compatible = "mpc5200b-psc-uart\0mpc52xx-psc-uart";
+ 		//	reg = <2800 100>;
+ 		//	interrupts = <2 c 0>;
+-		//	interrupt-parent = <500>;
++		//	interrupt-parent = <&mpc5200_pic>;
+ 		//};
+ 
+ 		// PSC6 in AC97 mode example
+@@ -247,7 +247,7 @@
+ 			compatible = "mpc5200b-psc-ac97\0mpc52xx-psc-ac97";
+ 			reg = <2c00 100>;
+ 			interrupts = <2 4 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		ethernet@3000 {
+@@ -256,7 +256,7 @@
+ 			reg = <3000 800>;
+ 			mac-address = [ 02 03 04 05 06 07 ]; // Bad!
+ 			interrupts = <2 5 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		ata@3a00 {
+@@ -264,7 +264,7 @@
+ 			compatible = "mpc5200b-ata\0mpc52xx-ata";
+ 			reg = <3a00 100>;
+ 			interrupts = <2 7 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		i2c@3d00 {
+@@ -272,7 +272,7 @@
+ 			compatible = "mpc5200b-i2c\0mpc52xx-i2c";
+ 			reg = <3d00 40>;
+ 			interrupts = <2 f 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 
+ 		i2c@3d40 {
+@@ -280,7 +280,7 @@
+ 			compatible = "mpc5200b-i2c\0mpc52xx-i2c";
+ 			reg = <3d40 40>;
+ 			interrupts = <2 10 0>;
+-			interrupt-parent = <500>;
++			interrupt-parent = <&mpc5200_pic>;
+ 		};
+ 		sram@8000 {
+ 			device_type = "sram";
+Index: linux-2.6.18/arch/powerpc/boot/dts/mpc7448hpc2.dts
+===================================================================
+--- linux-2.6.18.orig/arch/powerpc/boot/dts/mpc7448hpc2.dts
++++ linux-2.6.18/arch/powerpc/boot/dts/mpc7448hpc2.dts
+@@ -16,12 +16,10 @@
+ 	compatible = "mpc74xx";
+ 	#address-cells = <1>;
+ 	#size-cells = <1>;
+-	linux,phandle = <100>;
+ 
+ 	cpus {
+ 		#address-cells = <1>;
+ 		#size-cells =<0>;
+-		linux,phandle = <200>;
+ 				
+ 		PowerPC,7448@0 {
+ 			device_type = "cpu";
+@@ -34,13 +32,11 @@
+ 			clock-frequency = <0>;		// From U-Boot
+ 			bus-frequency = <0>;		// From U-Boot
+ 			32-bit;
+-			linux,phandle = <201>;
+ 		};
+ 	};
+ 
+ 	memory {
+ 		device_type = "memory";
+-		linux,phandle = <300>;
+ 		reg = <00000000 20000000	// DDR2   512M at 0
+ 		       >;
+ 	};
+@@ -55,7 +51,7 @@
+ 		bus-frequency = <0>;
+ 
+ 		i2c@7000 {
+-			interrupt-parent = <7400>;
++			interrupt-parent = <&mpic>;
+ 			interrupts = <E 0>;
+ 			reg = <7000 400>;
+ 			device_type = "i2c";
+@@ -66,18 +62,16 @@
+ 			device_type = "mdio";
+ 			compatible = "tsi-ethernet";
+ 
+-			ethernet-phy@6000 {
+-				linux,phandle = <6000>;
+-				interrupt-parent = <7400>;
++			phy8: ethernet-phy@6000 {
++				interrupt-parent = <&mpic>;
+ 				interrupts = <2 1>;
+ 				reg = <6000 50>;
+ 				phy-id = <8>;
+ 				device_type = "ethernet-phy";
+ 			};
+ 
+-			ethernet-phy@6400 {
+-				linux,phandle = <6400>;
+-				interrupt-parent = <7400>;
++			phy9: ethernet-phy@6400 {
++				interrupt-parent = <&mpic>;
+ 				interrupts = <2 1>;
+ 				reg = <6000 50>;
+ 				phy-id = <9>;
+@@ -94,8 +88,8 @@
+ 			reg = <6000 200>;
+ 			address = [ 00 06 D2 00 00 01 ];
+ 			interrupts = <10 2>;
+-			interrupt-parent = <7400>;
+-			phy-handle = <6000>;
++			interrupt-parent = <&mpic>;
++			phy-handle = <&phy8>;
+ 		};
+ 
+ 		ethernet@6600 {
+@@ -107,8 +101,8 @@
+ 			reg = <6400 200>;
+ 			address = [ 00 06 D2 00 00 02 ];
+ 			interrupts = <11 2>;
+-			interrupt-parent = <7400>;
+-			phy-handle = <6400>;
++			interrupt-parent = <&mpic>;
++			phy-handle = <&phy9>;
+ 		};
+ 
+ 		serial@7808 {
+@@ -117,7 +111,7 @@
+ 			reg = <7808 200>;
+ 			clock-frequency = <3f6b5a00>;
+ 			interrupts = <c 0>;
+-			interrupt-parent = <7400>;
++			interrupt-parent = <&mpic>;
+ 		};
+ 
+ 		serial@7c08 {
+@@ -126,11 +120,10 @@
+ 			reg = <7c08 200>;
+ 			clock-frequency = <3f6b5a00>;
+ 			interrupts = <d 0>;
+-			interrupt-parent = <7400>;
++			interrupt-parent = <&mpic>;
+ 		};
+ 
+-	  	pic@7400 {
+-			linux,phandle = <7400>;
++	  	mpic: pic@7400 {
+ 			clock-frequency = <0>;
+ 			interrupt-controller;
+ 			#address-cells = <0>;
+@@ -144,7 +137,6 @@
+ 		pci@1000 {
+ 			compatible = "tsi10x";
+ 			device_type = "pci";
+-			linux,phandle = <1000>;
+ 			#interrupt-cells = <1>;
+ 			#size-cells = <2>;
+ 			#address-cells = <3>;
+@@ -153,37 +145,37 @@
+ 			ranges = <02000000 0 e0000000 e0000000 0 1A000000	
+ 				  01000000 0 00000000 fa000000 0 00010000>;
+ 			clock-frequency = <7f28154>;
+-			interrupt-parent = <7400>;
++			interrupt-parent = <&mpic>;
+ 			interrupts = <17 2>;
+ 			interrupt-map-mask = <f800 0 0 7>;
+ 			interrupt-map = <
+ 
+ 				/* IDSEL 0x11 */
+-				0800 0 0 1 1180 24 0
+-				0800 0 0 2 1180 25 0
+-				0800 0 0 3 1180 26 0
+-				0800 0 0 4 1180 27 0
++				0800 0 0 1 &RT0 24 0
++				0800 0 0 2 &RT0 25 0
++				0800 0 0 3 &RT0 26 0
++				0800 0 0 4 &RT0 27 0
+ 
+ 				/* IDSEL 0x12 */
+-				1000 0 0 1 1180 25 0
+-				1000 0 0 2 1180 26 0
+-				1000 0 0 3 1180 27 0
+-				1000 0 0 4 1180 24 0
++				1000 0 0 1 &RT0 25 0
++				1000 0 0 2 &RT0 26 0
++				1000 0 0 3 &RT0 27 0
++				1000 0 0 4 &RT0 24 0
+ 
+ 				/* IDSEL 0x13 */
+-				1800 0 0 1 1180 26 0
+-				1800 0 0 2 1180 27 0
+-				1800 0 0 3 1180 24 0
+-				1800 0 0 4 1180 25 0
++				1800 0 0 1 &RT0 26 0
++				1800 0 0 2 &RT0 27 0
++				1800 0 0 3 &RT0 24 0
++				1800 0 0 4 &RT0 25 0
+ 
+ 				/* IDSEL 0x14 */
+-				2000 0 0 1 1180 27 0
+-				2000 0 0 2 1180 24 0
+-				2000 0 0 3 1180 25 0
+-				2000 0 0 4 1180 26 0
++				2000 0 0 1 &RT0 27 0
++				2000 0 0 2 &RT0 24 0
++				2000 0 0 3 &RT0 25 0
++				2000 0 0 4 &RT0 26 0
+ 				>;
+-			router@1180 {
+-				linux,phandle = <1180>;
++
++			RT0: router@1180 {
+ 				clock-frequency = <0>;
+ 				interrupt-controller;
+ 				device_type = "pic-router";
+@@ -192,7 +184,7 @@
+ 				built-in;
+ 				big-endian;
+ 				interrupts = <17 2>;
+-				interrupt-parent = <7400>;
++				interrupt-parent = <&mpic>;
+ 			};
+ 		};
+ 	};
+Index: linux-2.6.18/mvl_patches/pro50-1959.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1959.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1959);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

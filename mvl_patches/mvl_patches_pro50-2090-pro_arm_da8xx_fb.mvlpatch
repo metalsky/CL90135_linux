@@ -1,0 +1,1593 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_da8xx_fb
+# Date: Thu Feb 19 14:59:46 2009
+# Source: MontaVista Software, Inc.
+# MR: 28760
+# Type: Enhancement
+# Disposition: local
+# Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+# Description:
+#   TI DA8xx framebuffer driver.
+# 
+#  drivers/video/Kconfig                     |   16 
+#  drivers/video/Makefile                    |    2 
+#  drivers/video/da8xx/Makefile              |    2 
+#  drivers/video/da8xx/da8xx_fb.c            |  968 ++++++++++++++++++++++++++++++
+#  drivers/video/da8xx/da8xx_fb.h            |  110 +++
+#  drivers/video/da8xx/da8xx_lcdc.h          |  111 +++
+#  drivers/video/da8xx/sharp_color.h         |   65 ++
+#  include/asm-arm/arch-davinci/da8xx_lcdc.h |   18 
+#  8 files changed, 1291 insertions(+), 1 deletion(-)
+# 
+
+PATCHNUM=2090
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.
+MR: 28760
+Type: Enhancement
+Disposition: local
+Signed-off-by: Pavel Kiryukhin <pkiryukhin@ru.mvista.com>
+Description:
+  TI DA8xx framebuffer driver.
+
+ drivers/video/Kconfig                     |   16 
+ drivers/video/Makefile                    |    2 
+ drivers/video/da8xx/Makefile              |    2 
+ drivers/video/da8xx/da8xx_fb.c            |  968 ++++++++++++++++++++++++++++++
+ drivers/video/da8xx/da8xx_fb.h            |  110 +++
+ drivers/video/da8xx/da8xx_lcdc.h          |  111 +++
+ drivers/video/da8xx/sharp_color.h         |   65 ++
+ include/asm-arm/arch-davinci/da8xx_lcdc.h |   18 
+ mvl_patches/pro50-2090.c                  |   16 
+ 9 files changed, 1307 insertions(+), 1 deletion(-)
+
+Index: linux-2.6.18/drivers/video/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/video/Kconfig
++++ linux-2.6.18/drivers/video/Kconfig
+@@ -1639,6 +1639,22 @@ config FB_DAVINCI
+ 	  hardware found on the TI DAVINCI EVM and the TI DAVINCI DM355 EVM.
+ 	  If unsure, say N.
+ 
++config FB_DA8XX
++        tristate "DA8XX Framebuffer support"
++        depends on FB && MACH_DA8XX_EVM
++	select FB_CFB_FILLRECT
++	select FB_CFB_COPYAREA
++	select FB_CFB_IMAGEBLIT
++	---help---
++          This is the frame buffer device driver for the TI LCD controller
++	  found on DA8xx EVM board.
++          If unsure, say N.
++
++config GLCD_SHARP_COLOR
++	bool "Use SHARP LQ035Q3DG01 LCD Display"
++	depends on FB_DA8XX
++	default y
++
+ if VT
+ 	source "drivers/video/console/Kconfig"
+ endif
+Index: linux-2.6.18/drivers/video/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/video/Makefile
++++ linux-2.6.18/drivers/video/Makefile
+@@ -108,6 +108,6 @@ obj-$(CONFIG_FB_VGA16)            += vga
+ obj-$(CONFIG_FB_OF)               += offb.o
+ obj-$(CONFIG_FB_OMAP)		  += omap/ cfbcopyarea.o cfbfillrect.o cfbimgblt.o
+ obj-$(CONFIG_FB_DAVINCI)          += davincifb.o cfbcopyarea.o cfbfillrect.o cfbimgblt.o
+-
++obj-$(CONFIG_FB_DA8XX)            += da8xx/
+ # the test framebuffer is last
+ obj-$(CONFIG_FB_VIRTUAL)          += vfb.o
+Index: linux-2.6.18/drivers/video/da8xx/Makefile
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/video/da8xx/Makefile
+@@ -0,0 +1,2 @@
++# Makefile for Texas Instruments DA8xx framebuffer driver.
++obj-$(CONFIG_FB_DA8XX) += da8xx_fb.o
+Index: linux-2.6.18/drivers/video/da8xx/da8xx_fb.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/video/da8xx/da8xx_fb.c
+@@ -0,0 +1,968 @@
++/*
++ * Copyright (C) 2008 MontaVista Software Inc.
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/fb.h>
++#include <linux/dma-mapping.h>
++#include <linux/device.h>
++#include <linux/platform_device.h>
++#include <asm/arch/io.h>
++#include <asm/arch/hardware.h>
++#include <asm/arch/da8xx_lcdc.h>
++#include <linux/uaccess.h>
++#include <linux/device.h>
++#include <linux/interrupt.h>
++#include <linux/clk.h>
++#include "da8xx_fb.h"
++#include "da8xx_lcdc.h"
++#ifdef CONFIG_GLCD_SHARP_COLOR
++#include "sharp_color.h"
++#endif
++#define DRIVER_NAME "da8xx_lcdc"
++
++#undef FB_DEBUG
++
++#define da8xx_fb_read(addr)		__raw_readl(da8xx_fb_reg_base + (addr))
++#define da8xx_fb_write(val, addr)	__raw_writel(val, \
++						da8xx_fb_reg_base + (addr))
++
++#define WSI_TIMEOUT 50
++
++static resource_size_t da8xx_fb_reg_base;
++static wait_queue_head_t da8xx_wq;
++
++struct da8xxfb_par {
++	resource_size_t p_regs_base;
++	resource_size_t p_screen_base;
++	resource_size_t p_palette_base;
++	unsigned char *v_screen_base;
++	unsigned char *v_palette_base;
++	unsigned long screen_size;
++	unsigned int palette_size;
++	unsigned int bpp;
++	struct clk *lcdc_clk;
++	unsigned int irq;
++	u16 pseudo_palette[16];
++};
++
++/* Variable Screen Information */
++static struct fb_var_screeninfo da8xxfb_var __devinitdata = {
++	.xoffset = 0,
++	.yoffset = 0,
++	.transp = {0, 0, 0},
++	.nonstd = 0,
++	.activate = 0,
++	.height = -1,
++	.width = -1,
++	.accel_flags = 0,
++	.left_margin = LEFT_MARGIN,
++	.right_margin = RIGHT_MARGIN,
++	.upper_margin = UPPER_MARGIN,
++	.lower_margin = LOWER_MARGIN,
++	.sync = 0,
++	.vmode = FB_VMODE_NONINTERLACED
++};
++
++static struct fb_fix_screeninfo da8xxfb_fix __devinitdata = {
++	.id = "DA8XX FB Driver",
++	.type = FB_TYPE_PACKED_PIXELS,
++	.type_aux = 0,
++	.visual = FB_VISUAL_PSEUDOCOLOR,
++	.xpanstep = 0,
++	.ypanstep = 0,
++	.ywrapstep = 0,
++	.accel = FB_ACCEL_NONE
++};
++
++static u32 g_databuf_sz;
++static u32 g_palette_sz;
++static struct fb_ops da8xx_fb_ops;
++static int lcd_wait_status_int(int int_status_mask);
++
++#ifdef FB_DEBUG
++static void lcd_show_raster_status(void)
++{
++	u32 value = da8xx_fb_read(LCD_STAT_REG);
++	if (value & LCD_FIFO_UNDERFLOW)
++		printk(KERN_ALERT "DA8XX LCD: FIFO Underflow!\n");
++	if (value & LCD_AC_BIAS_COUNT_STATUS)
++		printk(KERN_INFO "DA8XX LCD: AC Bias Count Reached\n");
++	if (value & LCD_PALETTE_LOADED)
++		printk(KERN_INFO "DA8XX LCD: Palette is Loaded\n");
++	else
++		printk(KERN_ALERT "DA8XX LCD: Palette is not Loaded!\n");
++	if (value & LCD_SYNC_LOST) {
++		printk(KERN_ALERT "DA8XX LCD: Frame Synchronization Error!\n");
++		da8xx_fb_write(da8xx_fb_read(LCD_STAT_REG) | LCD_SYNC_LOST,
++			       LCD_STAT_REG);
++	}
++}
++
++static void lcd_show_raster_interface(void)
++{
++	printk(KERN_INFO "\n");
++	printk(KERN_INFO "LCD Raster Interface Configuration\n");
++	printk(KERN_INFO "----------------------------------\n");
++	printk(KERN_INFO "LCD Control Register:    0x%x\n",
++	       da8xx_fb_read(LCD_CTRL_REG));
++	printk(KERN_INFO "Raster Control:          0x%x\n",
++	       da8xx_fb_read(LCD_RASTER_CTRL_REG));
++	printk(KERN_INFO "Timing Register 0:       0x%x\n",
++	       da8xx_fb_read(LCD_RASTER_TIMING_0_REG));
++	printk(KERN_INFO "Timing Register 1:       0x%x\n",
++	       da8xx_fb_read(LCD_RASTER_TIMING_1_REG));
++	printk(KERN_INFO "Timing Register 2:       0x%x\n",
++	       da8xx_fb_read(LCD_RASTER_TIMING_2_REG));
++	printk(KERN_INFO "Subpanel Register:       0x%x\n",
++	       da8xx_fb_read(LCD_RASTER_SUBPANEL_DISP_REG));
++	printk(KERN_INFO "DMA Control Register:    0x%x\n",
++	       da8xx_fb_read(LCD_DMA_CTRL_REG));
++	printk(KERN_INFO "DMA 0 Start Address:     0x%x\n",
++	       da8xx_fb_read(LCD_DMA_FRM_BUF_BASE_ADDR_0_REG));
++	printk(KERN_INFO "DMA 0 End Address:       0x%x\n",
++	       da8xx_fb_read(LCD_DMA_FRM_BUF_CEILING_ADDR_0_REG));
++	printk(KERN_INFO "DMA 1 Start Address:     0x%x\n",
++	       da8xx_fb_read(LCD_DMA_FRM_BUF_BASE_ADDR_1_REG));
++	printk(KERN_INFO "DMA 1 End Address:       0x%x\n",
++	       da8xx_fb_read(LCD_DMA_FRM_BUF_CEILING_ADDR_1_REG));
++	printk(KERN_INFO "\n");
++	lcd_show_raster_status();
++	printk(KERN_INFO "\n");
++}
++#endif
++
++/* Disable the Raster Engine of the LCD Controller */
++static int lcd_disable_raster(void)
++{
++	u32 reg;
++	int ret = 0;
++
++	reg = da8xx_fb_read(LCD_RASTER_CTRL_REG);
++	if (reg & LCD_RASTER_ENABLE) {
++		da8xx_fb_write(reg & ~LCD_RASTER_ENABLE, LCD_RASTER_CTRL_REG);
++		ret = lcd_wait_status_int(LCD_END_OF_FRAME0);
++	}
++	return ret;
++}
++
++static int lcd_blit(int load_mode, u32 p_buf)
++{
++	u32 reg;
++	int ret = 0;
++	u32 tmp = p_buf + g_databuf_sz - 2;
++
++	/* Update the databuf in the hw. */
++	da8xx_fb_write(p_buf, LCD_DMA_FRM_BUF_BASE_ADDR_0_REG);
++	da8xx_fb_write(tmp, LCD_DMA_FRM_BUF_CEILING_ADDR_0_REG);
++
++	/* Start the DMA. */
++	reg = da8xx_fb_read(LCD_RASTER_CTRL_REG);
++	reg &= ~(3 << 20);
++	if (load_mode == LOAD_DATA) {
++		reg |= LCD_PALETTE_LOAD_MODE(PALETTE_AND_DATA);
++		da8xx_fb_write(reg, LCD_RASTER_CTRL_REG);
++	} else if (LOAD_PALETTE == load_mode) {
++		reg |= LCD_PALETTE_LOAD_MODE(PALETTE_ONLY);
++		da8xx_fb_write(reg, LCD_RASTER_CTRL_REG);
++	}
++	return ret;
++}
++
++/* Configure the Burst Size of DMA */
++static int lcd_cfg_dma(int burst_size)
++{
++	u32 reg;
++	reg = da8xx_fb_read(LCD_DMA_CTRL_REG) & 0x00000001;
++	switch (burst_size) {
++	case 1:
++		reg |= LCD_DMA_BURST_SIZE(LCD_DMA_BURST_1);
++		break;
++	case 2:
++		reg |= LCD_DMA_BURST_SIZE(LCD_DMA_BURST_2);
++		break;
++	case 4:
++		reg |= LCD_DMA_BURST_SIZE(LCD_DMA_BURST_4);
++		break;
++	case 8:
++		reg |= LCD_DMA_BURST_SIZE(LCD_DMA_BURST_8);
++		break;
++	case 16:
++		reg |= LCD_DMA_BURST_SIZE(LCD_DMA_BURST_16);
++		break;
++	default:
++		return -EINVAL;
++#ifdef FB_DEBUG
++		printk(KERN_INFO
++		       "DA8XX LCD: Configured LCD DMA Burst Size...\n");
++#endif
++	}
++	da8xx_fb_write(reg | LCD_END_OF_FRAME_INT_ENA, LCD_DMA_CTRL_REG);
++
++	return 0;
++}
++
++static void lcd_cfg_ac_bias(int period, int transitions_per_int)
++{
++	u32 reg;
++	/* Set the AC Bias Period and Number of Transisitons per Interrupt */
++	reg = da8xx_fb_read(LCD_RASTER_TIMING_2_REG) & 0xFFF00000;
++	reg |= LCD_AC_BIAS_FREQUENCY(period) |
++	    LCD_AC_BIAS_TRANSITIONS_PER_INT(transitions_per_int);
++	da8xx_fb_write(reg, LCD_RASTER_TIMING_2_REG);
++#ifdef FB_DEBUG
++	printk(KERN_INFO "DA8XX LCD: Configured AC Bias...\n");
++#endif
++}
++
++static void lcd_cfg_horizontal_sync(int back_porch, int pulse_width,
++				    int front_porch)
++{
++	u32 reg;
++	reg = da8xx_fb_read(LCD_RASTER_TIMING_0_REG) & 0xf;
++	reg |= ((back_porch & 0xff) << 24)
++	    | ((front_porch & 0xff) << 16)
++	    | ((pulse_width & 0x3f) << 10);
++	da8xx_fb_write(reg, LCD_RASTER_TIMING_0_REG);
++#ifdef FB_DEBUG
++	printk(KERN_INFO
++	       "DA8XX LCD: Configured Horizontal Sync Properties...\n");
++#endif
++}
++
++static void lcd_cfg_vertical_sync(int back_porch, int pulse_width,
++				  int front_porch)
++{
++	u32 reg;
++	reg = da8xx_fb_read(LCD_RASTER_TIMING_1_REG) & 0x3ff;
++	reg |= ((back_porch & 0xff) << 24)
++	    | ((front_porch & 0xff) << 16)
++	    | ((pulse_width & 0x3f) << 10);
++	da8xx_fb_write(reg, LCD_RASTER_TIMING_1_REG);
++#ifdef FB_DEBUG
++	printk(KERN_INFO "DA8XX LCD: Configured Vertical Sync Properties...\n");
++#endif
++}
++
++static void lcd_cfg_display(const struct lcd_ctrl_config *cfg)
++{
++	u32 reg;
++
++	reg =
++	    da8xx_fb_read(LCD_RASTER_CTRL_REG) & ~(LCD_TFT_MODE |
++						   LCD_MONO_8BIT_MODE |
++						   LCD_MONOCHROME_MODE);
++
++	switch (cfg->p_disp_panel->panel_shade) {
++	case MONOCROME:
++		reg |= LCD_MONOCHROME_MODE;
++		if (cfg->mono_8bit_mode)
++			reg |= LCD_MONO_8BIT_MODE;
++		break;
++	case COLOR_ACTIVE:
++		reg |= LCD_TFT_MODE;
++		if (cfg->tft_alt_mode)
++			reg |= LCD_TFT_ALT_ENABLE;
++		break;
++
++	case COLOR_PASSIVE:
++		if (cfg->stn_565_mode)
++			reg |= LCD_STN_565_ENABLE;
++		break;
++
++	default:
++#ifdef FB_DEBUG
++		printk(KERN_ERR "Undefined LCD type\n");
++#endif
++		break;
++	}
++
++	da8xx_fb_write(reg, LCD_RASTER_CTRL_REG);
++
++	reg = da8xx_fb_read(LCD_RASTER_TIMING_2_REG);
++
++	if (cfg->sync_ctrl)
++		reg |= LCD_SYNC_CTRL;
++	else
++		reg &= ~LCD_SYNC_CTRL;
++
++	if (cfg->sync_edge)
++		reg |= LCD_SYNC_EDGE;
++	else
++		reg &= ~LCD_SYNC_EDGE;
++
++	if (cfg->invert_pxl_clock)
++		reg |= LCD_INVERT_PIXEL_CLOCK;
++	else
++		reg &= ~LCD_INVERT_PIXEL_CLOCK;
++
++	if (cfg->invert_line_clock)
++		reg |= LCD_INVERT_LINE_CLOCK;
++	else
++		reg &= ~LCD_INVERT_LINE_CLOCK;
++
++	if (cfg->invert_frm_clock)
++		reg |= LCD_INVERT_FRAME_CLOCK;
++	else
++		reg &= ~LCD_INVERT_FRAME_CLOCK;
++
++	da8xx_fb_write(reg, LCD_RASTER_TIMING_2_REG);
++
++#ifdef FB_DEBUG
++	printk(KERN_INFO "GLCD: Configured to Active Color...\n");
++#endif
++
++}
++
++static int lcd_cfg_frame_buffer(u32 width, u32 height, u32 bpp,
++				u32 raster_order)
++{
++	u32 reg;
++	u32 g_bpl;
++	u32 g_bpp = bpp;
++
++	/* Disable Dual Frame Buffer. */
++	reg = da8xx_fb_read(LCD_DMA_CTRL_REG);
++	da8xx_fb_write(reg & ~LCD_DUAL_FRAME_BUFFER_ENABLE, LCD_DMA_CTRL_REG);
++	/* Set the Panel Width */
++	/* Pixels per line = (PPL + 1)*16 */
++	/*0x3F in bits 4..9 gives max horisontal resolution = 1024 pixels*/
++	width &= 0x3f0;
++	reg = da8xx_fb_read(LCD_RASTER_TIMING_0_REG);
++	reg = (((width >> 4) - 1) << 4) | (reg & 0xfffffc00);
++	da8xx_fb_write(reg, LCD_RASTER_TIMING_0_REG);
++
++	/* Set the Panel Height */
++	reg = da8xx_fb_read(LCD_RASTER_TIMING_1_REG);
++	reg = ((height - 1) & 0x3ff) | (reg & 0xfffffc00);
++	da8xx_fb_write(reg, LCD_RASTER_TIMING_1_REG);
++
++	/* Set the Raster Order of the Frame Buffer */
++	reg = da8xx_fb_read(LCD_RASTER_CTRL_REG) & ~(1 << 8);
++	if (raster_order)
++		reg |= LCD_RASTER_ORDER;
++
++	switch (g_bpp) {
++	case 1:
++	case 2:
++	case 4:
++	case 16:
++		g_palette_sz = 16 * 2;
++		g_bpl = width * g_bpp / 8;
++		g_databuf_sz = height * g_bpl + g_palette_sz;
++		break;
++
++	case 8:
++		g_palette_sz = 256 * 2;
++		g_bpl = width * g_bpp / 8;
++		g_databuf_sz = height * g_bpl + g_palette_sz;
++		break;
++
++	default:
++#ifdef FB_DEBUG
++		printk(KERN_ALERT "DA8XX LCD: Unsupported BPP!\n");
++#endif
++		break;
++	}
++#ifdef FB_DEBUG
++	printk(KERN_INFO "DA8XX LCD: Configured Frame Buffer...\n");
++#endif
++
++	return 0;
++}
++
++/* Wait for Interrupt Status to appear. */
++static int lcd_wait_status_int(int int_status_mask)
++{
++	int ret;
++
++	if (int_status_mask == LCD_SYNC_LOST)
++		ret = wait_event_interruptible_timeout(da8xx_wq,
++						       da8xx_fb_read
++						       (LCD_STAT_REG) &
++						       int_status_mask,
++						       WSI_TIMEOUT);
++	else
++		ret = wait_event_interruptible_timeout(da8xx_wq,
++						       !da8xx_fb_read
++						       (LCD_STAT_REG) &
++						       int_status_mask,
++						       WSI_TIMEOUT);
++#ifdef FB_DEBUG
++	if (ret <= 0) {
++		printk(KERN_ALERT
++		       "DA8XX LCD: status wait returned %d, mask %d\n",
++		       ret, int_status_mask);
++		lcd_show_raster_status();
++	}
++#endif
++	if (ret < 0)
++		return ret;
++
++	if (ret == 0)
++		return -ETIMEDOUT;
++
++	return 0;
++}
++
++/* Palette Initialization */
++static void da8xxfb_init_palette(struct fb_info *info)
++{
++	unsigned short i, size;
++	struct da8xxfb_par *par = info->par;
++	unsigned short *palette = (unsigned short *)par->p_palette_base;
++
++	/* Palette Size */
++	size = (par->palette_size / sizeof(*palette));
++
++	/* Clear the Palette */
++	memset(palette, 0, par->palette_size);
++
++	/* Initialization of Palette for Default values */
++	for (i = 0; i < size; i++)
++		*(unsigned short *)(palette + i) = i;
++
++	/* Setup the BPP */
++	switch (par->bpp) {
++	case 1:
++		palette[0] |= (1 << 11);
++		break;
++	case 2:
++		palette[0] |= (1 << 12);
++		break;
++	case 4:
++		palette[0] |= (2 << 12);
++		break;
++	case 8:
++		palette[0] |= (3 << 12);
++		break;
++	case 16:
++		palette[0] |= (4 << 12);
++		break;
++	default:
++		printk(KERN_ALERT "DA8XX LCD: Unsupported Video BPP %d!\n",
++		       par->bpp);
++		break;
++	}
++
++	for (i = 0; i < size; i++)
++		par->pseudo_palette[i] = i;
++
++#ifdef FB_DEBUG
++	printk(KERN_INFO "GLCD: Palette initialization done successfully\n");
++#endif
++}
++
++static int da8xx_fb_setcolreg(unsigned regno, unsigned red, unsigned green,
++			      unsigned blue, unsigned transp,
++			      struct fb_info *info)
++{
++	u_short pal;
++	struct da8xxfb_par *par = info->par;
++	unsigned short *palette = (unsigned short *)par->v_palette_base;
++
++	if (regno > 255)
++		return 1;
++
++	if (info->fix.visual == FB_VISUAL_DIRECTCOLOR ||
++	    info->fix.visual == FB_VISUAL_TRUECOLOR)
++		return 1;
++
++	switch (par->bpp) {
++	case 8:
++		red >>= 8;
++		green >>= 8;
++		blue >>= 8;
++		break;
++	}
++
++	pal = (red & 0x0f00);
++	pal |= (green & 0x00f0);
++	pal |= (blue & 0x000f);
++
++	palette[regno] = pal;
++
++	return 0;
++}
++
++static void lcd_reset(void)
++{
++	/* Disable the Raster if previously Enabled */
++	if (da8xx_fb_read(LCD_RASTER_CTRL_REG) & LCD_RASTER_ENABLE) {
++#ifdef FB_DEBUG
++		printk(KERN_INFO
++		       "DA8XX LCD: Waiting for Raster Frame Done...\n");
++#endif
++		lcd_disable_raster();
++	}
++	/* DMA has to be disabled */
++	da8xx_fb_write(0, LCD_DMA_CTRL_REG);
++#ifdef FB_DEBUG
++	printk(KERN_INFO "DA8XX LCD: Raster is going for Reset now...\n");
++	lcd_show_raster_interface();
++#endif
++	da8xx_fb_write(0, LCD_RASTER_CTRL_REG);
++	/* TODO: Place the LCD block in reset */
++	/* TODO: Release it from Reset */
++#ifdef FB_DEBUG
++	printk(KERN_INFO "GLCD: LCD Controller Reset...\n");
++	lcd_show_raster_interface();
++#endif
++}
++
++static int lcd_init(const struct lcd_ctrl_config *cfg)
++{
++	u32 bpp;
++	if (da8xx_fb_read(LCD_BLK_REV_REG) != DA8XX_LCDC_REVISION)
++		return -ENOENT;
++	lcd_reset();
++	/* Configure the LCD clock divisor. */
++	da8xx_fb_write(LCD_CLK_DIVISOR(cfg->pxl_clk) | (LCD_RASTER_MODE & 0x1),
++		       LCD_CTRL_REG);
++	/* Configure the DMA burst size. */
++	lcd_cfg_dma(cfg->dma_burst_sz);
++	/* Configure the AC bias properties. */
++	lcd_cfg_ac_bias(cfg->ac_bias, cfg->ac_bias_intrpt);
++	/* Configure the vertical and horizontal sync properties. */
++	lcd_cfg_vertical_sync(cfg->vbp, cfg->vsw, cfg->vfp);
++	lcd_cfg_horizontal_sync(cfg->hbp, cfg->hsw, cfg->hfp);
++	/* Configure for disply */
++	lcd_cfg_display(cfg);
++	if (QVGA != cfg->p_disp_panel->panel_type) {
++		printk(KERN_ALERT
++		       "\nError: Only QVGA panel is currently supported !");
++		return -EINVAL;
++	}
++	if (cfg->bpp <= cfg->p_disp_panel->max_bpp &&
++	    cfg->bpp >= cfg->p_disp_panel->min_bpp)
++		bpp = cfg->bpp;
++	else
++		bpp = cfg->p_disp_panel->max_bpp;
++	if (bpp == 12)
++		bpp = 16;
++	lcd_cfg_frame_buffer((unsigned int)cfg->p_disp_panel->width,
++			     (unsigned int)cfg->p_disp_panel->height, bpp,
++			     cfg->raster_order);
++	/* Configure FDD */
++	da8xx_fb_write((da8xx_fb_read(LCD_RASTER_CTRL_REG) & 0xfff00fff) |
++		       (cfg->fdd << 12), LCD_RASTER_CTRL_REG);
++
++	return 0;
++}
++
++static irqreturn_t da8xx_lcdc_irq_handler(int irq, void *arg,
++					  struct pt_regs *regs)
++{
++
++	u32 stat = da8xx_fb_read(LCD_STAT_REG);
++	u32 reg;
++
++	if ((stat & LCD_SYNC_LOST) && (stat & LCD_FIFO_UNDERFLOW)) {
++		reg = da8xx_fb_read(LCD_RASTER_CTRL_REG);
++		da8xx_fb_write(reg & ~LCD_RASTER_ENABLE, LCD_RASTER_CTRL_REG);
++		da8xx_fb_write(stat, LCD_STAT_REG);
++		da8xx_fb_write(reg | LCD_RASTER_ENABLE, LCD_RASTER_CTRL_REG);
++	} else
++		da8xx_fb_write(stat, LCD_STAT_REG);
++
++	/*TODO: m.b. use lcd_clear_status_int((u32)int_status_mask) here*/
++	wake_up_interruptible(&da8xx_wq);
++	return IRQ_HANDLED;
++}
++
++static int da8xx_fb_check_var(struct fb_var_screeninfo *var,
++			      struct fb_info *info)
++{
++	int err = 0;
++	switch (var->bits_per_pixel) {
++	case 1:
++	case 8:
++		var->red.offset = 0;
++		var->red.length = 8;
++		var->green.offset = 0;
++		var->green.length = 8;
++		var->blue.offset = 0;
++		var->blue.length = 8;
++		var->transp.offset = 0;
++		var->transp.length = 0;
++		break;
++	case 4:
++		var->red.offset = 0;
++		var->red.length = 4;
++		var->green.offset = 0;
++		var->green.length = 4;
++		var->blue.offset = 0;
++		var->blue.length = 4;
++		var->transp.offset = 0;
++		var->transp.length = 0;
++		break;
++	case 16:		/* RGB 565 */
++		var->red.offset = 0;
++		var->red.length = 5;
++		var->green.offset = 5;
++		var->green.length = 6;
++		var->blue.offset = 11;
++		var->blue.length = 5;
++		var->transp.offset = 0;
++		var->transp.length = 0;
++		break;
++	default:
++		err = -EINVAL;
++	}
++
++	var->red.msb_right = 0;
++	var->green.msb_right = 0;
++	var->blue.msb_right = 0;
++	var->transp.msb_right = 0;
++	return err;
++}
++
++static int da8xx_fb_set_par(struct fb_info *info)
++{
++	struct fb_fix_screeninfo *fix = &info->fix;
++	struct fb_var_screeninfo *var = &info->var;
++
++	switch (var->bits_per_pixel) {
++	case 1:
++		fix->visual = FB_VISUAL_MONO01;
++		break;
++
++	case 2:
++	case 4:
++	case 8:
++		fix->visual = FB_VISUAL_PSEUDOCOLOR;
++		break;
++
++	case 16:
++		fix->visual = FB_VISUAL_TRUECOLOR;
++		break;
++	}
++
++	fix->line_length = (var->xres_virtual * var->bits_per_pixel) / 8;
++	return 0;
++}
++
++static int __devexit da8xx_fb_remove(struct platform_device *dev)
++{
++	struct fb_info *info = dev_get_drvdata(&dev->dev);
++	if (info) {
++		struct da8xxfb_par *par = info->par;
++		/*TODO: do we need this along with line below? */
++		if (da8xx_fb_read(LCD_RASTER_CTRL_REG) & LCD_RASTER_ENABLE)
++			lcd_disable_raster();
++		da8xx_fb_write(0, LCD_RASTER_CTRL_REG);
++		/* disable DMA  */
++		da8xx_fb_write(0, LCD_DMA_CTRL_REG);
++
++		unregister_framebuffer(info);
++
++		fb_dealloc_cmap(&info->cmap);
++
++		dma_free_coherent(NULL, g_databuf_sz, par->v_palette_base,
++				  par->p_palette_base);
++
++		free_irq(par->irq, NULL);
++
++		clk_disable(par->lcdc_clk);
++
++		clk_put(par->lcdc_clk);
++
++		framebuffer_release(info);
++
++	}
++	return 0;
++}
++static int __init da8xx_fb_probe(struct platform_device *device)
++{
++	struct fb_info *da8xxfb_info;
++	struct da8xxfb_par *par;
++	int ret;
++	struct resource *lcdc_regs;
++	struct da8xx_lcdc_platform_data *fb_pdata = device->dev.platform_data;
++	struct clk *fb_clk = NULL;
++
++	if (fb_pdata == NULL) {
++		dev_err(&device->dev, "Can not get platform data\n");
++		return -ENOENT;
++	}
++
++	lcdc_regs = platform_get_resource(device, IORESOURCE_MEM, 0);
++	if (!lcdc_regs) {
++		dev_err(&device->dev,
++			"Can not get memory resource for LCD controller\n");
++		return -ENOENT;
++	}
++	da8xx_fb_reg_base = IO_ADDRESS(lcdc_regs->start);
++
++	fb_clk = clk_get(&device->dev, fb_pdata->lcdc_clk_name);
++	if (IS_ERR(fb_clk)) {
++		dev_err(&device->dev, "Can not get device clock\n");
++		return -ENODEV;
++	}
++	ret = clk_enable(fb_clk);
++	if (ret)
++		goto err_clk_put;
++
++	if (lcd_init(&lcd_cfg)) {
++		dev_err(&device->dev, "lcd_init failed\n");
++		ret = -EFAULT;
++		goto err_clk_disable;
++	}
++
++	da8xxfb_info = framebuffer_alloc(sizeof(struct fb_info), &device->dev);
++	if (!da8xxfb_info) {
++		dev_dbg(device, "Memory allocation failed for fb_info\n");
++		ret = -ENOMEM;
++		goto err_clk_disable;
++	}
++
++	par = da8xxfb_info->par;
++	/* allocate frame buffer */
++	par->v_palette_base = dma_alloc_coherent(NULL, g_databuf_sz,
++						 &par->p_palette_base,
++						 GFP_KERNEL | GFP_DMA);
++
++	if (!par->v_palette_base) {
++		dev_err(&device->dev,
++			"GLCD: kmalloc for frame buffer failed\n");
++		ret = -EINVAL;
++		goto err_release_fb;
++	}
++
++	/* First g_palette_sz byte of the frame buffer is the palett */
++	par->palette_size = g_palette_sz;
++
++	/* the rest of the frame buffer is pixel data */
++	par->v_screen_base = par->v_palette_base + g_palette_sz;
++	par->p_screen_base = par->p_palette_base + g_palette_sz;
++	par->screen_size = g_databuf_sz - g_palette_sz;
++
++	par->lcdc_clk = fb_clk;
++
++	da8xxfb_fix.smem_start = (unsigned long)par->p_screen_base;
++	da8xxfb_fix.smem_len = par->screen_size;
++
++#ifdef FB_DEBUG
++	printk(KERN_INFO "GLCD: Frame Buffer Memory allocation successful\n");
++	printk(KERN_INFO "GLCD: Palette Memory allocation successful\n");
++#endif
++
++	init_waitqueue_head(&da8xx_wq);
++
++	par->irq = platform_get_irq(device, 0);
++	if (par->irq < 0) {
++		ret = -ENOENT;
++		goto err_release_fb_mem;
++	}
++
++	ret = request_irq(par->irq, da8xx_lcdc_irq_handler, 0,
++			  DRIVER_NAME, NULL);
++	if (ret)
++		goto err_free_irq;
++
++	/* Initialize par */
++	par->bpp = lcd_cfg.bpp;
++
++	da8xxfb_var.xres = lcd_cfg.p_disp_panel->width;
++	da8xxfb_var.xres_virtual = lcd_cfg.p_disp_panel->width;
++
++	da8xxfb_var.yres = lcd_cfg.p_disp_panel->height;
++	da8xxfb_var.yres_virtual = lcd_cfg.p_disp_panel->height;
++
++	da8xxfb_var.grayscale =
++	    lcd_cfg.p_disp_panel->panel_shade == MONOCROME ? 1 : 0;
++	da8xxfb_var.bits_per_pixel = lcd_cfg.bpp;
++
++	da8xxfb_var.hsync_len = lcd_cfg.hsw;
++	da8xxfb_var.vsync_len = lcd_cfg.vsw;
++
++	/* Initialize fbinfo */
++	da8xxfb_info->flags = FBINFO_FLAG_DEFAULT;
++	da8xxfb_info->screen_base = par->v_screen_base;
++	da8xxfb_info->device = &device->dev;
++	da8xxfb_info->fix = da8xxfb_fix;
++	da8xxfb_info->var = da8xxfb_var;
++	da8xxfb_info->fbops = &da8xx_fb_ops;
++	da8xxfb_info->pseudo_palette = par->pseudo_palette;
++
++	/* Initialize the Palette */
++#ifdef FB_DEBUG
++	printk(KERN_INFO "GLCD: Initializing the Palette...\n");
++#endif
++	da8xxfb_init_palette(da8xxfb_info);
++
++	ret = fb_alloc_cmap(&da8xxfb_info->cmap, PALETTE_SIZE, 0);
++	if (ret)
++		goto err_free_irq;
++
++	/* Map Video Memory */
++#ifdef FB_DEBUG
++	printk(KERN_INFO "GLCD: Mapping the Video Memory...\n");
++#endif
++
++	/* Flush the buffer to the screen. */
++	lcd_blit(LOAD_DATA, (u32) par->p_palette_base);
++
++	/* initialize var_screeninfo */
++	da8xxfb_var.activate = FB_ACTIVATE_FORCE;
++	fb_set_var(da8xxfb_info, &da8xxfb_var);
++
++	dev_set_drvdata(&device->dev, da8xxfb_info);
++	/* Register the Frame Buffer  */
++	if (register_framebuffer(da8xxfb_info) < 0) {
++		printk(KERN_ALERT "GLCD: Frame Buffer Registration Failed!\n");
++		ret = -EINVAL;
++		goto err_dealloc_cmap;
++	}
++
++	/* enable raster engine */
++	da8xx_fb_write(da8xx_fb_read(LCD_RASTER_CTRL_REG) | LCD_RASTER_ENABLE,
++		       LCD_RASTER_CTRL_REG);
++
++	return 0;
++
++err_dealloc_cmap:
++	fb_dealloc_cmap(&da8xxfb_info->cmap);
++
++err_free_irq:
++	free_irq(par->irq, NULL);
++
++err_release_fb_mem:
++	dma_free_coherent(NULL, g_databuf_sz, par->v_palette_base,
++			  par->p_palette_base);
++
++err_release_fb:
++	framebuffer_release(da8xxfb_info);
++
++err_clk_disable:
++	clk_disable(fb_clk);
++
++err_clk_put:
++	clk_put(fb_clk);
++
++	return ret;
++}
++
++static int da8xx_fb_ioctl(struct fb_info *info, unsigned int cmd,
++			  unsigned long arg)
++{
++	int val;
++	struct lcd_sync_arg sync_arg;
++#ifdef CONFIG_GLCD_SHARP_COLOR
++	struct lcd_contrast_arg contrast_arg;
++	unsigned long hal_arg = arg;
++#endif
++
++	switch (cmd) {
++	case FBIOPUT_CONTRAST:
++		val = (int)arg;
++#ifdef CONFIG_GLCD_SHARP_COLOR
++
++		if (copy_from_user
++		    (&contrast_arg, (char *)arg,
++		     sizeof(struct lcd_contrast_arg)))
++			return -EINVAL;
++		hal_arg = contrast_arg.cnt;
++		if (hal_arg < TI_GLCD_SHARP_COLOR_MIN_CONTRAST
++		    || hal_arg > TI_GLCD_SHARP_COLOR_MAX_CONTRAST)
++			return -EINVAL;
++		hal_arg = contrast_arg.cnt | (contrast_arg.is_up << 8);
++		/*TODO : implement contrast setting here */
++		return -EINVAL;
++#endif
++		break;
++	case FBIGET_BRIGHTNESS:
++	case FBIPUT_BRIGHTNESS:
++	case FBIGET_COLOR:
++	case FBIPUT_COLOR:
++		return -EINVAL;
++	case FBIPUT_HSYNC:
++		if (copy_from_user(&sync_arg, (char *)arg,
++				sizeof(struct lcd_sync_arg)))
++			return -EINVAL;
++		lcd_cfg_horizontal_sync(sync_arg.back_porch,
++					sync_arg.pulse_width,
++					sync_arg.front_porch);
++		break;
++	case FBIPUT_VSYNC:
++		if (copy_from_user(&sync_arg, (char *)arg,
++				sizeof(struct lcd_sync_arg)))
++			return -EINVAL;
++		lcd_cfg_vertical_sync(sync_arg.back_porch,
++					sync_arg.pulse_width,
++					sync_arg.front_porch);
++		break;
++	default:
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static struct fb_ops da8xx_fb_ops = {
++	.owner = THIS_MODULE,
++	.fb_check_var = da8xx_fb_check_var,
++	.fb_set_par = da8xx_fb_set_par,
++	.fb_setcolreg = da8xx_fb_setcolreg,
++	.fb_ioctl = da8xx_fb_ioctl,
++	.fb_fillrect = cfb_fillrect,
++	.fb_copyarea = cfb_copyarea,
++	.fb_imageblit = cfb_imageblit,
++};
++
++#ifdef CONFIG_PM
++static int da8xx_fb_suspend(struct platform_device *dev, pm_message_t state)
++{
++	 /*TODO*/ return -EBUSY;
++}
++static int da8xx_fb_resume(struct platform_device *dev)
++{
++	 /*TODO*/ return -EBUSY;
++}
++#else
++#define da8xx_fb_suspend NULL
++#define da8xx_fb_resume NULL
++#endif
++
++static struct platform_driver da8xx_fb_driver = {
++	.probe = da8xx_fb_probe,
++	.remove = da8xx_fb_remove,
++	.suspend = da8xx_fb_suspend,
++	.resume = da8xx_fb_resume,
++	.driver = {
++		   .name = DRIVER_NAME,
++		   .owner = THIS_MODULE,
++		   },
++};
++
++static int __init da8xxfb_init(void)
++{
++	return platform_driver_register(&da8xx_fb_driver);
++}
++
++static void __exit da8xxfb_cleanup(void)
++{
++	platform_driver_unregister(&da8xx_fb_driver);
++}
++
++module_init(da8xxfb_init);
++module_exit(da8xxfb_cleanup);
++
++MODULE_DESCRIPTION("Framebuffer driver for TI da8xx");
++MODULE_AUTHOR("MontaVista Software");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/video/da8xx/da8xx_fb.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/video/da8xx/da8xx_fb.h
+@@ -0,0 +1,110 @@
++/*
++ * Copyright (C) 2008 MontaVista Software Inc.
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#ifndef __DA8XX_FB_H__
++#define __DA8XX_FB_H__
++
++#define QVGA_HEIGHT    240
++#define QVGA_WIDTH     320
++#define PALETTE_SIZE 256
++#define LEFT_MARGIN   64
++#define RIGHT_MARGIN  64
++#define UPPER_MARGIN  32
++#define LOWER_MARGIN  32
++
++/* ioctls */
++#define FBIOGET_CONTRAST        _IOR('F', 1, int)
++#define FBIOPUT_CONTRAST        _IOW('F', 2, int)
++#define FBIGET_BRIGHTNESS       _IOR('F', 3, int)
++#define FBIPUT_BRIGHTNESS       _IOW('F', 3, int)
++#define FBIGET_COLOR       _IOR('F', 5, int)
++#define FBIPUT_COLOR       _IOW('F', 6, int)
++#define FBIOPUT_SINGLE_BUFFER	_IO('F', 7)
++#define FBIOPUT_DUAL_BUFFER     _IO('F', 8)
++#define FBIPUT_HSYNC       _IOW('F', 9, int)
++#define FBIPUT_VSYNC       _IOW('F', 10, int)
++
++enum panel_type {
++	QVGA = 0
++};
++
++enum panel_shade {
++	MONOCROME = 0,
++	COLOR_ACTIVE,
++	COLOR_PASSIVE,
++};
++
++enum raster_load_mode {
++	LOAD_DATA = 1,
++	LOAD_PALETTE,
++};
++
++struct display_panel {
++	enum panel_type panel_type; /* QVGA */
++	int         max_bpp;
++	int         min_bpp;
++	unsigned short        width;
++	unsigned short        height;
++	enum panel_shade panel_shade;
++};
++
++struct lcd_ctrl_config {
++	const struct display_panel  *p_disp_panel;
++	int             hfp;              /* Horizontal front porch */
++	int             hbp;              /* Horizontal back porch */
++	int             hsw;              /* Horizontal Sync Pulse Width */
++	int             vfp;              /* Vertical front porch */
++	int             vbp;              /* Vertical back porch */
++	int             vsw;              /* Vertical Sync Pulse Width */
++	int             ac_bias;          /* AC Bias Pin Frequency */
++	int             ac_bias_intrpt;   /* AC Bias Pin Transitions
++					     per Interrupt */
++	int             dma_burst_sz;     /* DMA burst size */
++	int             bpp;              /* Bits per pixel */
++	int             fdd;              /* FIFO DMA Request Delay */
++	int             pxl_clk;          /* Pixel clock */
++	unsigned char   tft_alt_mode;     /* TFT Alternative Signal Mapping
++					     (Only for active) */
++	unsigned char   stn_565_mode;     /* 12 Bit Per Pixel (5-6-5) Mode
++					     (Only for passive) */
++	unsigned char   mono_8bit_mode;   /* Mono 8-bit Mode: 1=D0-D7
++					     or 0=D0-D3 */
++	unsigned char   invert_pxl_clock; /* Invert pixel clock */
++	unsigned char   invert_line_clock;/* Invert line clock */
++	unsigned char   invert_frm_clock; /* Invert frame clock  */
++	unsigned char   sync_edge;        /* Horizontal and Vertical Sync Edge:
++					     0=rising 1=falling */
++	unsigned char   sync_ctrl;        /* Horizontal and Vertical Sync
++					     Control: 0=ignore */
++	unsigned char   raster_order;     /* Raster Data Order Select:
++					     1=Most-to-least 0=Least-to-most */
++};
++
++struct lcd_contrast_arg {
++	unsigned char is_up;
++	unsigned char cnt;
++};
++struct lcd_sync_arg {
++	int back_porch;
++	int front_porch;
++	int pulse_width;
++};
++
++
++#endif
+Index: linux-2.6.18/drivers/video/da8xx/da8xx_lcdc.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/video/da8xx/da8xx_lcdc.h
+@@ -0,0 +1,111 @@
++/*
++ * Copyright (C) 2008 MontaVista Software Inc.
++ * Copyright (C) 2008 Texas Instruments Inc
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option)any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#ifndef __DA8XX_LCDC_H__
++#define __DA8XX_LCDC_H__
++
++#define DA8XX_LCDC_REVISION	  0x4C100100
++
++/* LCD Status Register */
++#define LCD_END_OF_FRAME1           (1 << 9)
++#define LCD_END_OF_FRAME0           (1 << 8)
++#define LCD_PALETTE_LOADED          (1 << 6)
++#define LCD_FIFO_UNDERFLOW          (1 << 5)
++#define LCD_AC_BIAS_COUNT_STATUS    (1 << 3)
++#define LCD_SYNC_LOST               (1 << 2)
++#define LCD_FRAME_DONE              (1 << 0)
++
++/* LCD DMA Control Register */
++#define LCD_DMA_BURST_SIZE(x)       ((x) << 4)
++#define LCD_DMA_BURST_1             0x0
++#define LCD_DMA_BURST_2             0x1
++#define LCD_DMA_BURST_4             0x2
++#define LCD_DMA_BURST_8             0x3
++#define LCD_DMA_BURST_16            0x4
++#define LCD_DMA_BIG_ENDIAN          (1 << 1)
++#define LCD_END_OF_FRAME_INT_ENA    (1 << 2)
++#define LCD_DUAL_FRAME_BUFFER_ENABLE  (1 << 0)
++
++/* LCD Control Register */
++#define LCD_CLK_DIVISOR(x)          ((x) << 8)
++#define LCD_RASTER_MODE             0x01
++
++/* LCD Raster Control Register */
++#define LCD_PALETTE_LOAD_MODE(x)    ((x) << 20)
++#define PALETTE_AND_DATA	    0x00
++#define PALETTE_ONLY                0x01
++#define DATA_ONLY                   0x02
++
++#define LCD_MONO_8BIT_MODE          (1 << 9)
++#define LCD_RASTER_ORDER            (1 << 8)
++#define LCD_TFT_MODE                (1 << 7)
++#define LCD_UNDERFLOW_INT_ENA       (1 << 6)
++#define LCD_SYNC_LOST_INT_ENA       (1 << 5)
++#define LCD_LOAD_DONE_INT_ENA       (1 << 4)
++#define LCD_FRAME_DONE_INT_ENA      (1 << 3)
++#define LCD_AC_BIAS_INT_ENA         (1 << 2)
++#define LCD_MONOCHROME_MODE         (1 << 1)
++#define LCD_RASTER_ENABLE           (1 << 0)
++#define LCD_NIBBLE_MODE_ENABLE      (1 << 22)
++#define LCD_TFT_ALT_ENABLE	    (1 << 23)
++#define LCD_STN_565_ENABLE	    (1 << 24)
++
++/* LCD Interrupt Status */
++#define LCD_ALL_STATUS_INTS         (LCD_END_OF_FRAME1 | LCD_END_OF_FRAME0 | \
++				     LCD_PALETTE_LOADED | LCD_FIFO_UNDERFLOW | \
++				     LCD_AC_BIAS_COUNT_STATUS | LCD_SYNC_LOST |\
++				     LCD_FRAME_DONE)
++
++/* LCD Raster Timing 2 Register */
++#define LCD_AC_BIAS_TRANSITIONS_PER_INT(x)      ((x) << 16)
++#define LCD_AC_BIAS_FREQUENCY(x)    ((x) << 8)
++#define LCD_SYNC_CTRL               (1 << 25)
++#define LCD_SYNC_EDGE               (1 << 24)
++#define LCD_INVERT_PIXEL_CLOCK      (1 << 22)
++#define LCD_INVERT_LINE_CLOCK       (1 << 21)
++#define LCD_INVERT_FRAME_CLOCK      (1 << 20)
++
++/* System Reset Disable Control Register */
++#define LCD_RASTER_ENABLE           (1 << 0)
++#define RST_LCD                     (1 << 24)
++
++/* System Clock Disable Control Register */
++#define LCD_CLK_DSBL                (1 << 25)
++/* LCD Block */
++#define  LCD_BLK_REV_REG                      0x0
++#define  LCD_CTRL_REG                         0x4
++#define  LCD_STAT_REG                         0x8
++#define  LCD_LIDD_CTRL_REG                     0xC
++#define  LCD_LIDD_CS0_CONFIG_REG                0x10
++#define  LCD_LIDD_CS0_ADDR_REG                  0x14
++#define  LCD_LIDD_CS0_DATA_REG                  0x18
++#define  LCD_LIDD_CS1_CONFIG_REG                0x1C
++#define  LCD_LIDD_CS1_ADDR_REG                  0x20
++#define  LCD_LIDD_CS1_DATA_REG                  0x24
++#define  LCD_RASTER_CTRL_REG                    0x28
++#define  LCD_RASTER_TIMING_0_REG                0x2C
++#define  LCD_RASTER_TIMING_1_REG                0x30
++#define  LCD_RASTER_TIMING_2_REG                0x34
++#define  LCD_RASTER_SUBPANEL_DISP_REG           0x38
++#define  LCD_DMA_CTRL_REG                       0x40
++#define  LCD_DMA_FRM_BUF_BASE_ADDR_0_REG        0x44
++#define  LCD_DMA_FRM_BUF_CEILING_ADDR_0_REG     0x48
++#define  LCD_DMA_FRM_BUF_BASE_ADDR_1_REG        0x4C
++#define  LCD_DMA_FRM_BUF_CEILING_ADDR_1_REG     0x50
++#endif /*__DA8XX_LCDC_H__*/
+Index: linux-2.6.18/drivers/video/da8xx/sharp_color.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/video/da8xx/sharp_color.h
+@@ -0,0 +1,65 @@
++/*
++ *  Copyright (C) 2005 Texas Instruments, Inc.  All rights reserved.
++ *
++ *  This program is free software; you can distribute it and/or modify it
++ *  under the terms of the GNU General Public License (Version 2) as
++ *  published by the Free Software Foundation.
++ *
++ *  This program is distributed in the hope it will be useful, but WITHOUT
++ *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ *  for more details.
++ *
++ *  You should have received a copy of the GNU General Public License along
++ *  with this program; if not, write to the Free Software Foundation, Inc.,
++ *  59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
++ */
++
++/*******************************************************************************
++ * FILE PURPOSE:    Graphical LCD Configuration file
++ *******************************************************************************
++ * FILE NAME:       sharp_color.h
++ *
++ * DESCRIPTION:     Configuration file for Sharp LQ057Q3DC02 Color GLCD
++ *
++ * AUTHOR:			hai@ti.com
++ *
++ * (C) Copyright 2005, Texas Instruments, Inc
++ ******************************************************************************/
++
++#define TI_GLCD_SHARP_COLOR_MIN_CONTRAST     0
++#define TI_GLCD_SHARP_COLOR_MAX_CONTRAST    31
++
++static const struct display_panel disp_panel = {
++	QVGA,
++	16,
++	16,
++    QVGA_WIDTH,  /* width          */
++    QVGA_HEIGHT, /* height         */
++    COLOR_ACTIVE,
++};
++
++static const struct lcd_ctrl_config lcd_cfg = {
++	&disp_panel, /* p_disp_panel   */
++	.hfp			= 8,   /* hfp            */
++	.hbp			= 6,   /* hbp            */
++	.hsw			= 0,   /* hsw            */
++	.vfp			= 2,    /* vfp            */
++	.vbp			= 2,    /* vbp            */
++	.vsw			= 0,    /* vsw            */
++	.ac_bias		= 255,  /* ac bias        */
++	.ac_bias_intrpt		= 0,    /* ac bias intrpt */
++	.dma_burst_sz		= 16,   /* dma_burst_sz   */
++	.bpp			= 16,   /* bpp            */
++	.fdd			= 255,  /* fdd            */
++	.pxl_clk		= 0x1e,    /* pxl_clk        */
++	.tft_alt_mode		= 0,    /* tft_alt_mode   */
++	.stn_565_mode		= 0,    /* stn_565_mode   */
++	.mono_8bit_mode		= 0,    /* mono_8bit_mode    */
++	.invert_pxl_clock	= 1,    /* invert_pxl_clock  */
++	.invert_line_clock	= 1,    /* invert_line_clock */
++	.invert_frm_clock	= 1,    /* invert_frm_clock  */
++	.sync_edge		= 0,    /* sync_edge         */
++	.sync_ctrl		= 1,    /* sync_ctrl         */
++	.raster_order		= 0,    /* raster_order      */
++};
+Index: linux-2.6.18/include/asm-arm/arch-davinci/da8xx_lcdc.h
+===================================================================
+--- /dev/null
++++ linux-2.6.18/include/asm-arm/arch-davinci/da8xx_lcdc.h
+@@ -0,0 +1,18 @@
++/*
++ * Header file for TI DA8xx LCD controller platform data.
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++
++#ifndef DA8XX_LCDC_PLAT_H
++#define DA8XX_LCDC_PLAT_H
++
++struct da8xx_lcdc_platform_data {
++	const char *lcdc_clk_name;
++};
++
++#endif  /* ifndef DA8XX_LCDC_PLAT_H */
++
+Index: linux-2.6.18/mvl_patches/pro50-2090.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2090.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2090);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

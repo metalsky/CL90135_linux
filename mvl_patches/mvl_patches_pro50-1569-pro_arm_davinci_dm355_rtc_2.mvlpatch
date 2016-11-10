@@ -1,0 +1,481 @@
+#! /usr/bin/env bash
+# Patch: -pro_arm_davinci_dm355_rtc_2
+# Date: Fri Sep 19 14:00:15 2008
+# Source: MontaVista Software, Inc.. 
+# MR: 27818 
+# Type: Enhancement. 
+# Disposition: local. 
+# Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>. 
+# Description:. 
+#     Support for RTC in MSP430 on TI Davinci development board
+# 
+
+PATCHNUM=1569
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: MontaVista Software, Inc.. 
+MR: 27818 
+Type: Enhancement. 
+Disposition: local. 
+Signed-off-by: Aleksey Makarov <amakarov@ru.mvista.com>. 
+Description:. 
+    Support for RTC in MSP430 on TI Davinci development board
+
+Index: linux-2.6.18/drivers/rtc/rtc-davinci-dm355.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/drivers/rtc/rtc-davinci-dm355.c
+@@ -0,0 +1,191 @@
++/*
++ * rtc driver for the MSP430 chip on the TI DM355 development board
++ * Author: Aleksey Makarov, MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/rtc.h>
++#include <linux/platform_device.h>
++#include <asm/mach-types.h>
++
++#include <asm/arch/ti_msp430.h>
++
++#define NTRY 10
++
++static int
++read_rtc_1(unsigned long * value)
++{
++	int err;
++	u8 v;
++	int i;
++
++	*value = 0;
++
++	for (i = 0; i < 4; i++) {
++		err = ti_msp430_read(0x12 + i, &v);
++		if (err)
++			return err;
++
++		*value |= ((unsigned)v) << (i * 8);
++	}
++
++	return 0;
++}
++
++static int
++read_rtc(unsigned long * value)
++{
++	unsigned long value1;
++	int err;
++	int iter = 0;
++
++	err = read_rtc_1(value);
++	if (err)
++		return err;
++
++	while (1) {
++		err = read_rtc_1(&value1);
++		if (err)
++			return err;
++
++		if (*value == value1)
++			break;
++
++		if ((*value + 1) == value1) {
++			*value = value1;
++			break;
++		}
++
++		if (iter++ > NTRY)
++			return -EIO;
++
++		*value = value1;
++	}
++
++	return 0;
++}
++
++static int
++write_rtc_1(unsigned long value)
++{
++	int err;
++	int i;
++
++	for (i = 0; i < 4; i++) {
++		err = ti_msp430_write(0x12 + i, (value >> (i * 8)) & 0xff);
++		if (err)
++			return err;
++	}
++
++	return 0;
++}
++
++static int
++write_rtc(unsigned long value)
++{
++	int err;
++	unsigned long value1;
++	int iter = 0;
++
++	while (1) {
++
++		err = write_rtc_1(value);
++		if (err)
++			return err;
++
++		err = read_rtc_1(&value1);
++		if (err)
++			return err;
++
++		if (value == value1 || (value + 1) == value1)
++			break;
++
++		if (iter++ > NTRY)
++			return -EIO;
++
++	}
++
++	return 0;
++}
++
++static int
++dm355_read_time(struct device *dev, struct rtc_time *tm)
++{
++	unsigned long time;
++	int err;
++
++	err = read_rtc(&time);
++	if (err)
++		return err;
++
++	rtc_time_to_tm(time, tm);
++
++	return 0;
++}
++
++static int
++dm355_set_time(struct device *dev, struct rtc_time *tm)
++{
++	unsigned long time;
++
++	rtc_tm_to_time(tm, &time);
++
++	return write_rtc(time);
++}
++
++static struct rtc_class_ops dm355_rtc_ops = {
++	.read_time	= dm355_read_time,
++	.set_time	= dm355_set_time,
++};
++
++static int __devinit dm355_rtc_probe(struct platform_device *pdev)
++{
++	struct rtc_device	*rtc;
++
++	rtc = rtc_device_register(pdev->name, &pdev->dev,
++			&dm355_rtc_ops, THIS_MODULE);
++	if (IS_ERR(rtc))
++		return PTR_ERR(rtc);
++
++	platform_set_drvdata(pdev, rtc);
++	return 0;
++}
++
++static int __devexit dm355_rtc_remove(struct platform_device *pdev)
++{
++	rtc_device_unregister(platform_get_drvdata(pdev));
++	return 0;
++}
++
++static struct platform_driver dm355_rtc_driver = {
++	.driver = {
++		.name		= "rtc_davinci_dm355",
++	},
++	.probe		= dm355_rtc_probe,
++	.remove		= __devexit_p(dm355_rtc_remove),
++};
++
++static int dm355_rtc_init(void)
++{
++	if (!machine_is_davinci_dm355_evm())
++		return -ENODEV;
++
++	return platform_driver_register(&dm355_rtc_driver);
++}
++module_init(dm355_rtc_init);
++
++static void dm355_rtc_exit(void)
++{
++	platform_driver_unregister(&dm355_rtc_driver);
++}
++module_exit(dm355_rtc_exit);
++
++MODULE_AUTHOR("Aleksey Makarov <amakarov@ru.mvista.com>");
++MODULE_DESCRIPTION("RTC driver for TI DaVinci DM355");
++MODULE_LICENSE("GPL");
+Index: linux-2.6.18/drivers/rtc/Kconfig
+===================================================================
+--- linux-2.6.18.orig/drivers/rtc/Kconfig
++++ linux-2.6.18/drivers/rtc/Kconfig
+@@ -125,6 +125,15 @@ config RTC_DRV_DAVINCI_EVM
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called rtc-davinci-evm.
+ 
++config RTC_DRV_DAVINCI_DM355
++	tristate "TI DaVinci DM355 RTC"
++	depends on RTC_CLASS && I2C_DAVINCI && MACH_DAVINCI_DM355_EVM && TI_MSP430
++	help
++	  Supports the RTC firmware in the MSP430 on the DaVinci DM355.
++
++	  This driver can also be built as a module. If so, the module
++	  will be called rtc-davinci-dm355.
++
+ config RTC_DRV_DS1307
+ 	tristate "Dallas/Maxim DS1307 and similar I2C RTC chips"
+ 	depends on RTC_CLASS && I2C
+Index: linux-2.6.18/drivers/rtc/Makefile
+===================================================================
+--- linux-2.6.18.orig/drivers/rtc/Makefile
++++ linux-2.6.18/drivers/rtc/Makefile
+@@ -15,6 +15,7 @@ obj-$(CONFIG_RTC_DRV_CMOS)	+= rtc-cmos.o
+ obj-$(CONFIG_RTC_DRV_X1205)	+= rtc-x1205.o
+ obj-$(CONFIG_RTC_DRV_ISL1208)	+= rtc-isl1208.o
+ obj-$(CONFIG_RTC_DRV_DAVINCI_EVM) += rtc-davinci-evm.o
++obj-$(CONFIG_RTC_DRV_DAVINCI_DM355) += rtc-davinci-dm355.o
+ obj-$(CONFIG_RTC_DRV_TEST)	+= rtc-test.o
+ obj-$(CONFIG_RTC_DRV_DS1307)	+= rtc-ds1307.o
+ obj-$(CONFIG_RTC_DRV_DS1374)	+= rtc-ds1374.o
+Index: linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+===================================================================
+--- linux-2.6.18.orig/arch/arm/mach-davinci/board-dm355-evm.c
++++ linux-2.6.18/arch/arm/mach-davinci/board-dm355-evm.c
+@@ -236,6 +236,11 @@ static void setup_nand(void)
+ #define setup_nand()
+ #endif
+ 
++static struct platform_device rtc_dev = {
++	.name		= "rtc_davinci_dm355",
++	.id		= -1,
++};
++
+ #if defined(CONFIG_DM9000) || defined(CONFIG_DM9000_MODULE)
+ #define ETH_PHYS	(DAVINCI_ASYNC_EMIF_DATA_CE1_BASE + 0x00014000)
+ static struct resource dm9000_resources[] = {
+@@ -369,6 +374,7 @@ static void setup_mmc(void)
+ static struct platform_device *dm355_evm_devices[] __initdata =
+ {
+ 	&serial_device,
++	&rtc_dev,
+ #if defined(CONFIG_MTD_NAND_DAVINCI) || defined(CONFIG_MTD_NAND_DAVINCI_MODULE)
+ 	&nand_device,
+ #endif
+Index: linux-2.6.18/mvl_patches/pro50-1569.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1569.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1569);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

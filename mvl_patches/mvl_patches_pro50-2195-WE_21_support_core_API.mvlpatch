@@ -1,0 +1,509 @@
+#! /usr/bin/env bash
+# Patch: -WE_21_support_core_API
+# Date: Thu Feb 19 15:07:15 2009
+# MR: 29923
+# From: John W. Linville <linville@tuxdriver.com>
+# Date: Fri, 8 Sep 2006 20:04:05 +0000 (-0400)
+# Subject: [PATCH] WE-21 support (core API)
+# X-Git-Tag: v2.6.19-rc1~372^2~20^2~21
+# X-Git-Url: http://git.kernel.org/?p=linux%2Fkernel%2Fgit%2Ftorvalds%2Flinux-2.6.git;a=commitdiff_plain;h=baef186519c69b11cf7e48c26e75feb1e6173baa
+# 
+# [PATCH] WE-21 support (core API)
+# 
+# This is version 21 of the Wireless Extensions. Changelog :
+# 	o finishes migrating the ESSID API (remove the +1)
+# 	o netdev->get_wireless_stats is no more
+# 	o long/short retry
+# 
+# This is a redacted version of a patch originally submitted by Jean
+# Tourrilhes.  I removed most of the additions, in order to minimize
+# future support requirements for nl80211 (or other WE successor).
+# 
+# CC: Jean Tourrilhes <jt@hpl.hp.com>
+# Signed-off-by: John W. Linville <linville@tuxdriver.com>
+# 
+
+PATCHNUM=2195
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+MR: 29923
+From: John W. Linville <linville@tuxdriver.com>
+Date: Fri, 8 Sep 2006 20:04:05 +0000 (-0400)
+Subject: [PATCH] WE-21 support (core API)
+X-Git-Tag: v2.6.19-rc1~372^2~20^2~21
+X-Git-Url: http://git.kernel.org/?p=linux%2Fkernel%2Fgit%2Ftorvalds%2Flinux-2.6.git;a=commitdiff_plain;h=baef186519c69b11cf7e48c26e75feb1e6173baa
+
+[PATCH] WE-21 support (core API)
+
+This is version 21 of the Wireless Extensions. Changelog :
+	o finishes migrating the ESSID API (remove the +1)
+	o netdev->get_wireless_stats is no more
+	o long/short retry
+
+This is a redacted version of a patch originally submitted by Jean
+Tourrilhes.  I removed most of the additions, in order to minimize
+future support requirements for nl80211 (or other WE successor).
+
+CC: Jean Tourrilhes <jt@hpl.hp.com>
+Signed-off-by: John W. Linville <linville@tuxdriver.com>
+
+Index: linux-2.6.18/include/linux/netdevice.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/netdevice.h
++++ linux-2.6.18/include/linux/netdevice.h
+@@ -334,7 +334,6 @@ struct net_device
+ 
+ 
+ 	struct net_device_stats* (*get_stats)(struct net_device *dev);
+-	struct iw_statistics*	(*get_wireless_stats)(struct net_device *dev);
+ 
+ 	/* List of functions to handle Wireless Extensions (instead of ioctl).
+ 	 * See <net/iw_handler.h> for details. Jean II */
+Index: linux-2.6.18/include/linux/wireless.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/wireless.h
++++ linux-2.6.18/include/linux/wireless.h
+@@ -1,7 +1,7 @@
+ /*
+  * This file define a set of standard wireless extensions
+  *
+- * Version :	20	17.2.06
++ * Version :	21	14.3.06
+  *
+  * Authors :	Jean Tourrilhes - HPL - <jt@hpl.hp.com>
+  * Copyright (c) 1997-2006 Jean Tourrilhes, All Rights Reserved.
+@@ -69,9 +69,14 @@
+ 
+ /***************************** INCLUDES *****************************/
+ 
++/* This header is used in user-space, therefore need to be sanitised
++ * for that purpose. Those includes are usually not compatible with glibc.
++ * To know which includes to use in user-space, check iwlib.h. */
++#ifdef __KERNEL__
+ #include <linux/types.h>		/* for "caddr_t" et al		*/
+ #include <linux/socket.h>		/* for "struct sockaddr" et al	*/
+ #include <linux/if.h>			/* for IFNAMSIZ and co... */
++#endif	/* __KERNEL__ */
+ 
+ /***************************** VERSION *****************************/
+ /*
+@@ -80,7 +85,7 @@
+  * (there is some stuff that will be added in the future...)
+  * I just plan to increment with each new version.
+  */
+-#define WIRELESS_EXT	20
++#define WIRELESS_EXT	21
+ 
+ /*
+  * Changes :
+@@ -208,6 +213,14 @@
+  * V19 to V20
+  * ----------
+  *	- RtNetlink requests support (SET/GET)
++ *
++ * V20 to V21
++ * ----------
++ *	- Remove (struct net_device *)->get_wireless_stats()
++ *	- Change length in ESSID and NICK to strlen() instead of strlen()+1
++ *	- Add IW_RETRY_SHORT/IW_RETRY_LONG retry modifiers
++ *	- Power/Retry relative values no longer * 100000
++ *	- Add explicit flag to tell stats are in 802.11k RCPI : IW_QUAL_RCPI
+  */
+ 
+ /**************************** CONSTANTS ****************************/
+@@ -448,6 +461,7 @@
+ #define IW_QUAL_QUAL_INVALID	0x10	/* Driver doesn't provide value */
+ #define IW_QUAL_LEVEL_INVALID	0x20
+ #define IW_QUAL_NOISE_INVALID	0x40
++#define IW_QUAL_RCPI		0x80	/* Level + Noise are 802.11k RCPI */
+ #define IW_QUAL_ALL_INVALID	0x70
+ 
+ /* Frequency flags */
+@@ -500,10 +514,12 @@
+ #define IW_RETRY_TYPE		0xF000	/* Type of parameter */
+ #define IW_RETRY_LIMIT		0x1000	/* Maximum number of retries*/
+ #define IW_RETRY_LIFETIME	0x2000	/* Maximum duration of retries in us */
+-#define IW_RETRY_MODIFIER	0x000F	/* Modify a parameter */
++#define IW_RETRY_MODIFIER	0x00FF	/* Modify a parameter */
+ #define IW_RETRY_MIN		0x0001	/* Value is a minimum  */
+ #define IW_RETRY_MAX		0x0002	/* Value is a maximum */
+ #define IW_RETRY_RELATIVE	0x0004	/* Value is not in seconds/ms/us */
++#define IW_RETRY_SHORT		0x0010	/* Value is for short packets  */
++#define IW_RETRY_LONG		0x0020	/* Value is for long packets */
+ 
+ /* Scanning request flags */
+ #define IW_SCAN_DEFAULT		0x0000	/* Default scan of the driver */
+@@ -1017,7 +1033,7 @@ struct	iw_range
+ 	/* Note : this frequency list doesn't need to fit channel numbers,
+ 	 * because each entry contain its channel index */
+ 
+-	__u32		enc_capa; /* IW_ENC_CAPA_* bit field */
++	__u32		enc_capa;	/* IW_ENC_CAPA_* bit field */
+ };
+ 
+ /*
+Index: linux-2.6.18/net/core/net-sysfs.c
+===================================================================
+--- linux-2.6.18.orig/net/core/net-sysfs.c
++++ linux-2.6.18/net/core/net-sysfs.c
+@@ -344,8 +344,6 @@ static ssize_t wireless_show(struct clas
+ 		if(dev->wireless_handlers &&
+ 		   dev->wireless_handlers->get_wireless_stats)
+ 			iw = dev->wireless_handlers->get_wireless_stats(dev);
+-		else if (dev->get_wireless_stats)
+-			iw = dev->get_wireless_stats(dev);
+ 		if (iw != NULL)
+ 			ret = (*format)(iw, buf);
+ 	}
+@@ -465,8 +463,7 @@ int netdev_register_sysfs(struct net_dev
+ 		*groups++ = &netstat_group;
+ 
+ #ifdef WIRELESS_EXT
+-	if (net->get_wireless_stats
+-	    || (net->wireless_handlers && net->wireless_handlers->get_wireless_stats))
++	if (net->wireless_handlers && net->wireless_handlers->get_wireless_stats)
+ 		*groups++ = &wireless_group;
+ #endif
+ 
+Index: linux-2.6.18/net/core/wireless.c
+===================================================================
+--- linux-2.6.18.orig/net/core/wireless.c
++++ linux-2.6.18/net/core/wireless.c
+@@ -68,6 +68,14 @@
+  *
+  * v8 - 17.02.06 - Jean II
+  *	o RtNetlink requests support (SET/GET)
++ *
++ * v8b - 03.08.06 - Herbert Xu
++ *	o Fix Wireless Event locking issues.
++ *
++ * v9 - 14.3.06 - Jean II
++ *	o Change length in ESSID and NICK to strlen() instead of strlen()+1
++ *	o Make standard_ioctl_num and standard_event_num unsigned
++ *	o Remove (struct net_device *)->get_wireless_stats()
+  */
+ 
+ /***************************** INCLUDES *****************************/
+@@ -234,24 +242,24 @@ static const struct iw_ioctl_description
+ 	[SIOCSIWESSID	- SIOCIWFIRST] = {
+ 		.header_type	= IW_HEADER_TYPE_POINT,
+ 		.token_size	= 1,
+-		.max_tokens	= IW_ESSID_MAX_SIZE + 1,
++		.max_tokens	= IW_ESSID_MAX_SIZE,
+ 		.flags		= IW_DESCR_FLAG_EVENT,
+ 	},
+ 	[SIOCGIWESSID	- SIOCIWFIRST] = {
+ 		.header_type	= IW_HEADER_TYPE_POINT,
+ 		.token_size	= 1,
+-		.max_tokens	= IW_ESSID_MAX_SIZE + 1,
++		.max_tokens	= IW_ESSID_MAX_SIZE,
+ 		.flags		= IW_DESCR_FLAG_DUMP,
+ 	},
+ 	[SIOCSIWNICKN	- SIOCIWFIRST] = {
+ 		.header_type	= IW_HEADER_TYPE_POINT,
+ 		.token_size	= 1,
+-		.max_tokens	= IW_ESSID_MAX_SIZE + 1,
++		.max_tokens	= IW_ESSID_MAX_SIZE,
+ 	},
+ 	[SIOCGIWNICKN	- SIOCIWFIRST] = {
+ 		.header_type	= IW_HEADER_TYPE_POINT,
+ 		.token_size	= 1,
+-		.max_tokens	= IW_ESSID_MAX_SIZE + 1,
++		.max_tokens	= IW_ESSID_MAX_SIZE,
+ 	},
+ 	[SIOCSIWRATE	- SIOCIWFIRST] = {
+ 		.header_type	= IW_HEADER_TYPE_PARAM,
+@@ -338,8 +346,8 @@ static const struct iw_ioctl_description
+ 		.max_tokens	= sizeof(struct iw_pmksa),
+ 	},
+ };
+-static const int standard_ioctl_num = (sizeof(standard_ioctl) /
+-				       sizeof(struct iw_ioctl_description));
++static const unsigned standard_ioctl_num = (sizeof(standard_ioctl) /
++					    sizeof(struct iw_ioctl_description));
+ 
+ /*
+  * Meta-data about all the additional standard Wireless Extension events
+@@ -389,8 +397,8 @@ static const struct iw_ioctl_description
+ 		.max_tokens	= sizeof(struct iw_pmkid_cand),
+ 	},
+ };
+-static const int standard_event_num = (sizeof(standard_event) /
+-				       sizeof(struct iw_ioctl_description));
++static const unsigned standard_event_num = (sizeof(standard_event) /
++					    sizeof(struct iw_ioctl_description));
+ 
+ /* Size (in bytes) of the various private data types */
+ static const char iw_priv_type_size[] = {
+@@ -465,17 +473,6 @@ static inline struct iw_statistics *get_
+ 	   (dev->wireless_handlers->get_wireless_stats != NULL))
+ 		return dev->wireless_handlers->get_wireless_stats(dev);
+ 
+-	/* Old location, field to be removed in next WE */
+-	if(dev->get_wireless_stats) {
+-		static int printed_message;
+-
+-		if (!printed_message++)
+-			printk(KERN_DEBUG "%s (WE) : Driver using old /proc/net/wireless support, please fix driver !\n",
+-				dev->name);
+-
+-		return dev->get_wireless_stats(dev);
+-	}
+-
+ 	/* Not found */
+ 	return (struct iw_statistics *) NULL;
+ }
+@@ -1843,8 +1840,33 @@ int wireless_rtnetlink_set(struct net_de
+  */
+ 
+ #ifdef WE_EVENT_RTNETLINK
++/* ---------------------------------------------------------------- */
++/*
++ * Locking...
++ * ----------
++ *
++ * Thanks to Herbert Xu <herbert@gondor.apana.org.au> for fixing
++ * the locking issue in here and implementing this code !
++ *
++ * The issue : wireless_send_event() is often called in interrupt context,
++ * while the Netlink layer can never be called in interrupt context.
++ * The fully formed RtNetlink events are queued, and then a tasklet is run
++ * to feed those to Netlink.
++ * The skb_queue is interrupt safe, and its lock is not held while calling
++ * Netlink, so there is no possibility of dealock.
++ * Jean II
++ */
++
+ static struct sk_buff_head wireless_nlevent_queue;
+ 
++static int __init wireless_nlevent_init(void)
++{
++	skb_queue_head_init(&wireless_nlevent_queue);
++	return 0;
++}
++
++subsys_initcall(wireless_nlevent_init);
++
+ static void wireless_nlevent_process(unsigned long data)
+ {
+ 	struct sk_buff *skb;
+@@ -1921,13 +1943,6 @@ static inline void rtmsg_iwinfo(struct n
+ 	tasklet_schedule(&wireless_nlevent_tasklet);
+ }
+ 
+-static int __init wireless_nlevent_init(void)
+-{
+-	skb_queue_head_init(&wireless_nlevent_queue);
+-	return 0;
+-}
+-
+-subsys_initcall(wireless_nlevent_init);
+ #endif	/* WE_EVENT_RTNETLINK */
+ 
+ /* ---------------------------------------------------------------- */
+Index: linux-2.6.18/mvl_patches/pro50-2195.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2195.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2195);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,1394 @@
+#! /usr/bin/env bash
+# Patch: -dmaengine_refactor_dmaengine_around_dma_async_tx_descriptor
+# Date: Wed Dec 10 13:43:35 2008
+# Source: kernel.org
+# MR: 30590
+# Type: Enhancement
+# Disposition: backport from 2.6.23-rc1 (7405f74badf46b5d023c5d2b670b4471525f6c91)
+# Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+# Description:
+# 
+# commit 7405f74badf46b5d023c5d2b670b4471525f6c91
+# Author: Dan Williams <dan.j.williams@intel.com>
+# Date:   Tue Jan 2 11:10:43 2007 -0700
+# 
+#     dmaengine: refactor dmaengine around dma_async_tx_descriptor
+#     
+#     The current dmaengine interface defines mutliple routines per operation,
+#     i.e. dma_async_memcpy_buf_to_buf, dma_async_memcpy_buf_to_page etc.  Adding
+#     more operation types (xor, crc, etc) to this model would result in an
+#     unmanageable number of method permutations.
+#     
+#     	Are we really going to add a set of hooks for each DMA engine
+#     	whizbang feature?
+#     		- Jeff Garzik
+#     
+#     The descriptor creation process is refactored using the new common
+#     dma_async_tx_descriptor structure.  Instead of per driver
+#     do_<operation>_<dest>_to_<src> methods, drivers integrate
+#     dma_async_tx_descriptor into their private software descriptor and then
+#     define a 'prep' routine per operation.  The prep routine allocates a
+#     descriptor and ensures that the tx_set_src, tx_set_dest, tx_submit routines
+#     are valid.  Descriptor creation and submission becomes:
+#     
+#     struct dma_device *dev;
+#     struct dma_chan *chan;
+#     struct dma_async_tx_descriptor *tx;
+#     
+#     tx = dev->device_prep_dma_<operation>(chan, len, int_flag)
+#     tx->tx_set_src(dma_addr_t, tx, index /* for multi-source ops */)
+#     tx->tx_set_dest(dma_addr_t, tx, index)
+#     tx->tx_submit(tx)
+#     
+#     In addition to the refactoring, dma_async_tx_descriptor also lays the
+#     groundwork for definining cross-channel-operation dependencies, and a
+#     callback facility for asynchronous notification of operation completion.
+#     
+#     Changelog:
+#     * drop dma mapping methods, suggested by Chris Leech
+#     * fix ioat_dma_dependency_added, also caught by Andrew Morton
+#     * fix dma_sync_wait, change from Andrew Morton
+#     * uninline large functions, change from Andrew Morton
+#     * add tx->callback = NULL to dmaengine calls to interoperate with async_tx
+#       calls
+#     * hookup ioat_tx_submit
+#     * convert channel capabilities to a 'cpumask_t like' bitmap
+#     * removed DMA_TX_ARRAY_INIT, no longer needed
+#     * checkpatch.pl fixes
+#     * make set_src, set_dest, and tx_submit descriptor specific methods
+#     * fixup git-ioat merge
+#     * move group_list and phys to dma_async_tx_descriptor
+#     
+#     Cc: Jeff Garzik <jeff@garzik.org>
+#     Cc: Chris Leech <christopher.leech@intel.com>
+#     Signed-off-by: Shannon Nelson <shannon.nelson@intel.com>
+#     Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+#     Acked-by: David S. Miller <davem@davemloft.net>
+# 
+#  drivers/dma/dmaengine.c   |  182 ++++++++++++++++++++++++++++
+#  drivers/dma/ioatdma.c     |  295 +++++++++++++++++++++------------------------
+#  drivers/dma/ioatdma.h     |   13 +-
+#  include/linux/dmaengine.h |  237 +++++++++++++++++++++++-------------
+#  4 files changed, 474 insertions(+), 253 deletions(-)
+# 
+# 
+
+PATCHNUM=1995
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 30590
+Type: Enhancement
+Disposition: backport from 2.6.23-rc1 (7405f74badf46b5d023c5d2b670b4471525f6c91)
+Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+Description:
+
+commit 7405f74badf46b5d023c5d2b670b4471525f6c91
+Author: Dan Williams <dan.j.williams@intel.com>
+Date:   Tue Jan 2 11:10:43 2007 -0700
+
+    dmaengine: refactor dmaengine around dma_async_tx_descriptor
+    
+    The current dmaengine interface defines mutliple routines per operation,
+    i.e. dma_async_memcpy_buf_to_buf, dma_async_memcpy_buf_to_page etc.  Adding
+    more operation types (xor, crc, etc) to this model would result in an
+    unmanageable number of method permutations.
+    
+    	Are we really going to add a set of hooks for each DMA engine
+    	whizbang feature?
+    		- Jeff Garzik
+    
+    The descriptor creation process is refactored using the new common
+    dma_async_tx_descriptor structure.  Instead of per driver
+    do_<operation>_<dest>_to_<src> methods, drivers integrate
+    dma_async_tx_descriptor into their private software descriptor and then
+    define a 'prep' routine per operation.  The prep routine allocates a
+    descriptor and ensures that the tx_set_src, tx_set_dest, tx_submit routines
+    are valid.  Descriptor creation and submission becomes:
+    
+    struct dma_device *dev;
+    struct dma_chan *chan;
+    struct dma_async_tx_descriptor *tx;
+    
+    tx = dev->device_prep_dma_<operation>(chan, len, int_flag)
+    tx->tx_set_src(dma_addr_t, tx, index /* for multi-source ops */)
+    tx->tx_set_dest(dma_addr_t, tx, index)
+    tx->tx_submit(tx)
+    
+    In addition to the refactoring, dma_async_tx_descriptor also lays the
+    groundwork for definining cross-channel-operation dependencies, and a
+    callback facility for asynchronous notification of operation completion.
+    
+    Changelog:
+    * drop dma mapping methods, suggested by Chris Leech
+    * fix ioat_dma_dependency_added, also caught by Andrew Morton
+    * fix dma_sync_wait, change from Andrew Morton
+    * uninline large functions, change from Andrew Morton
+    * add tx->callback = NULL to dmaengine calls to interoperate with async_tx
+      calls
+    * hookup ioat_tx_submit
+    * convert channel capabilities to a 'cpumask_t like' bitmap
+    * removed DMA_TX_ARRAY_INIT, no longer needed
+    * checkpatch.pl fixes
+    * make set_src, set_dest, and tx_submit descriptor specific methods
+    * fixup git-ioat merge
+    * move group_list and phys to dma_async_tx_descriptor
+    
+    Cc: Jeff Garzik <jeff@garzik.org>
+    Cc: Chris Leech <christopher.leech@intel.com>
+    Signed-off-by: Shannon Nelson <shannon.nelson@intel.com>
+    Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+    Acked-by: David S. Miller <davem@davemloft.net>
+
+ drivers/dma/dmaengine.c   |  182 ++++++++++++++++++++++++++++
+ drivers/dma/ioatdma.c     |  297 +++++++++++++++++++++-------------------------
+ drivers/dma/ioatdma.h     |   13 --
+ include/linux/dmaengine.h |  237 +++++++++++++++++++++++-------------
+ mvl_patches/pro50-1995.c  |   16 ++
+ 5 files changed, 491 insertions(+), 254 deletions(-)
+
+
+Index: linux-2.6.18/drivers/dma/dmaengine.c
+===================================================================
+--- linux-2.6.18.orig/drivers/dma/dmaengine.c
++++ linux-2.6.18/drivers/dma/dmaengine.c
+@@ -59,6 +59,7 @@
+ 
+ #include <linux/init.h>
+ #include <linux/module.h>
++#include <linux/mm.h>
+ #include <linux/device.h>
+ #include <linux/dmaengine.h>
+ #include <linux/hardirq.h>
+@@ -66,6 +67,7 @@
+ #include <linux/percpu.h>
+ #include <linux/rcupdate.h>
+ #include <linux/mutex.h>
++#include <linux/jiffies.h>
+ 
+ static DEFINE_MUTEX(dma_list_mutex);
+ static LIST_HEAD(dma_device_list);
+@@ -165,6 +167,24 @@ static struct dma_chan *dma_client_chan_
+ 	return NULL;
+ }
+ 
++enum dma_status dma_sync_wait(struct dma_chan *chan, dma_cookie_t cookie)
++{
++	enum dma_status status;
++	unsigned long dma_sync_wait_timeout = jiffies + msecs_to_jiffies(5000);
++
++	dma_async_issue_pending(chan);
++	do {
++		status = dma_async_is_tx_complete(chan, cookie, NULL, NULL);
++		if (time_after_eq(jiffies, dma_sync_wait_timeout)) {
++			printk(KERN_ERR "dma_sync_wait_timeout!\n");
++			return DMA_ERROR;
++		}
++	} while (status == DMA_IN_PROGRESS);
++
++	return status;
++}
++EXPORT_SYMBOL(dma_sync_wait);
++
+ /**
+  * dma_chan_cleanup - release a DMA channel's resources
+  * @kref: kernel reference structure that contains the DMA channel device
+@@ -322,6 +342,25 @@ int dma_async_device_register(struct dma
+ 	if (!device)
+ 		return -ENODEV;
+ 
++	/* validate device routines */
++	BUG_ON(dma_has_cap(DMA_MEMCPY, device->cap_mask) &&
++		!device->device_prep_dma_memcpy);
++	BUG_ON(dma_has_cap(DMA_XOR, device->cap_mask) &&
++		!device->device_prep_dma_xor);
++	BUG_ON(dma_has_cap(DMA_ZERO_SUM, device->cap_mask) &&
++		!device->device_prep_dma_zero_sum);
++	BUG_ON(dma_has_cap(DMA_MEMSET, device->cap_mask) &&
++		!device->device_prep_dma_memset);
++	BUG_ON(dma_has_cap(DMA_ZERO_SUM, device->cap_mask) &&
++		!device->device_prep_dma_interrupt);
++
++	BUG_ON(!device->device_alloc_chan_resources);
++	BUG_ON(!device->device_free_chan_resources);
++	BUG_ON(!device->device_dependency_added);
++	BUG_ON(!device->device_is_tx_complete);
++	BUG_ON(!device->device_issue_pending);
++	BUG_ON(!device->dev);
++
+ 	init_completion(&device->done);
+ 	kref_init(&device->refcount);
+ 	device->dev_id = id++;
+@@ -397,6 +436,149 @@ void dma_async_device_unregister(struct 
+ }
+ EXPORT_SYMBOL(dma_async_device_unregister);
+ 
++/**
++ * dma_async_memcpy_buf_to_buf - offloaded copy between virtual addresses
++ * @chan: DMA channel to offload copy to
++ * @dest: destination address (virtual)
++ * @src: source address (virtual)
++ * @len: length
++ *
++ * Both @dest and @src must be mappable to a bus address according to the
++ * DMA mapping API rules for streaming mappings.
++ * Both @dest and @src must stay memory resident (kernel memory or locked
++ * user space pages).
++ */
++dma_cookie_t
++dma_async_memcpy_buf_to_buf(struct dma_chan *chan, void *dest,
++			void *src, size_t len)
++{
++	struct dma_device *dev = chan->device;
++	struct dma_async_tx_descriptor *tx;
++	dma_addr_t addr;
++	dma_cookie_t cookie;
++	int cpu;
++
++	tx = dev->device_prep_dma_memcpy(chan, len, 0);
++	if (!tx)
++		return -ENOMEM;
++
++	tx->ack = 1;
++	tx->callback = NULL;
++	addr = dma_map_single(dev->dev, src, len, DMA_TO_DEVICE);
++	tx->tx_set_src(addr, tx, 0);
++	addr = dma_map_single(dev->dev, dest, len, DMA_FROM_DEVICE);
++	tx->tx_set_dest(addr, tx, 0);
++	cookie = tx->tx_submit(tx);
++
++	cpu = get_cpu();
++	per_cpu_ptr(chan->local, cpu)->bytes_transferred += len;
++	per_cpu_ptr(chan->local, cpu)->memcpy_count++;
++	put_cpu();
++
++	return cookie;
++}
++EXPORT_SYMBOL(dma_async_memcpy_buf_to_buf);
++
++/**
++ * dma_async_memcpy_buf_to_pg - offloaded copy from address to page
++ * @chan: DMA channel to offload copy to
++ * @page: destination page
++ * @offset: offset in page to copy to
++ * @kdata: source address (virtual)
++ * @len: length
++ *
++ * Both @page/@offset and @kdata must be mappable to a bus address according
++ * to the DMA mapping API rules for streaming mappings.
++ * Both @page/@offset and @kdata must stay memory resident (kernel memory or
++ * locked user space pages)
++ */
++dma_cookie_t
++dma_async_memcpy_buf_to_pg(struct dma_chan *chan, struct page *page,
++			unsigned int offset, void *kdata, size_t len)
++{
++	struct dma_device *dev = chan->device;
++	struct dma_async_tx_descriptor *tx;
++	dma_addr_t addr;
++	dma_cookie_t cookie;
++	int cpu;
++
++	tx = dev->device_prep_dma_memcpy(chan, len, 0);
++	if (!tx)
++		return -ENOMEM;
++
++	tx->ack = 1;
++	tx->callback = NULL;
++	addr = dma_map_single(dev->dev, kdata, len, DMA_TO_DEVICE);
++	tx->tx_set_src(addr, tx, 0);
++	addr = dma_map_page(dev->dev, page, offset, len, DMA_FROM_DEVICE);
++	tx->tx_set_dest(addr, tx, 0);
++	cookie = tx->tx_submit(tx);
++
++	cpu = get_cpu();
++	per_cpu_ptr(chan->local, cpu)->bytes_transferred += len;
++	per_cpu_ptr(chan->local, cpu)->memcpy_count++;
++	put_cpu();
++
++	return cookie;
++}
++EXPORT_SYMBOL(dma_async_memcpy_buf_to_pg);
++
++/**
++ * dma_async_memcpy_pg_to_pg - offloaded copy from page to page
++ * @chan: DMA channel to offload copy to
++ * @dest_pg: destination page
++ * @dest_off: offset in page to copy to
++ * @src_pg: source page
++ * @src_off: offset in page to copy from
++ * @len: length
++ *
++ * Both @dest_page/@dest_off and @src_page/@src_off must be mappable to a bus
++ * address according to the DMA mapping API rules for streaming mappings.
++ * Both @dest_page/@dest_off and @src_page/@src_off must stay memory resident
++ * (kernel memory or locked user space pages).
++ */
++dma_cookie_t
++dma_async_memcpy_pg_to_pg(struct dma_chan *chan, struct page *dest_pg,
++	unsigned int dest_off, struct page *src_pg, unsigned int src_off,
++	size_t len)
++{
++	struct dma_device *dev = chan->device;
++	struct dma_async_tx_descriptor *tx;
++	dma_addr_t addr;
++	dma_cookie_t cookie;
++	int cpu;
++
++	tx = dev->device_prep_dma_memcpy(chan, len, 0);
++	if (!tx)
++		return -ENOMEM;
++
++	tx->ack = 1;
++	tx->callback = NULL;
++	addr = dma_map_page(dev->dev, src_pg, src_off, len, DMA_TO_DEVICE);
++	tx->tx_set_src(addr, tx, 0);
++	addr = dma_map_page(dev->dev, dest_pg, dest_off, len, DMA_FROM_DEVICE);
++	tx->tx_set_dest(addr, tx, 0);
++	cookie = tx->tx_submit(tx);
++
++	cpu = get_cpu();
++	per_cpu_ptr(chan->local, cpu)->bytes_transferred += len;
++	per_cpu_ptr(chan->local, cpu)->memcpy_count++;
++	put_cpu();
++
++	return cookie;
++}
++EXPORT_SYMBOL(dma_async_memcpy_pg_to_pg);
++
++void dma_async_tx_descriptor_init(struct dma_async_tx_descriptor *tx,
++	struct dma_chan *chan)
++{
++	tx->chan = chan;
++	spin_lock_init(&tx->lock);
++	INIT_LIST_HEAD(&tx->depend_node);
++	INIT_LIST_HEAD(&tx->depend_list);
++}
++EXPORT_SYMBOL(dma_async_tx_descriptor_init);
++
+ static int __init dma_bus_init(void)
+ {
+ 	mutex_init(&dma_list_mutex);
+Index: linux-2.6.18/drivers/dma/ioatdma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/dma/ioatdma.c
++++ linux-2.6.18/drivers/dma/ioatdma.c
+@@ -38,6 +38,7 @@
+ #define to_ioat_chan(chan) container_of(chan, struct ioat_dma_chan, common)
+ #define to_ioat_device(dev) container_of(dev, struct ioat_device, common)
+ #define to_ioat_desc(lh) container_of(lh, struct ioat_desc_sw, node)
++#define tx_to_ioat_desc(tx) container_of(tx, struct ioat_desc_sw, async_tx)
+ 
+ /* internal functions */
+ static int __devinit ioat_probe(struct pci_dev *pdev, const struct pci_device_id *ent);
+@@ -78,6 +79,73 @@ static int enumerate_dma_channels(struct
+ 	return device->common.chancnt;
+ }
+ 
++static void
++ioat_set_src(dma_addr_t addr, struct dma_async_tx_descriptor *tx, int index)
++{
++	struct ioat_desc_sw *iter, *desc = tx_to_ioat_desc(tx);
++	struct ioat_dma_chan *ioat_chan = to_ioat_chan(tx->chan);
++
++	pci_unmap_addr_set(desc, src, addr);
++
++	list_for_each_entry(iter, &desc->async_tx.tx_list, node) {
++		iter->hw->src_addr = addr;
++		addr += ioat_chan->xfercap;
++	}
++
++}
++
++static void
++ioat_set_dest(dma_addr_t addr, struct dma_async_tx_descriptor *tx, int index)
++{
++	struct ioat_desc_sw *iter, *desc = tx_to_ioat_desc(tx);
++	struct ioat_dma_chan *ioat_chan = to_ioat_chan(tx->chan);
++
++	pci_unmap_addr_set(desc, dst, addr);
++
++	list_for_each_entry(iter, &desc->async_tx.tx_list, node) {
++		iter->hw->dst_addr = addr;
++		addr += ioat_chan->xfercap;
++	}
++}
++
++static dma_cookie_t
++ioat_tx_submit(struct dma_async_tx_descriptor *tx)
++{
++	struct ioat_dma_chan *ioat_chan = to_ioat_chan(tx->chan);
++	struct ioat_desc_sw *desc = tx_to_ioat_desc(tx);
++	int append = 0;
++	dma_cookie_t cookie;
++	struct ioat_desc_sw *group_start;
++
++	group_start = list_entry(desc->async_tx.tx_list.next,
++				 struct ioat_desc_sw, node);
++	spin_lock_bh(&ioat_chan->desc_lock);
++	/* cookie incr and addition to used_list must be atomic */
++	cookie = ioat_chan->common.cookie;
++	cookie++;
++	if (cookie < 0)
++		cookie = 1;
++	ioat_chan->common.cookie = desc->async_tx.cookie = cookie;
++
++	/* write address into NextDescriptor field of last desc in chain */
++	to_ioat_desc(ioat_chan->used_desc.prev)->hw->next =
++						group_start->async_tx.phys;
++	list_splice_init(&desc->async_tx.tx_list, ioat_chan->used_desc.prev);
++
++	ioat_chan->pending += desc->tx_cnt;
++	if (ioat_chan->pending >= 4) {
++		append = 1;
++		ioat_chan->pending = 0;
++	}
++	spin_unlock_bh(&ioat_chan->desc_lock);
++
++	if (append)
++		writeb(IOAT_CHANCMD_APPEND,
++			ioat_chan->reg_base + IOAT_CHANCMD_OFFSET);
++	
++	return cookie;
++}
++
+ static struct ioat_desc_sw *ioat_dma_alloc_descriptor(
+ 	struct ioat_dma_chan *ioat_chan,
+ 	gfp_t flags)
+@@ -99,8 +167,13 @@ static struct ioat_desc_sw *ioat_dma_all
+ 	}
+ 
+ 	memset(desc, 0, sizeof(*desc));
++	dma_async_tx_descriptor_init(&desc_sw->async_tx, &ioat_chan->common);
++	desc_sw->async_tx.tx_set_src = ioat_set_src;
++	desc_sw->async_tx.tx_set_dest = ioat_set_dest;
++	desc_sw->async_tx.tx_submit = ioat_tx_submit;
++	INIT_LIST_HEAD(&desc_sw->async_tx.tx_list);
+ 	desc_sw->hw = desc;
+-	desc_sw->phys = phys;
++	desc_sw->async_tx.phys = phys;
+ 
+ 	return desc_sw;
+ }
+@@ -188,12 +261,14 @@ static void ioat_dma_free_chan_resources
+ 	list_for_each_entry_safe(desc, _desc, &ioat_chan->used_desc, node) {
+ 		in_use_descs++;
+ 		list_del(&desc->node);
+-		pci_pool_free(ioat_device->dma_pool, desc->hw, desc->phys);
++		pci_pool_free(ioat_device->dma_pool, desc->hw,
++			      desc->async_tx.phys);
+ 		kfree(desc);
+ 	}
+ 	list_for_each_entry_safe(desc, _desc, &ioat_chan->free_desc, node) {
+ 		list_del(&desc->node);
+-		pci_pool_free(ioat_device->dma_pool, desc->hw, desc->phys);
++		pci_pool_free(ioat_device->dma_pool, desc->hw,
++			      desc->async_tx.phys);
+ 		kfree(desc);
+ 	}
+ 	spin_unlock_bh(&ioat_chan->desc_lock);
+@@ -215,45 +290,25 @@ static void ioat_dma_free_chan_resources
+ 	writew(chanctrl, ioat_chan->reg_base + IOAT_CHANCTRL_OFFSET);
+ }
+ 
+-/**
+- * do_ioat_dma_memcpy - actual function that initiates a IOAT DMA transaction
+- * @ioat_chan: IOAT DMA channel handle
+- * @dest: DMA destination address
+- * @src: DMA source address
+- * @len: transaction length in bytes
+- */
+-
+-static dma_cookie_t do_ioat_dma_memcpy(struct ioat_dma_chan *ioat_chan,
+-                                       dma_addr_t dest,
+-                                       dma_addr_t src,
+-                                       size_t len)
+-{
+-	struct ioat_desc_sw *first;
+-	struct ioat_desc_sw *prev;
+-	struct ioat_desc_sw *new;
+-	dma_cookie_t cookie;
++static struct dma_async_tx_descriptor *
++ioat_dma_prep_memcpy(struct dma_chan *chan, size_t len, int int_en)
++{
++	struct ioat_dma_chan *ioat_chan = to_ioat_chan(chan);
++	struct ioat_desc_sw *first, *prev, *new;
+ 	LIST_HEAD(new_chain);
+ 	u32 copy;
+ 	size_t orig_len;
+-	dma_addr_t orig_src, orig_dst;
+-	unsigned int desc_count = 0;
+-	unsigned int append = 0;
+-
+-	if (!ioat_chan || !dest || !src)
+-		return -EFAULT;
++	int desc_count = 0;
+ 
+ 	if (!len)
+-		return ioat_chan->common.cookie;
++		return NULL;
+ 
+ 	orig_len = len;
+-	orig_src = src;
+-	orig_dst = dest;
+ 
+ 	first = NULL;
+ 	prev = NULL;
+ 
+ 	spin_lock_bh(&ioat_chan->desc_lock);
+-
+ 	while (len) {
+ 		if (!list_empty(&ioat_chan->free_desc)) {
+ 			new = to_ioat_desc(ioat_chan->free_desc.next);
+@@ -270,140 +325,36 @@ static dma_cookie_t do_ioat_dma_memcpy(s
+ 
+ 		new->hw->size = copy;
+ 		new->hw->ctl = 0;
+-		new->hw->src_addr = src;
+-		new->hw->dst_addr = dest;
+-		new->cookie = 0;
++		new->async_tx.cookie = 0;
++		new->async_tx.ack = 1;
+ 
+ 		/* chain together the physical address list for the HW */
+ 		if (!first)
+ 			first = new;
+ 		else
+-			prev->hw->next = (u64) new->phys;
++			prev->hw->next = (u64) new->async_tx.phys;
+ 
+ 		prev = new;
+-
+ 		len  -= copy;
+-		dest += copy;
+-		src  += copy;
+-
+ 		list_add_tail(&new->node, &new_chain);
+ 		desc_count++;
+ 	}
+-	new->hw->ctl = IOAT_DMA_DESCRIPTOR_CTL_CP_STS;
+-	new->hw->next = 0;
+ 
+-	/* cookie incr and addition to used_list must be atomic */
++	list_splice(&new_chain, &new->async_tx.tx_list);
+ 
+-	cookie = ioat_chan->common.cookie;
+-	cookie++;
+-	if (cookie < 0)
+-		cookie = 1;
+-	ioat_chan->common.cookie = new->cookie = cookie;
++	new->hw->ctl = IOAT_DMA_DESCRIPTOR_CTL_CP_STS;
++	new->hw->next = 0;
++	new->tx_cnt = desc_count;
++	new->async_tx.ack = 0; /* client is in control of this ack */
++	new->async_tx.cookie = -EBUSY;
+ 
+-	pci_unmap_addr_set(new, src, orig_src);
+-	pci_unmap_addr_set(new, dst, orig_dst);
+ 	pci_unmap_len_set(new, src_len, orig_len);
+ 	pci_unmap_len_set(new, dst_len, orig_len);
+-
+-	/* write address into NextDescriptor field of last desc in chain */
+-	to_ioat_desc(ioat_chan->used_desc.prev)->hw->next = first->phys;
+-	list_splice_init(&new_chain, ioat_chan->used_desc.prev);
+-
+-	ioat_chan->pending += desc_count;
+-	if (ioat_chan->pending >= 4) {
+-		append = 1;
+-		ioat_chan->pending = 0;
+-	}
+-
+ 	spin_unlock_bh(&ioat_chan->desc_lock);
+ 
+-	if (append)
+-		writeb(IOAT_CHANCMD_APPEND,
+-		       ioat_chan->reg_base + IOAT_CHANCMD_OFFSET);
+-	return cookie;
+-}
+-
+-/**
+- * ioat_dma_memcpy_buf_to_buf - wrapper that takes src & dest bufs
+- * @chan: IOAT DMA channel handle
+- * @dest: DMA destination address
+- * @src: DMA source address
+- * @len: transaction length in bytes
+- */
+-
+-static dma_cookie_t ioat_dma_memcpy_buf_to_buf(struct dma_chan *chan,
+-                                               void *dest,
+-                                               void *src,
+-                                               size_t len)
+-{
+-	dma_addr_t dest_addr;
+-	dma_addr_t src_addr;
+-	struct ioat_dma_chan *ioat_chan = to_ioat_chan(chan);
+-
+-	dest_addr = pci_map_single(ioat_chan->device->pdev,
+-		dest, len, PCI_DMA_FROMDEVICE);
+-	src_addr = pci_map_single(ioat_chan->device->pdev,
+-		src, len, PCI_DMA_TODEVICE);
+-
+-	return do_ioat_dma_memcpy(ioat_chan, dest_addr, src_addr, len);
++	return new ? &new->async_tx : NULL;
+ }
+ 
+-/**
+- * ioat_dma_memcpy_buf_to_pg - wrapper, copying from a buf to a page
+- * @chan: IOAT DMA channel handle
+- * @page: pointer to the page to copy to
+- * @offset: offset into that page
+- * @src: DMA source address
+- * @len: transaction length in bytes
+- */
+-
+-static dma_cookie_t ioat_dma_memcpy_buf_to_pg(struct dma_chan *chan,
+-                                              struct page *page,
+-                                              unsigned int offset,
+-                                              void *src,
+-                                              size_t len)
+-{
+-	dma_addr_t dest_addr;
+-	dma_addr_t src_addr;
+-	struct ioat_dma_chan *ioat_chan = to_ioat_chan(chan);
+-
+-	dest_addr = pci_map_page(ioat_chan->device->pdev,
+-		page, offset, len, PCI_DMA_FROMDEVICE);
+-	src_addr = pci_map_single(ioat_chan->device->pdev,
+-		src, len, PCI_DMA_TODEVICE);
+-
+-	return do_ioat_dma_memcpy(ioat_chan, dest_addr, src_addr, len);
+-}
+-
+-/**
+- * ioat_dma_memcpy_pg_to_pg - wrapper, copying between two pages
+- * @chan: IOAT DMA channel handle
+- * @dest_pg: pointer to the page to copy to
+- * @dest_off: offset into that page
+- * @src_pg: pointer to the page to copy from
+- * @src_off: offset into that page
+- * @len: transaction length in bytes. This is guaranteed not to make a copy
+- *	 across a page boundary.
+- */
+-
+-static dma_cookie_t ioat_dma_memcpy_pg_to_pg(struct dma_chan *chan,
+-                                             struct page *dest_pg,
+-                                             unsigned int dest_off,
+-                                             struct page *src_pg,
+-                                             unsigned int src_off,
+-                                             size_t len)
+-{
+-	dma_addr_t dest_addr;
+-	dma_addr_t src_addr;
+-	struct ioat_dma_chan *ioat_chan = to_ioat_chan(chan);
+-
+-	dest_addr = pci_map_page(ioat_chan->device->pdev,
+-		dest_pg, dest_off, len, PCI_DMA_FROMDEVICE);
+-	src_addr = pci_map_page(ioat_chan->device->pdev,
+-		src_pg, src_off, len, PCI_DMA_TODEVICE);
+-
+-	return do_ioat_dma_memcpy(ioat_chan, dest_addr, src_addr, len);
+-}
+ 
+ /**
+  * ioat_dma_memcpy_issue_pending - push potentially unrecognized appended descriptors to hw
+@@ -465,8 +416,8 @@ static void ioat_dma_memcpy_cleanup(stru
+ 		 * exceeding xfercap, perhaps. If so, only the last one will
+ 		 * have a cookie, and require unmapping.
+ 		 */
+-		if (desc->cookie) {
+-			cookie = desc->cookie;
++		if (desc->async_tx.cookie) {
++			cookie = desc->async_tx.cookie;
+ 
+ 			/* yes we are unmapping both _page and _single alloc'd
+ 			   regions with unmap_page. Is this *really* that bad?
+@@ -481,14 +432,19 @@ static void ioat_dma_memcpy_cleanup(stru
+ 					PCI_DMA_TODEVICE);
+ 		}
+ 
+-		if (desc->phys != phys_complete) {
+-			/* a completed entry, but not the last, so cleanup */
+-			list_del(&desc->node);
+-			list_add_tail(&desc->node, &chan->free_desc);
++		if (desc->async_tx.phys != phys_complete) {
++			/* a completed entry, but not the last, so cleanup
++			 * if the client is done with the descriptor
++			 */
++			if (desc->async_tx.ack) {
++				list_del(&desc->node);
++				list_add_tail(&desc->node, &chan->free_desc);
++			} else
++				desc->async_tx.cookie = 0;
+ 		} else {
+ 			/* last used desc. Do not remove, so we can append from
+ 			   it, but don't look at it next time, either */
+-			desc->cookie = 0;
++			desc->async_tx.cookie = 0;
+ 
+ 			/* TODO check status bits? */
+ 			break;
+@@ -504,6 +460,17 @@ static void ioat_dma_memcpy_cleanup(stru
+ 	spin_unlock(&chan->cleanup_lock);
+ }
+ 
++static void ioat_dma_dependency_added(struct dma_chan *chan)
++{
++	struct ioat_dma_chan *ioat_chan = to_ioat_chan(chan);
++	spin_lock_bh(&ioat_chan->desc_lock);
++	if (ioat_chan->pending == 0) {
++		spin_unlock_bh(&ioat_chan->desc_lock);
++		ioat_dma_memcpy_cleanup(ioat_chan);
++	} else
++		spin_unlock_bh(&ioat_chan->desc_lock);
++}
++
+ /**
+  * ioat_dma_is_complete - poll the status of a IOAT DMA transaction
+  * @chan: IOAT DMA channel handle
+@@ -606,13 +573,14 @@ static void ioat_start_null_desc(struct 
+ 
+ 	desc->hw->ctl = IOAT_DMA_DESCRIPTOR_NUL;
+ 	desc->hw->next = 0;
++	desc->async_tx.ack = 1;
+ 
+ 	list_add_tail(&desc->node, &ioat_chan->used_desc);
+ 	spin_unlock_bh(&ioat_chan->desc_lock);
+ 
+-	writel(((u64) desc->phys) & 0x00000000FFFFFFFF,
++	writel(((u64) desc->async_tx.phys) & 0x00000000FFFFFFFF,
+ 	       ioat_chan->reg_base + IOAT_CHAINADDR_OFFSET_LOW);
+-	writel(((u64) desc->phys) >> 32,
++	writel(((u64) desc->async_tx.phys) >> 32,
+ 	       ioat_chan->reg_base + IOAT_CHAINADDR_OFFSET_HIGH);
+ 
+ 	writeb(IOAT_CHANCMD_START, ioat_chan->reg_base + IOAT_CHANCMD_OFFSET);
+@@ -629,6 +597,8 @@ static int ioat_self_test(struct ioat_de
+ 	u8 *src;
+ 	u8 *dest;
+ 	struct dma_chan *dma_chan;
++	struct dma_async_tx_descriptor *tx;
++	dma_addr_t addr;
+ 	dma_cookie_t cookie;
+ 	int err = 0;
+ 
+@@ -654,7 +624,15 @@ static int ioat_self_test(struct ioat_de
+ 		goto out;
+ 	}
+ 
+-	cookie = ioat_dma_memcpy_buf_to_buf(dma_chan, dest, src, IOAT_TEST_SIZE);
++	tx = ioat_dma_prep_memcpy(dma_chan, IOAT_TEST_SIZE, 0);
++	async_tx_ack(tx);
++	addr = dma_map_single(dma_chan->device->dev, src, IOAT_TEST_SIZE,
++			DMA_TO_DEVICE);
++	ioat_set_src(addr, tx, 0);
++	addr = dma_map_single(dma_chan->device->dev, dest, IOAT_TEST_SIZE,
++			DMA_FROM_DEVICE);
++	ioat_set_dest(addr, tx, 0);
++	cookie = ioat_tx_submit(tx);
+ 	ioat_dma_memcpy_issue_pending(dma_chan);
+ 	msleep(1);
+ 
+@@ -750,13 +728,14 @@ static int __devinit ioat_probe(struct p
+ 	INIT_LIST_HEAD(&device->common.channels);
+ 	enumerate_dma_channels(device);
+ 
++	dma_cap_set(DMA_MEMCPY, device->common.cap_mask);
+ 	device->common.device_alloc_chan_resources = ioat_dma_alloc_chan_resources;
+ 	device->common.device_free_chan_resources = ioat_dma_free_chan_resources;
+-	device->common.device_memcpy_buf_to_buf = ioat_dma_memcpy_buf_to_buf;
+-	device->common.device_memcpy_buf_to_pg = ioat_dma_memcpy_buf_to_pg;
+-	device->common.device_memcpy_pg_to_pg = ioat_dma_memcpy_pg_to_pg;
+-	device->common.device_memcpy_complete = ioat_dma_is_complete;
+-	device->common.device_memcpy_issue_pending = ioat_dma_memcpy_issue_pending;
++	device->common.device_prep_dma_memcpy = ioat_dma_prep_memcpy;
++	device->common.device_is_tx_complete = ioat_dma_is_complete;
++	device->common.device_issue_pending = ioat_dma_memcpy_issue_pending;
++	device->common.device_dependency_added = ioat_dma_dependency_added;
++	device->common.dev = &pdev->dev;
+ 	printk(KERN_INFO "Intel(R) I/OAT DMA Engine found, %d channels\n",
+ 		device->common.chancnt);
+ 
+Index: linux-2.6.18/drivers/dma/ioatdma.h
+===================================================================
+--- linux-2.6.18.orig/drivers/dma/ioatdma.h
++++ linux-2.6.18/drivers/dma/ioatdma.h
+@@ -105,21 +105,20 @@ struct ioat_dma_chan {
+ /**
+  * struct ioat_desc_sw - wrapper around hardware descriptor
+  * @hw: hardware DMA descriptor
+- * @node:
+- * @cookie:
+- * @phys:
++ * @node: this descriptor will either be on the free list,
++ *     or attached to a transaction list (async_tx.tx_list)
++ * @tx_cnt: number of descriptors required to complete the transaction
++ * @async_tx: the generic software descriptor for all engines
+  */
+-
+ struct ioat_desc_sw {
+ 	struct ioat_dma_descriptor *hw;
+ 	struct list_head node;
+-	dma_cookie_t cookie;
+-	dma_addr_t phys;
++	int tx_cnt;
+ 	DECLARE_PCI_UNMAP_ADDR(src)
+ 	DECLARE_PCI_UNMAP_LEN(src_len)
+ 	DECLARE_PCI_UNMAP_ADDR(dst)
+ 	DECLARE_PCI_UNMAP_LEN(dst_len)
++	struct dma_async_tx_descriptor async_tx;
+ };
+ 
+ #endif /* IOATDMA_H */
+-
+Index: linux-2.6.18/include/linux/dmaengine.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/dmaengine.h
++++ linux-2.6.18/include/linux/dmaengine.h
+@@ -21,13 +21,12 @@
+ #ifndef DMAENGINE_H
+ #define DMAENGINE_H
+ 
+-#ifdef CONFIG_DMA_ENGINE
+-
+ #include <linux/device.h>
+ #include <linux/uio.h>
+ #include <linux/kref.h>
+ #include <linux/completion.h>
+ #include <linux/rcupdate.h>
++#include <linux/dma-mapping.h>
+ 
+ /**
+  * enum dma_event - resource PNP/power managment events
+@@ -65,6 +64,31 @@ enum dma_status {
+ };
+ 
+ /**
++ * enum dma_transaction_type - DMA transaction types/indexes
++ */
++enum dma_transaction_type {
++	DMA_MEMCPY,
++	DMA_XOR,
++	DMA_PQ_XOR,
++	DMA_DUAL_XOR,
++	DMA_PQ_UPDATE,
++	DMA_ZERO_SUM,
++	DMA_PQ_ZERO_SUM,
++	DMA_MEMSET,
++	DMA_MEMCPY_CRC32C,
++	DMA_INTERRUPT,
++};
++
++/* last transaction type for creation of the capabilities mask */
++#define DMA_TX_TYPE_END (DMA_INTERRUPT + 1)
++
++/**
++ * dma_cap_mask_t - capabilities bitmap modeled after cpumask_t.
++ * See linux/cpumask.h
++ */
++typedef struct { DECLARE_BITMAP(bits, DMA_TX_TYPE_END); } dma_cap_mask_t;
++
++/**
+  * struct dma_chan_percpu - the per-CPU part of struct dma_chan
+  * @refcount: local_t used for open-coded "bigref" counting
+  * @memcpy_count: transaction counter
+@@ -157,48 +181,106 @@ struct dma_client {
+ 	struct list_head	global_node;
+ };
+ 
++typedef void (*dma_async_tx_callback)(void *dma_async_param);
++/**
++ * struct dma_async_tx_descriptor - async transaction descriptor
++ * ---dma generic offload fields---
++ * @cookie: tracking cookie for this transaction, set to -EBUSY if
++ *	this tx is sitting on a dependency list
++ * @ack: the descriptor can not be reused until the client acknowledges
++ *	receipt, i.e. has has a chance to establish any dependency chains
++ * @phys: physical address of the descriptor
++ * @tx_list: driver common field for operations that require multiple
++ *	descriptors
++ * @chan: target channel for this operation
++ * @tx_submit: set the prepared descriptor(s) to be executed by the engine
++ * @tx_set_dest: set a destination address in a hardware descriptor
++ * @tx_set_src: set a source address in a hardware descriptor
++ * @callback: routine to call after this operation is complete
++ * @callback_param: general parameter to pass to the callback routine
++ * ---async_tx api specific fields---
++ * @depend_list: at completion this list of transactions are submitted
++ * @depend_node: allow this transaction to be executed after another
++ *	transaction has completed, possibly on another channel
++ * @parent: pointer to the next level up in the dependency chain
++ * @lock: protect the dependency list
++ */
++struct dma_async_tx_descriptor {
++	dma_cookie_t cookie;
++	int ack;
++	dma_addr_t phys;
++	struct list_head tx_list;
++	struct dma_chan *chan;
++	dma_cookie_t (*tx_submit)(struct dma_async_tx_descriptor *tx);
++	void (*tx_set_dest)(dma_addr_t addr,
++		struct dma_async_tx_descriptor *tx, int index);
++	void (*tx_set_src)(dma_addr_t addr,
++		struct dma_async_tx_descriptor *tx, int index);
++	dma_async_tx_callback callback;
++	void *callback_param;
++	struct list_head depend_list;
++	struct list_head depend_node;
++	struct dma_async_tx_descriptor *parent;
++	spinlock_t lock;
++};
++
+ /**
+  * struct dma_device - info on the entity supplying DMA services
+  * @chancnt: how many DMA channels are supported
+  * @channels: the list of struct dma_chan
+  * @global_node: list_head for global dma_device_list
++ * @cap_mask: one or more dma_capability flags
++ * @max_xor: maximum number of xor sources, 0 if no capability
+  * @refcount: reference count
+  * @done: IO completion struct
+  * @dev_id: unique device ID
++ * @dev: struct device reference for dma mapping api
+  * @device_alloc_chan_resources: allocate resources and return the
+  *	number of allocated descriptors
+  * @device_free_chan_resources: release DMA channel's resources
+- * @device_memcpy_buf_to_buf: memcpy buf pointer to buf pointer
+- * @device_memcpy_buf_to_pg: memcpy buf pointer to struct page
+- * @device_memcpy_pg_to_pg: memcpy struct page/offset to struct page/offset
+- * @device_memcpy_complete: poll the status of an IOAT DMA transaction
+- * @device_memcpy_issue_pending: push appended descriptors to hardware
++ * @device_prep_dma_memcpy: prepares a memcpy operation
++ * @device_prep_dma_xor: prepares a xor operation
++ * @device_prep_dma_zero_sum: prepares a zero_sum operation
++ * @device_prep_dma_memset: prepares a memset operation
++ * @device_prep_dma_interrupt: prepares an end of chain interrupt operation
++ * @device_dependency_added: async_tx notifies the channel about new deps
++ * @device_issue_pending: push pending transactions to hardware
+  */
+ struct dma_device {
+ 
+ 	unsigned int chancnt;
+ 	struct list_head channels;
+ 	struct list_head global_node;
++	dma_cap_mask_t  cap_mask;
++	int max_xor;
+ 
+ 	struct kref refcount;
+ 	struct completion done;
+ 
+ 	int dev_id;
++	struct device *dev;
+ 
+ 	int (*device_alloc_chan_resources)(struct dma_chan *chan);
+ 	void (*device_free_chan_resources)(struct dma_chan *chan);
+-	dma_cookie_t (*device_memcpy_buf_to_buf)(struct dma_chan *chan,
+-			void *dest, void *src, size_t len);
+-	dma_cookie_t (*device_memcpy_buf_to_pg)(struct dma_chan *chan,
+-			struct page *page, unsigned int offset, void *kdata,
+-			size_t len);
+-	dma_cookie_t (*device_memcpy_pg_to_pg)(struct dma_chan *chan,
+-			struct page *dest_pg, unsigned int dest_off,
+-			struct page *src_pg, unsigned int src_off, size_t len);
+-	enum dma_status (*device_memcpy_complete)(struct dma_chan *chan,
++
++	struct dma_async_tx_descriptor *(*device_prep_dma_memcpy)(
++		struct dma_chan *chan, size_t len, int int_en);
++	struct dma_async_tx_descriptor *(*device_prep_dma_xor)(
++		struct dma_chan *chan, unsigned int src_cnt, size_t len,
++		int int_en);
++	struct dma_async_tx_descriptor *(*device_prep_dma_zero_sum)(
++		struct dma_chan *chan, unsigned int src_cnt, size_t len,
++		u32 *result, int int_en);
++	struct dma_async_tx_descriptor *(*device_prep_dma_memset)(
++		struct dma_chan *chan, int value, size_t len, int int_en);
++	struct dma_async_tx_descriptor *(*device_prep_dma_interrupt)(
++		struct dma_chan *chan);
++
++	void (*device_dependency_added)(struct dma_chan *chan);
++	enum dma_status (*device_is_tx_complete)(struct dma_chan *chan,
+ 			dma_cookie_t cookie, dma_cookie_t *last,
+ 			dma_cookie_t *used);
+-	void (*device_memcpy_issue_pending)(struct dma_chan *chan);
++	void (*device_issue_pending)(struct dma_chan *chan);
+ };
+ 
+ /* --- public DMA engine API --- */
+@@ -207,96 +289,72 @@ struct dma_client *dma_async_client_regi
+ void dma_async_client_unregister(struct dma_client *client);
+ void dma_async_client_chan_request(struct dma_client *client,
+ 		unsigned int number);
++dma_cookie_t dma_async_memcpy_buf_to_buf(struct dma_chan *chan,
++	void *dest, void *src, size_t len);
++dma_cookie_t dma_async_memcpy_buf_to_pg(struct dma_chan *chan,
++	struct page *page, unsigned int offset, void *kdata, size_t len);
++dma_cookie_t dma_async_memcpy_pg_to_pg(struct dma_chan *chan,
++	struct page *dest_pg, unsigned int dest_off, struct page *src_pg,
++	unsigned int src_off, size_t len);
++void dma_async_tx_descriptor_init(struct dma_async_tx_descriptor *tx,
++	struct dma_chan *chan);
+ 
+-/**
+- * dma_async_memcpy_buf_to_buf - offloaded copy between virtual addresses
+- * @chan: DMA channel to offload copy to
+- * @dest: destination address (virtual)
+- * @src: source address (virtual)
+- * @len: length
+- *
+- * Both @dest and @src must be mappable to a bus address according to the
+- * DMA mapping API rules for streaming mappings.
+- * Both @dest and @src must stay memory resident (kernel memory or locked
+- * user space pages).
+- */
+-static inline dma_cookie_t dma_async_memcpy_buf_to_buf(struct dma_chan *chan,
+-	void *dest, void *src, size_t len)
+-{
+-	int cpu = get_cpu();
+-	per_cpu_ptr(chan->local, cpu)->bytes_transferred += len;
+-	per_cpu_ptr(chan->local, cpu)->memcpy_count++;
+-	put_cpu();
+ 
+-	return chan->device->device_memcpy_buf_to_buf(chan, dest, src, len);
++static inline void
++async_tx_ack(struct dma_async_tx_descriptor *tx)
++{
++	tx->ack = 1;
+ }
+ 
+-/**
+- * dma_async_memcpy_buf_to_pg - offloaded copy from address to page
+- * @chan: DMA channel to offload copy to
+- * @page: destination page
+- * @offset: offset in page to copy to
+- * @kdata: source address (virtual)
+- * @len: length
+- *
+- * Both @page/@offset and @kdata must be mappable to a bus address according
+- * to the DMA mapping API rules for streaming mappings.
+- * Both @page/@offset and @kdata must stay memory resident (kernel memory or
+- * locked user space pages)
+- */
+-static inline dma_cookie_t dma_async_memcpy_buf_to_pg(struct dma_chan *chan,
+-	struct page *page, unsigned int offset, void *kdata, size_t len)
++#define first_dma_cap(mask) __first_dma_cap(&(mask))
++static inline int __first_dma_cap(const dma_cap_mask_t *srcp)
+ {
+-	int cpu = get_cpu();
+-	per_cpu_ptr(chan->local, cpu)->bytes_transferred += len;
+-	per_cpu_ptr(chan->local, cpu)->memcpy_count++;
+-	put_cpu();
++	return min_t(int, DMA_TX_TYPE_END,
++		find_first_bit(srcp->bits, DMA_TX_TYPE_END));
++}
+ 
+-	return chan->device->device_memcpy_buf_to_pg(chan, page, offset,
+-	                                             kdata, len);
++#define next_dma_cap(n, mask) __next_dma_cap((n), &(mask))
++static inline int __next_dma_cap(int n, const dma_cap_mask_t *srcp)
++{
++	return min_t(int, DMA_TX_TYPE_END,
++		find_next_bit(srcp->bits, DMA_TX_TYPE_END, n+1));
+ }
+ 
+-/**
+- * dma_async_memcpy_pg_to_pg - offloaded copy from page to page
+- * @chan: DMA channel to offload copy to
+- * @dest_pg: destination page
+- * @dest_off: offset in page to copy to
+- * @src_pg: source page
+- * @src_off: offset in page to copy from
+- * @len: length
+- *
+- * Both @dest_page/@dest_off and @src_page/@src_off must be mappable to a bus
+- * address according to the DMA mapping API rules for streaming mappings.
+- * Both @dest_page/@dest_off and @src_page/@src_off must stay memory resident
+- * (kernel memory or locked user space pages).
+- */
+-static inline dma_cookie_t dma_async_memcpy_pg_to_pg(struct dma_chan *chan,
+-	struct page *dest_pg, unsigned int dest_off, struct page *src_pg,
+-	unsigned int src_off, size_t len)
++#define dma_cap_set(tx, mask) __dma_cap_set((tx), &(mask))
++static inline void
++__dma_cap_set(enum dma_transaction_type tx_type, dma_cap_mask_t *dstp)
+ {
+-	int cpu = get_cpu();
+-	per_cpu_ptr(chan->local, cpu)->bytes_transferred += len;
+-	per_cpu_ptr(chan->local, cpu)->memcpy_count++;
+-	put_cpu();
++	set_bit(tx_type, dstp->bits);
++}
+ 
+-	return chan->device->device_memcpy_pg_to_pg(chan, dest_pg, dest_off,
+-	                                            src_pg, src_off, len);
++#define dma_has_cap(tx, mask) __dma_has_cap((tx), &(mask))
++static inline int
++__dma_has_cap(enum dma_transaction_type tx_type, dma_cap_mask_t *srcp)
++{
++	return test_bit(tx_type, srcp->bits);
+ }
+ 
++#define for_each_dma_cap_mask(cap, mask) \
++	for ((cap) = first_dma_cap(mask);	\
++		(cap) < DMA_TX_TYPE_END;	\
++		(cap) = next_dma_cap((cap), (mask)))
++
+ /**
+- * dma_async_memcpy_issue_pending - flush pending copies to HW
++ * dma_async_issue_pending - flush pending transactions to HW
+  * @chan: target DMA channel
+  *
+  * This allows drivers to push copies to HW in batches,
+  * reducing MMIO writes where possible.
+  */
+-static inline void dma_async_memcpy_issue_pending(struct dma_chan *chan)
++static inline void dma_async_issue_pending(struct dma_chan *chan)
+ {
+-	return chan->device->device_memcpy_issue_pending(chan);
++	return chan->device->device_issue_pending(chan);
+ }
+ 
++#define dma_async_memcpy_issue_pending(chan) dma_async_issue_pending(chan)
++
+ /**
+- * dma_async_memcpy_complete - poll for transaction completion
++ * dma_async_is_tx_complete - poll for transaction completion
+  * @chan: DMA channel
+  * @cookie: transaction identifier to check status of
+  * @last: returns last completed cookie, can be NULL
+@@ -306,12 +364,15 @@ static inline void dma_async_memcpy_issu
+  * internal state and can be used with dma_async_is_complete() to check
+  * the status of multiple cookies without re-checking hardware state.
+  */
+-static inline enum dma_status dma_async_memcpy_complete(struct dma_chan *chan,
++static inline enum dma_status dma_async_is_tx_complete(struct dma_chan *chan,
+ 	dma_cookie_t cookie, dma_cookie_t *last, dma_cookie_t *used)
+ {
+-	return chan->device->device_memcpy_complete(chan, cookie, last, used);
++	return chan->device->device_is_tx_complete(chan, cookie, last, used);
+ }
+ 
++#define dma_async_memcpy_complete(chan, cookie, last, used)\
++	dma_async_is_tx_complete(chan, cookie, last, used)
++
+ /**
+  * dma_async_is_complete - test a cookie against chan state
+  * @cookie: transaction identifier to test status of
+@@ -334,6 +395,7 @@ static inline enum dma_status dma_async_
+ 	return DMA_IN_PROGRESS;
+ }
+ 
++enum dma_status dma_sync_wait(struct dma_chan *chan, dma_cookie_t cookie);
+ 
+ /* --- DMA device --- */
+ 
+@@ -362,5 +424,4 @@ dma_cookie_t dma_memcpy_pg_to_iovec(stru
+ 	struct dma_pinned_list *pinned_list, struct page *page,
+ 	unsigned int offset, size_t len);
+ 
+-#endif /* CONFIG_DMA_ENGINE */
+ #endif /* DMAENGINE_H */
+Index: linux-2.6.18/mvl_patches/pro50-1995.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1995.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1995);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

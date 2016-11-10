@@ -1,0 +1,704 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_remove_MGC_ReadCsr16
+# Date: Fri Sep 19 14:03:58 2008
+# From d466dca1250563194ffff573c7895865f2140d15 Mon Sep 17 00:00:00 2001
+# From: David Brownell <dbrownell@users.sourceforge.net>
+# Date: Thu, 18 Jan 2007 15:53:43 -0800
+# Subject: [PATCH] musb_hdrc, remove MGC_ReadCsr16()
+# 
+# More camelcase fixes:  remove MGC_ReadCsr16.
+# 
+# Note that these changes are not just code cleanup, but they're also
+# code shrinks and speedups because the endpoint access routines no
+# longer need to calclate the offsets they're using...
+# 
+# Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+# (cherry picked from commit 5c4a5f7c8c80a4d99064ad8f194c9626fe036053)
+
+PATCHNUM=1621
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From d466dca1250563194ffff573c7895865f2140d15 Mon Sep 17 00:00:00 2001
+From: David Brownell <dbrownell@users.sourceforge.net>
+Date: Thu, 18 Jan 2007 15:53:43 -0800
+Subject: [PATCH] musb_hdrc, remove MGC_ReadCsr16()
+
+More camelcase fixes:  remove MGC_ReadCsr16.
+
+Note that these changes are not just code cleanup, but they're also
+code shrinks and speedups because the endpoint access routines no
+longer need to calclate the offsets they're using...
+
+Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+(cherry picked from commit 5c4a5f7c8c80a4d99064ad8f194c9626fe036053)
+Index: linux-2.6.18/drivers/usb/musb/musb_gadget.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_gadget.c
++++ linux-2.6.18/drivers/usb/musb/musb_gadget.c
+@@ -240,14 +240,14 @@ static inline int max_ep_writesize(struc
+  */
+ static void txstate(struct musb *pThis, struct musb_request *req)
+ {
+-	u8			bEnd;
++	u8			bEnd = req->bEnd;
+ 	struct musb_ep		*pEnd;
++	void __iomem		*epio = pThis->aLocalEnd[bEnd].regs;
+ 	struct usb_request	*pRequest;
+ 	void __iomem		*pBase = pThis->pRegs;
+ 	u16			wFifoCount = 0, wCsrVal;
+ 	int			use_dma = 0;
+ 
+-	bEnd = req->bEnd;
+ 	pEnd = req->ep;
+ 
+ 	/* we shouldn't get here while DMA is active ... but we do ... */
+@@ -257,7 +257,7 @@ static void txstate(struct musb *pThis, 
+ 	}
+ 
+ 	/* read TXCSR before */
+-	wCsrVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++	wCsrVal = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 
+ 	pRequest = &req->request;
+ 	wFifoCount = min(max_ep_writesize(pThis, pEnd),
+@@ -336,7 +336,7 @@ static void txstate(struct musb *pThis, 
+ 				| wCsrVal);
+ 
+ 		/* ensure writebuffer is empty */
+-		wCsrVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++		wCsrVal = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 
+ 		/* NOTE host side sets DMAENAB later than this; both are
+ 		 * OK since the transfer dma glue (between CPPI and Mentor
+@@ -383,9 +383,9 @@ static void txstate(struct musb *pThis, 
+ 	DBG(3, "%s TX/IN %s len %d/%d, txcsr %04x, fifo %d/%d\n",
+ 			pEnd->end_point.name, use_dma ? "dma" : "pio",
+ 			pRequest->actual, pRequest->length,
+-			MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd),
++			musb_readw(epio, MGC_O_HDRC_TXCSR),
+ 			wFifoCount,
+-			MGC_ReadCsr16(pBase, MGC_O_HDRC_TXMAXP, bEnd));
++			musb_readw(epio, MGC_O_HDRC_TXMAXP));
+ }
+ 
+ /*
+@@ -397,14 +397,14 @@ void musb_g_tx(struct musb *pThis, u8 bE
+ 	u16			wCsrVal;
+ 	struct usb_request	*pRequest;
+ 	u8 __iomem		*pBase = pThis->pRegs;
+-	struct musb_ep		*pEnd;
++	struct musb_ep		*pEnd = &pThis->aLocalEnd[bEnd].ep_in;
++	void __iomem		*epio = pThis->aLocalEnd[bEnd].regs;
+ 	struct dma_channel	*dma;
+ 
+ 	MGC_SelectEnd(pBase, bEnd);
+-	pEnd = &pThis->aLocalEnd[bEnd].ep_in;
+ 	pRequest = next_request(pEnd);
+ 
+-	wCsrVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++	wCsrVal = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 	DBG(4, "<== %s, txcsr %04x\n", pEnd->end_point.name, wCsrVal);
+ 
+ 	dma = is_dma_capable() ? pEnd->dma : NULL;
+@@ -456,8 +456,7 @@ void musb_g_tx(struct musb *pThis, u8 bE
+ 				MGC_WriteCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd,
+ 					wCsrVal);
+ 				/* ensure writebuffer is empty */
+-				wCsrVal = MGC_ReadCsr16(pBase,
+-						MGC_O_HDRC_TXCSR, bEnd);
++				wCsrVal = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 				DBG(4, "TXCSR%d %04x, dma off, "
+ 						"len %Zd, req %p\n",
+ 					bEnd, wCsrVal,
+@@ -506,8 +505,7 @@ void musb_g_tx(struct musb *pThis, u8 bE
+ 				 * FIXME revisit for stalls too...
+ 				 */
+ 				MGC_SelectEnd(pBase, bEnd);
+-				wCsrVal = MGC_ReadCsr16(pBase,
+-						MGC_O_HDRC_TXCSR, bEnd);
++				wCsrVal = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 				if (wCsrVal & MGC_M_TXCSR_FIFONOTEMPTY)
+ 					break;
+ 				pRequest = pEnd->desc
+@@ -569,10 +567,11 @@ static void rxstate(struct musb *pThis, 
+ 	struct usb_request	*pRequest = &req->request;
+ 	void __iomem		*pBase = pThis->pRegs;
+ 	struct musb_ep		*pEnd = &pThis->aLocalEnd[bEnd].ep_out;
++	void __iomem		*epio = pThis->aLocalEnd[bEnd].regs;
+ 	u16			wFifoCount = 0;
+ 	u16			wCount = pEnd->wPacketSize;
+ 
+-	wCsrVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd);
++	wCsrVal = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 
+ 	if (is_cppi_enabled() && pEnd->dma) {
+ 		struct dma_controller	*c = pThis->pDmaController;
+@@ -602,7 +601,7 @@ static void rxstate(struct musb *pThis, 
+ 	}
+ 
+ 	if (wCsrVal & MGC_M_RXCSR_RXPKTRDY) {
+-		wCount = MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCOUNT, bEnd);
++		wCount = musb_readw(epio, MGC_O_HDRC_RXCOUNT);
+ 		if (pRequest->actual < pRequest->length) {
+ #ifdef CONFIG_USB_INVENTRA_DMA
+ 			if (is_dma_capable() && pEnd->dma) {
+@@ -731,15 +730,15 @@ void musb_g_rx(struct musb *pThis, u8 bE
+ 	u16			wCsrVal;
+ 	struct usb_request	*pRequest;
+ 	void __iomem		*pBase = pThis->pRegs;
+-	struct musb_ep		*pEnd;
++	struct musb_ep		*pEnd = &pThis->aLocalEnd[bEnd].ep_out;
++	void __iomem		*epio = pThis->aLocalEnd[bEnd].regs;
+ 	struct dma_channel	*dma;
+ 
+ 	MGC_SelectEnd(pBase, bEnd);
+ 
+-	pEnd = &pThis->aLocalEnd[bEnd].ep_out;
+ 	pRequest = next_request(pEnd);
+ 
+-	wCsrVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd);
++	wCsrVal = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 	dma = is_dma_capable() ? pEnd->dma : NULL;
+ 
+ 	DBG(4, "<== %s, rxcsr %04x%s %p\n", pEnd->end_point.name,
+@@ -794,7 +793,7 @@ void musb_g_rx(struct musb *pThis, u8 bE
+ 
+ 		DBG(4, "RXCSR%d %04x, dma off, %04x, len %Zd, req %p\n",
+ 			bEnd, wCsrVal,
+-			MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd),
++			musb_readw(epio, MGC_O_HDRC_RXCSR),
+ 			pEnd->dma->dwActualLength, pRequest);
+ 
+ #if defined(CONFIG_USB_INVENTRA_DMA) || defined(CONFIG_USB_TUSB_OMAP_DMA)
+@@ -821,7 +820,7 @@ void musb_g_rx(struct musb *pThis, u8 bE
+ 
+ 		/* don't start more i/o till the stall clears */
+ 		MGC_SelectEnd(pBase, bEnd);
+-		wCsrVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd);
++		wCsrVal = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 		if (wCsrVal & MGC_M_RXCSR_P_SENDSTALL)
+ 			goto done;
+ 	}
+@@ -1270,21 +1269,16 @@ done:
+  */
+ int musb_gadget_set_halt(struct usb_ep *ep, int value)
+ {
+-	struct musb_ep		*pEnd;
+-	u8			bEnd;
+-	struct musb		*pThis;
++	struct musb_ep		*pEnd = to_musb_ep(ep);
++	u8			bEnd = pEnd->bEndNumber;
++	struct musb		*pThis = pEnd->pThis;
++	void __iomem		*epio = pThis->aLocalEnd[bEnd].regs;
+ 	void __iomem		*pBase;
+ 	unsigned long		flags;
+ 	u16			wCsr;
+ 	struct musb_request	*pRequest = NULL;
+ 	int			status = 0;
+ 
+-	if (!ep)
+-		return -EINVAL;
+-
+-	pEnd = to_musb_ep(ep);
+-	bEnd = pEnd->bEndNumber;
+-	pThis = pEnd->pThis;
+ 	pBase = pThis->pRegs;
+ 
+ 	spin_lock_irqsave(&pThis->Lock, flags);
+@@ -1299,7 +1293,7 @@ int musb_gadget_set_halt(struct usb_ep *
+ 	/* cannot portably stall with non-empty FIFO */
+ 	pRequest = to_musb_request(next_request(pEnd));
+ 	if (value && pEnd->is_in) {
+-		wCsr = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++		wCsr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 		if (wCsr & MGC_M_TXCSR_FIFONOTEMPTY) {
+ 			DBG(3, "%s fifo busy, cannot halt\n", ep->name);
+ 			spin_unlock_irqrestore(&pThis->Lock, flags);
+@@ -1311,7 +1305,7 @@ int musb_gadget_set_halt(struct usb_ep *
+ 	/* set/clear the stall and toggle bits */
+ 	DBG(2, "%s: %s stall\n", ep->name, value ? "set" : "clear");
+ 	if (pEnd->is_in) {
+-		wCsr = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++		wCsr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 		if (wCsr & MGC_M_TXCSR_FIFONOTEMPTY)
+ 			wCsr |= MGC_M_TXCSR_FLUSHFIFO;
+ 		wCsr |= MGC_M_TXCSR_P_WZC_BITS
+@@ -1324,7 +1318,7 @@ int musb_gadget_set_halt(struct usb_ep *
+ 		wCsr &= ~MGC_M_TXCSR_TXPKTRDY;
+ 		MGC_WriteCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd, wCsr);
+ 	} else {
+-		wCsr = MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd);
++		wCsr = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 		wCsr |= MGC_M_RXCSR_P_WZC_BITS
+ 			| MGC_M_RXCSR_FLUSHFIFO
+ 			| MGC_M_RXCSR_CLRDATATOG;
+@@ -1351,6 +1345,7 @@ done:
+ static int musb_gadget_fifo_status(struct usb_ep *ep)
+ {
+ 	struct musb_ep		*musb_ep = to_musb_ep(ep);
++	void __iomem		*epio = musb_ep->hw_ep->regs;
+ 	int			retval = -EINVAL;
+ 
+ 	if (musb_ep->desc && !musb_ep->is_in) {
+@@ -1363,7 +1358,7 @@ static int musb_gadget_fifo_status(struc
+ 
+ 		MGC_SelectEnd(mbase, bEnd);
+ 		/* FIXME return zero unless RXPKTRDY is set */
+-		retval = MGC_ReadCsr16(mbase, MGC_O_HDRC_RXCOUNT, bEnd);
++		retval = musb_readw(epio, MGC_O_HDRC_RXCOUNT);
+ 
+ 		spin_unlock_irqrestore(&musb->Lock, flags);
+ 	}
+@@ -1373,15 +1368,14 @@ static int musb_gadget_fifo_status(struc
+ static void musb_gadget_fifo_flush(struct usb_ep *ep)
+ {
+ 	struct musb_ep	*musb_ep = to_musb_ep(ep);
+-	struct musb	*musb;
++	struct musb	*musb = musb_ep->pThis;
++	u8		nEnd = musb_ep->bEndNumber;
++	void __iomem	*epio = musb->aLocalEnd[nEnd].regs;
+ 	void __iomem	*mbase;
+-	u8		nEnd;
+ 	unsigned long	flags;
+ 	u16		wCsr, wIntrTxE;
+ 
+-	musb = musb_ep->pThis;
+ 	mbase = musb->pRegs;
+-	nEnd = musb_ep->bEndNumber;
+ 
+ 	spin_lock_irqsave(&musb->Lock, flags);
+ 	MGC_SelectEnd(mbase, (u8) nEnd);
+@@ -1391,7 +1385,7 @@ static void musb_gadget_fifo_flush(struc
+ 	musb_writew(mbase, MGC_O_HDRC_INTRTXE, wIntrTxE & ~(1 << nEnd));
+ 
+ 	if (musb_ep->is_in) {
+-		wCsr = MGC_ReadCsr16(mbase, MGC_O_HDRC_TXCSR, nEnd);
++		wCsr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 		if (wCsr & MGC_M_TXCSR_FIFONOTEMPTY) {
+ 			wCsr |= MGC_M_TXCSR_FLUSHFIFO | MGC_M_TXCSR_P_WZC_BITS;
+ 			MGC_WriteCsr16(mbase, MGC_O_HDRC_TXCSR, nEnd, wCsr);
+@@ -1399,7 +1393,7 @@ static void musb_gadget_fifo_flush(struc
+ 			MGC_WriteCsr16(mbase, MGC_O_HDRC_TXCSR, nEnd, wCsr);
+ 		}
+ 	} else {
+-		wCsr = MGC_ReadCsr16(mbase, MGC_O_HDRC_RXCSR, nEnd);
++		wCsr = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 		wCsr |= MGC_M_RXCSR_FLUSHFIFO | MGC_M_RXCSR_P_WZC_BITS;
+ 		MGC_WriteCsr16(mbase, MGC_O_HDRC_RXCSR, nEnd, wCsr);
+ 		MGC_WriteCsr16(mbase, MGC_O_HDRC_RXCSR, nEnd, wCsr);
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -292,7 +292,7 @@ static inline void musb_save_toggle(stru
+ {
+ 	struct usb_device	*udev = urb->dev;
+ 	u16			csr;
+-	void __iomem		*hw = ep->musb->pRegs;
++	void __iomem		*epio = ep->regs;
+ 	struct musb_qh		*qh;
+ 
+ 	/* FIXME:  the current Mentor DMA code seems to have
+@@ -305,14 +305,12 @@ static inline void musb_save_toggle(stru
+ 		qh = ep->out_qh;
+ 
+ 	if (!is_in) {
+-		csr = MGC_ReadCsr16(hw, MGC_O_HDRC_TXCSR,
+-				ep->bLocalEnd);
++		csr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 		usb_settoggle(udev, qh->epnum, 1,
+ 			(csr & MGC_M_TXCSR_H_DATATOGGLE)
+ 				? 1 : 0);
+ 	} else {
+-		csr = MGC_ReadCsr16(hw, MGC_O_HDRC_RXCSR,
+-				ep->bLocalEnd);
++		csr = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 		usb_settoggle(udev, qh->epnum, 0,
+ 			(csr & MGC_M_RXCSR_H_DATATOGGLE)
+ 				? 1 : 0);
+@@ -471,12 +469,13 @@ static u8 musb_host_packet_rx(struct mus
+ 	int			do_flush = 0;
+ 	void __iomem		*pBase = pThis->pRegs;
+ 	struct musb_hw_ep	*pEnd = pThis->aLocalEnd + bEnd;
++	void __iomem		*epio = pEnd->regs;
+ 	struct musb_qh		*qh = pEnd->in_qh;
+ 	int			nPipe = pUrb->pipe;
+ 	void			*buffer = pUrb->transfer_buffer;
+ 
+ 	// MGC_SelectEnd(pBase, bEnd);
+-	wRxCount = MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCOUNT, bEnd);
++	wRxCount = musb_readw(epio, MGC_O_HDRC_RXCOUNT);
+ 
+ 	/* unload FIFO */
+ 	if (usb_pipeisoc(nPipe)) {
+@@ -535,7 +534,7 @@ static u8 musb_host_packet_rx(struct mus
+ 
+ 	musb_read_fifo(pEnd, length, pBuffer);
+ 
+-	wCsr = MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd);
++	wCsr = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 	wCsr |= MGC_M_RXCSR_H_WZC_BITS;
+ 	if (unlikely(do_flush))
+ 		musb_h_flush_rxfifo(pEnd, wCsr);
+@@ -672,7 +671,7 @@ static void musb_ep_program(struct musb 
+ 		u16	wIntrTxE;
+ 		u16	wLoadCount;
+ 
+-		wCsr = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++		wCsr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 
+ 		/* disable interrupt in case we flush */
+ 		wIntrTxE = musb_readw(pBase, MGC_O_HDRC_INTRTXE);
+@@ -710,8 +709,7 @@ static void musb_ep_program(struct musb 
+ 			/* REVISIT may need to clear FLUSHFIFO ... */
+ 			MGC_WriteCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd,
+ 					csr);
+-			wCsr = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR,
+-					bEnd);
++			wCsr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 		} else {
+ 			/* endpoint 0: just flush */
+ 			MGC_WriteCsr16(pBase, MGC_O_HDRC_CSR0, bEnd,
+@@ -764,7 +762,7 @@ static void musb_ep_program(struct musb 
+ 		if (pDmaChannel) {
+ 
+ 			/* clear previous state */
+-			wCsr = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++			wCsr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 			wCsr &= ~(MGC_M_TXCSR_AUTOSET
+ 				| MGC_M_TXCSR_DMAMODE
+ 				| MGC_M_TXCSR_DMAENAB);
+@@ -817,7 +815,7 @@ static void musb_ep_program(struct musb 
+ 			 * assume CPPI setup succeeds.
+ 			 * defer enabling dma.
+ 			 */
+-			wCsr = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++			wCsr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 			wCsr &= ~(MGC_M_TXCSR_AUTOSET
+ 					| MGC_M_TXCSR_DMAMODE
+ 					| MGC_M_TXCSR_DMAENAB);
+@@ -857,7 +855,7 @@ static void musb_ep_program(struct musb 
+ 			/* PIO to load FIFO */
+ 			qh->segsize = wLoadCount;
+ 			musb_write_fifo(pEnd, wLoadCount, pBuffer);
+-			wCsr = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++			wCsr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 			wCsr &= ~(MGC_M_TXCSR_DMAENAB
+ 				| MGC_M_TXCSR_DMAMODE
+ 				| MGC_M_TXCSR_AUTOSET);
+@@ -1042,7 +1040,7 @@ irqreturn_t musb_h_ep0_irq(struct musb *
+ 	pUrb = next_urb(qh);
+ 
+ 	MGC_SelectEnd(pBase, 0);
+-	wCsrVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_CSR0, 0);
++	wCsrVal = musb_readw(epio, MGC_O_HDRC_CSR0);
+ 	wCount = musb_readb(epio, MGC_O_HDRC_COUNT0);
+ 
+ 	DBG(4, "<== csr0 %04x, qh %p, count %d, urb %p, stage %d\n",
+@@ -1181,7 +1179,7 @@ void musb_host_tx(struct musb *pThis, u8
+ 	pUrb = next_urb(qh);
+ 
+ 	MGC_SelectEnd(pBase, bEnd);
+-	wTxCsrVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_TXCSR, bEnd);
++	wTxCsrVal = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 
+ 	/* with CPPI, DMA sometimes triggers "extra" irqs */
+ 	if (!pUrb) {
+@@ -1417,7 +1415,7 @@ void musb_host_rx(struct musb *pThis, u8
+ 	status = 0;
+ 	xfer_len = 0;
+ 
+-	wVal = wRxCsrVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd);
++	wVal = wRxCsrVal = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 
+ 	if (unlikely(!pUrb)) {
+ 		/* REVISIT -- THIS SHOULD NEVER HAPPEN ... but, at least
+@@ -1425,7 +1423,7 @@ void musb_host_rx(struct musb *pThis, u8
+ 		 * with fifo full.  (Only with DMA??)
+ 		 */
+ 		DBG(3, "BOGUS RX%d ready, csr %04x, count %d\n", bEnd, wVal,
+-			MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCOUNT, bEnd));
++			musb_readw(epio, MGC_O_HDRC_RXCOUNT));
+ 		musb_h_flush_rxfifo(pEnd, MGC_M_RXCSR_CLRDATATOG);
+ 		return;
+ 	}
+@@ -1550,8 +1548,8 @@ void musb_host_rx(struct musb *pThis, u8
+ 
+ 		DBG(4, "ep %d dma %s, rxcsr %04x, rxcount %d\n", bEnd,
+ 			bDone ? "off" : "reset",
+-			MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd),
+-			MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCOUNT, bEnd));
++			musb_readw(epio, MGC_O_HDRC_RXCSR),
++			musb_readw(epio, MGC_O_HDRC_RXCOUNT));
+ #else
+ 		bDone = TRUE;
+ #endif
+@@ -1578,8 +1576,7 @@ void musb_host_rx(struct musb *pThis, u8
+ 			u16			wRxCount;
+ 			int			status;
+ 
+-			wRxCount = MGC_ReadCsr16(pBase,
+-					MGC_O_HDRC_RXCOUNT, bEnd);
++			wRxCount = musb_readw(epio, MGC_O_HDRC_RXCOUNT);
+ 
+ 			DBG(2, "RX%d count %d, buffer 0x%x len %d/%d\n",
+ 					bEnd, wRxCount,
+@@ -1620,7 +1617,7 @@ void musb_host_rx(struct musb *pThis, u8
+  *	wait for an interrupt when the pkt is recd. Well, you won't get any!
+  */
+ 
+-			wVal = MGC_ReadCsr16(pBase, MGC_O_HDRC_RXCSR, bEnd);
++			wVal = musb_readw(epio, MGC_O_HDRC_RXCSR);
+ 			wVal &= ~MGC_M_RXCSR_H_REQPKT;
+ 
+ 			if (dma->bDesiredMode == 0)
+@@ -1923,6 +1920,7 @@ done:
+ static int musb_cleanup_urb(struct urb *urb, struct musb_qh *qh, int is_in)
+ {
+ 	struct musb_hw_ep	*ep = qh->hw_ep;
++	void __iomem		*epio = ep->regs;
+ 	unsigned		hw_end = ep->bLocalEnd;
+ 	void __iomem		*regs = ep->musb->pRegs;
+ 	u16			csr;
+@@ -1955,7 +1953,7 @@ static int musb_cleanup_urb(struct urb *
+ 		 */
+ 	} else {
+ // SCRUB (TX)
+-		csr = MGC_ReadCsr16(regs, MGC_O_HDRC_TXCSR, hw_end);
++		csr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 		if (csr & MGC_M_TXCSR_FIFONOTEMPTY)
+ 			csr |= MGC_M_TXCSR_FLUSHFIFO;
+ 		csr &= ~( MGC_M_TXCSR_AUTOSET
+@@ -1969,7 +1967,7 @@ static int musb_cleanup_urb(struct urb *
+ 		/* REVISIT may need to clear FLUSHFIFO ... */
+ 		MGC_WriteCsr16(regs, MGC_O_HDRC_TXCSR, 0, csr);
+ 		/* flush cpu writebuffer */
+-		csr = MGC_ReadCsr16(regs, MGC_O_HDRC_TXCSR, hw_end);
++		csr = musb_readw(epio, MGC_O_HDRC_TXCSR);
+ 	}
+ 	if (status == 0)
+ 		musb_advance_schedule(ep->musb, urb, ep, is_in);
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -232,13 +232,9 @@ enum musb_g_ep0_state {
+  * using hw_ep->regs, for all access except writing INDEX
+  */
+ #ifdef	MUSB_FLAT_REG
+-#define MGC_ReadCsr16(_pBase, _bOffset, _bEnd) \
+-	musb_readw((_pBase), MGC_END_OFFSET((_bEnd), (_bOffset)))
+ #define MGC_WriteCsr16(_pBase, _bOffset, _bEnd, _bData) \
+ 	musb_writew((_pBase), MGC_END_OFFSET((_bEnd), (_bOffset)), (_bData))
+ #else
+-#define MGC_ReadCsr16(_pBase, _bOffset, _bEnd) \
+-	musb_readw(_pBase, (_bOffset + 0x10))
+ #define MGC_WriteCsr16(_pBase, _bOffset, _bEnd, _bData) \
+ 	musb_writew(_pBase, (_bOffset + 0x10), _bData)
+ #endif
+Index: linux-2.6.18/mvl_patches/pro50-1621.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1621.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1621);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

@@ -1,0 +1,516 @@
+#! /usr/bin/env bash
+# Patch: -pro_usb_musb_host_use_bulk_in_nak_timeout
+# Date: Thu Feb 19 14:57:44 2009
+# Source: Texas Instruments, Inc.
+# MR: 29374
+# Type: Enhancement
+# Disposition: needs submitting to linux-usb@vger.kernel.org
+# Signed-off-by: Dmitry Krivoschekov <dkrivoschekov@ru.mvista.com>
+# Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+# Description:
+# Add support for bulk NAK timeout handling.  Note that this functionality is
+# implemented for bulk IN requests only but not for BULK OUT (the original TI's
+# implementation does not support it either).
+# While at it, sanitize handling of the Rx NAK timeout interrupt...
+# 
+#  drivers/usb/musb/musb_host.c |  182 +++++++++++++++++++++++++++++--------------
+#  1 files changed, 126 insertions(+), 56 deletions(-)
+# 
+
+PATCHNUM=2060
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: Texas Instruments, Inc.
+MR: 29374
+Type: Enhancement
+Disposition: needs submitting to linux-usb@vger.kernel.org
+Signed-off-by: Dmitry Krivoschekov <dkrivoschekov@ru.mvista.com>
+Signed-off-by: Sergei Shtylyov <sshtylyov@ru.mvista.com>
+Description:
+Add support for bulk NAK timeout handling.  Note that this functionality is
+implemented for bulk IN requests only but not for BULK OUT (the original TI's
+implementation does not support it either).
+While at it, sanitize handling of the Rx NAK timeout interrupt...
+
+ drivers/usb/musb/musb_host.c |  182 +++++++++++++++++++++++++++++--------------
+ mvl_patches/pro50-2060.c     |   16 +++
+ 2 files changed, 142 insertions(+), 56 deletions(-)
+
+Index: linux-2.6.18/drivers/usb/musb/musb_host.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musb_host.c
++++ linux-2.6.18/drivers/usb/musb/musb_host.c
+@@ -161,58 +161,78 @@ static inline void musb_h_tx_dma_start(s
+ }
+ 
+ /*
+- * Start the URB at the front of an endpoint's queue
+- * end must be claimed from the caller.
++ * Start (or re-start) the URB at the front of an endpoint's queue.
++ * Endpoint must be claimed from the caller.
+  *
+  * Context: controller locked, irqs blocked
+  */
+-static void
+-musb_start_urb(struct musb *musb, int is_in, struct musb_qh *qh)
++static void musb_start_urb(struct musb *musb, int is_in, struct musb_qh *qh)
+ {
+-	u16			frame;
+-	u32			len, ofs = 0;
+ 	void __iomem		*mbase =  musb->mregs;
+ 	struct urb		*urb = next_urb(qh);
+ 	void			*buf = urb->transfer_buffer;
+ 	struct musb_hw_ep	*hw_ep = qh->hw_ep;
+-	unsigned		pipe = urb->pipe;
+-	u8			address = usb_pipedevice(pipe);
+ 	int			epnum = hw_ep->epnum;
++	u32			ofs, len;
+ 
+-	/* initialize software qh state */
+-	qh->offset = 0;
+-	qh->segsize = 0;
++	/*
++	 * If the URB's actual transfer length is non-zero, this URB has been
++	 * rescheduled and we're now trying to restart it; if it's zero, this
++	 * URB might have been started already but since no data transfer has
++	 * happened, we can start it over again...
++	 *
++	 * NOTE: this restart criterion isn't enough for the control transfers
++	 * but we're not going to try reschedule them.
++	 */
++	if (urb->actual_length == 0) {
++		/* Initialize software qh state */
++		qh->offset = qh->segsize = 0;
++
++		switch (qh->type) {
++		case USB_ENDPOINT_XFER_CONTROL:
++			/* Control transfers always start with SETUP */
++			musb->ep0_stage = MUSB_EP0_START;
++			break;
++		case USB_ENDPOINT_XFER_ISOC:
++			qh->iso_idx = 0;
++			qh->frame = 0;
++		}
++	}
+ 
+ 	/* gather right source of data */
+ 	switch (qh->type) {
+ 	case USB_ENDPOINT_XFER_CONTROL:
+-		/* control transfers always start with SETUP */
++		if (musb->ep0_stage != MUSB_EP0_START)
++			goto buffer;
++
+ 		is_in = 0;
+ 		hw_ep->out_qh = qh;
+-		musb->ep0_stage = MUSB_EP0_START;
+ 		buf = urb->setup_packet;
++		ofs = 0;
+ 		len = 8;
+ 		break;
+ 	case USB_ENDPOINT_XFER_ISOC:
+-		qh->iso_idx = 0;
+-		qh->frame = 0;
+-		ofs = urb->iso_frame_desc[0].offset;
+-		len = urb->iso_frame_desc[0].length;
++		ofs = urb->iso_frame_desc[qh->iso_idx].offset;
++		len = urb->iso_frame_desc[qh->iso_idx].length;
+ 		break;
+ 	default:		/* bulk, interrupt */
+-		len = urb->transfer_buffer_length;
++buffer:
++		ofs = urb->actual_length;
++		len = urb->transfer_buffer_length - ofs;
+ 	}
+ 
+ 	DBG(4, "qh %p urb %p dev%d ep%d%s%s, hw_ep %d, %p/%d\n",
+-			qh, urb, address, qh->epnum,
+-			is_in ? "in" : "out",
+-			({char *s; switch (qh->type) {
+-			case USB_ENDPOINT_XFER_CONTROL:	s = ""; break;
+-			case USB_ENDPOINT_XFER_BULK:	s = "-bulk"; break;
+-			case USB_ENDPOINT_XFER_ISOC:	s = "-iso"; break;
+-			default:			s = "-intr"; break;
+-			}; s; }),
+-			epnum, buf + ofs, len);
++	    qh, urb, usb_pipedevice(urb->pipe), qh->epnum, is_in ? "in" : "out",
++	    ({
++		char *s;
++		switch (qh->type) {
++		case USB_ENDPOINT_XFER_BULK:	s = "-bulk"; break;
++		case USB_ENDPOINT_XFER_ISOC:	s = "-iso"; break;
++		case USB_ENDPOINT_XFER_INT:	s = "-intr"; break;
++		default:			s = ""; break;
++		}; s;
++	    }),
++	    epnum, buf + ofs, len);
+ 
+ 	/* Configure endpoint */
+ 	if (is_in || hw_ep->is_shared_fifo)
+@@ -230,13 +250,15 @@ musb_start_urb(struct musb *musb, int is
+ 	case USB_ENDPOINT_XFER_ISOC:
+ 	case USB_ENDPOINT_XFER_INT:
+ 		DBG(3, "check whether there's still time for periodic Tx\n");
+-		frame = musb_readw(mbase, MUSB_FRAME);
+-		/* FIXME this doesn't implement that scheduling policy ...
+-		 * or handle framecounter wrapping
++		/*
++		 * FIXME: this doesn't implement that scheduling policy
++		 * or handle framecounter wrapping...
+ 		 */
+-		if ((urb->transfer_flags & URB_ISO_ASAP)
+-				|| (frame >= urb->start_frame)) {
+-			/* REVISIT the SOF irq handler shouldn't duplicate
++		if ((urb->actual_length > 0) ||
++		    (urb->transfer_flags & URB_ISO_ASAP) ||
++		    musb_readw(mbase, MUSB_FRAME) >= urb->start_frame) {
++			/*
++			 * REVISIT: the SOF IRQ handler shouldn't duplicate
+ 			 * this code; and we don't init urb->start_frame...
+ 			 */
+ 			qh->frame = 0;
+@@ -425,6 +447,39 @@ musb_advance_schedule(struct musb *musb,
+ 	}
+ }
+ 
++static int use_bulk_timeout = 1;
++
++module_param(use_bulk_timeout, bool, 0);
++MODULE_PARM_DESC(use_bulk_timeout,
++		 "enable/disable use of bulk endpoint timeout");
++
++static void musb_bulk_in_timeout(struct musb *musb, struct musb_hw_ep *hw_ep)
++{
++	struct dma_channel	*dma = hw_ep->rx_channel;
++	struct musb_qh		*hqh, *pqh = hw_ep->in_qh;
++	struct urb		*urb = next_urb(pqh);
++	void __iomem		*epio = hw_ep->regs;
++
++	/* Fetch the next qh */
++	hqh = list_entry(pqh->ring.next, struct musb_qh, ring);
++
++	DBG(4, "Schedule bulk: old qh %p, new qh %p, RXCSR%d %#04x\n",
++	    pqh, hqh, hw_ep->epnum, musb_readw(epio, MUSB_RXCSR));
++
++	if (dma_channel_status(dma) == MUSB_DMA_STATUS_BUSY) {
++		dma->status = MUSB_DMA_STATUS_CORE_ABORT;
++		(void)musb->dma_controller->channel_abort(dma);
++		pqh->offset += dma->actual_len;
++		urb->actual_length += dma->actual_len;
++	}
++	musb_save_toggle(pqh, 1, urb);
++
++	list_move_tail(&pqh->ring, &musb->in_bulk);
++
++	hw_ep->rx_reinit = 1;
++	musb_start_urb(musb, 1, hqh);
++}
++
+ static inline u16 musb_h_flush_rxfifo(struct musb_hw_ep *hw_ep, u16 csr)
+ {
+ 	/* we don't want fifo to fill itself again;
+@@ -1263,6 +1318,7 @@ void musb_host_tx(struct musb *musb, u8 
+ 	/* REVISIT this looks wrong... */
+ 	if (!status || dma || usb_pipeisoc(pipe)) {
+ 		length = dma ? dma->actual_len : qh->segsize;
++		urb->actual_length += length;
+ 		qh->offset += length;
+ 
+ 		if (usb_pipeisoc(pipe)) {
+@@ -1308,7 +1364,6 @@ void musb_host_tx(struct musb *musb, u8 
+ 	if (done) {
+ 		/* set status */
+ 		urb->status = status;
+-		urb->actual_length = qh->offset;
+ 		musb_advance_schedule(musb, urb, hw_ep, USB_DIR_OUT);
+ 		return;
+ 	} else	if (tx_csr & MUSB_TXCSR_DMAENAB) {
+@@ -1439,22 +1494,25 @@ void musb_host_rx(struct musb *musb, u8 
+ 
+ 	} else if (rx_csr & MUSB_RXCSR_DATAERROR) {
+ 
+-		if (USB_ENDPOINT_XFER_ISOC != qh->type) {
+-			/* NOTE this code path would be a good place to PAUSE a
+-			 * transfer, if there's some other (nonperiodic) rx urb
+-			 * that could use this fifo.  (dma complicates it...)
++		switch (qh->type) {
++		case USB_ENDPOINT_XFER_BULK:
++			/*
++			 * NOTE: this code path is a good place to PAUSE a
++			 * transfer, if there's some other (nonperiodic) Rx
++			 * USB that could use this FIFO (DMA complicates it)...
+ 			 *
+-			 * if (bulk && qh->ring.next != &musb->in_bulk), then
+-			 * we have a candidate... NAKing is *NOT* an error
++			 * If qh->ring.next != &musb->in_bulk, then we have
++			 * a candidate... NAKing is *NOT* an error.
+ 			 */
+ 			DBG(6, "RX end %d NAK timeout\n", epnum);
+-			musb_ep_select(mbase, epnum);
+-			musb_writew(epio, MUSB_RXCSR,
+-					MUSB_RXCSR_H_WZC_BITS
+-					| MUSB_RXCSR_H_REQPKT);
+-
+-			goto finish;
+-		} else {
++			if (use_bulk_timeout && qh->ring.next != &musb->in_bulk)
++				musb_bulk_in_timeout(musb, hw_ep);
++			else
++				/* Allow the endpoint to continue */
++				musb_writew(epio, MUSB_RXCSR,
++					    rx_csr & ~MUSB_RXCSR_DATAERROR);
++			return;
++		case USB_ENDPOINT_XFER_ISOC:
+ 			DBG(4, "RX end %d ISO data error\n", epnum);
+ 			/* packet error reported later */
+ 			iso_err = true;
+@@ -1864,23 +1922,35 @@ static int musb_urb_enqueue(
+ 	case USB_ENDPOINT_XFER_ISOC:
+ 		/* iso always uses log encoding */
+ 		break;
+-	default:
+-		/* REVISIT we actually want to use NAK limits, hinting to the
+-		 * transfer scheduling logic to try some other qh, e.g. try
+-		 * for 2 msec first:
+-		 *
+-		 * interval = (USB_SPEED_HIGH == urb->dev->speed) ? 16 : 2;
+-		 *
+-		 * The downside of disabling this is that transfer scheduling
++	case USB_ENDPOINT_XFER_BULK:
++		if (use_bulk_timeout && usb_pipein(urb->pipe)) {
++			/*
++			 * We actually want to use NAK limits, hinting to the
++			 * transfer scheduling logic to try some other qh, e.g.
++			 * try for 16 ms first -- which in logarithmic encoding
++			 * would evaluate to:
++			 */
++			interval = USB_SPEED_HIGH == urb->dev->speed ? 8 : 5;
++			/*
++			 * NOTE: this scheme doen't work for the case of a
++			 * full speed device behind a high speed hub as the
++			 * NAK timeout interrupts do not happen...
++			 */
++			break;
++		}
++		/*
++		 * The downside of disabling it is that transfer scheduling
+ 		 * gets VERY unfair for nonperiodic transfers; a misbehaving
+ 		 * peripheral could make that hurt.  Or for reads, one that's
+ 		 * perfectly normal:  network and other drivers keep reads
+ 		 * posted at all times, having one pending for a week should
+ 		 * be perfectly safe.
+ 		 *
+-		 * The upside of disabling it is avoidng transfer scheduling
++		 * The upside of disabling it is avoiding transfer scheduling
+ 		 * code to put this aside for while.
+ 		 */
++		/* FALLTHROUGH */
++	default:
+ 		interval = 0;
+ 	}
+ 	qh->intv_reg = interval;
+Index: linux-2.6.18/mvl_patches/pro50-2060.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2060.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2009 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2060);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

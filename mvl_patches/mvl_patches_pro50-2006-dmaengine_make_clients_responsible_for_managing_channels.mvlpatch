@@ -1,0 +1,1007 @@
+#! /usr/bin/env bash
+# Patch: -dmaengine_make_clients_responsible_for_managing_channels
+# Date: Wed Dec 10 13:45:08 2008
+# Source: kernel.org
+# MR: 30590
+# Type: Enhancement
+# Disposition: backport from 2.6.23-rc1 (d379b01e9087a582d58f4b678208a4f8d8376fe7)
+# Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+# Description:
+# 
+# commit d379b01e9087a582d58f4b678208a4f8d8376fe7
+# Author: Dan Williams <dan.j.williams@intel.com>
+# Date:   Mon Jul 9 11:56:42 2007 -0700
+# 
+#     dmaengine: make clients responsible for managing channels
+#     
+#     The current implementation assumes that a channel will only be used by one
+#     client at a time.  In order to enable channel sharing the dmaengine core is
+#     changed to a model where clients subscribe to channel-available-events.
+#     Instead of tracking how many channels a client wants and how many it has
+#     received the core just broadcasts the available channels and lets the
+#     clients optionally take a reference.  The core learns about the clients'
+#     needs at dma_event_callback time.
+#     
+#     In support of multiple operation types, clients can specify a capability
+#     mask to only be notified of channels that satisfy a certain set of
+#     capabilities.
+#     
+#     Changelog:
+#     * removed DMA_TX_ARRAY_INIT, no longer needed
+#     * dma_client_chan_free -> dma_chan_release: switch to global reference
+#       counting only at device unregistration time, before it was also happening
+#       at client unregistration time
+#     * clients now return dma_state_client to dmaengine (ack, dup, nak)
+#     * checkpatch.pl fixes
+#     * fixup merge with git-ioat
+#     
+#     Cc: Chris Leech <christopher.leech@intel.com>
+#     Signed-off-by: Shannon Nelson <shannon.nelson@intel.com>
+#     Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+#     Acked-by: David S. Miller <davem@davemloft.net>
+# 
+#  drivers/dma/dmaengine.c   |  217 +++++++++++++++++++++++----------------------
+#  drivers/dma/ioatdma.c     |    1 
+#  drivers/dma/ioatdma.h     |    3 -
+#  include/linux/dmaengine.h |   58 +++++++-----
+#  net/core/dev.c            |  112 ++++++++++++++++-------
+#  5 files changed, 224 insertions(+), 167 deletions(-)
+# 
+# 
+
+PATCHNUM=2006
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+Source: kernel.org
+MR: 30590
+Type: Enhancement
+Disposition: backport from 2.6.23-rc1 (d379b01e9087a582d58f4b678208a4f8d8376fe7)
+Signed-off-by: Anton Vorontsov <avorontsov@ru.mvista.com>
+Description:
+
+commit d379b01e9087a582d58f4b678208a4f8d8376fe7
+Author: Dan Williams <dan.j.williams@intel.com>
+Date:   Mon Jul 9 11:56:42 2007 -0700
+
+    dmaengine: make clients responsible for managing channels
+    
+    The current implementation assumes that a channel will only be used by one
+    client at a time.  In order to enable channel sharing the dmaengine core is
+    changed to a model where clients subscribe to channel-available-events.
+    Instead of tracking how many channels a client wants and how many it has
+    received the core just broadcasts the available channels and lets the
+    clients optionally take a reference.  The core learns about the clients'
+    needs at dma_event_callback time.
+    
+    In support of multiple operation types, clients can specify a capability
+    mask to only be notified of channels that satisfy a certain set of
+    capabilities.
+    
+    Changelog:
+    * removed DMA_TX_ARRAY_INIT, no longer needed
+    * dma_client_chan_free -> dma_chan_release: switch to global reference
+      counting only at device unregistration time, before it was also happening
+      at client unregistration time
+    * clients now return dma_state_client to dmaengine (ack, dup, nak)
+    * checkpatch.pl fixes
+    * fixup merge with git-ioat
+    
+    Cc: Chris Leech <christopher.leech@intel.com>
+    Signed-off-by: Shannon Nelson <shannon.nelson@intel.com>
+    Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+    Acked-by: David S. Miller <davem@davemloft.net>
+
+ drivers/dma/dmaengine.c   |  217 +++++++++++++++++++++++-----------------------
+ drivers/dma/ioatdma.c     |    1 
+ drivers/dma/ioatdma.h     |    3 
+ include/linux/dmaengine.h |   60 +++++++-----
+ mvl_patches/pro50-2006.c  |   16 +++
+ net/core/dev.c            |  112 ++++++++++++++++-------
+ 6 files changed, 241 insertions(+), 168 deletions(-)
+
+
+Index: linux-2.6.18/drivers/dma/dmaengine.c
+===================================================================
+--- linux-2.6.18.orig/drivers/dma/dmaengine.c
++++ linux-2.6.18/drivers/dma/dmaengine.c
+@@ -37,11 +37,11 @@
+  * Each device has a channels list, which runs unlocked but is never modified
+  * once the device is registered, it's just setup by the driver.
+  *
+- * Each client has a channels list, it's only modified under the client->lock
+- * and in an RCU callback, so it's safe to read under rcu_read_lock().
++ * Each client is responsible for keeping track of the channels it uses.  See
++ * the definition of dma_event_callback in dmaengine.h.
+  *
+  * Each device has a kref, which is initialized to 1 when the device is
+- * registered. A kref_put is done for each class_device registered.  When the
++ * registered. A kref_get is done for each class_device registered.  When the
+  * class_device is released, the coresponding kref_put is done in the release
+  * method. Every time one of the device's channels is allocated to a client,
+  * a kref_get occurs.  When the channel is freed, the coresponding kref_put
+@@ -51,10 +51,12 @@
+  * references to finish.
+  *
+  * Each channel has an open-coded implementation of Rusty Russell's "bigref,"
+- * with a kref and a per_cpu local_t.  A single reference is set when on an
+- * ADDED event, and removed with a REMOVE event.  Net DMA client takes an
+- * extra reference per outstanding transaction.  The relase function does a
+- * kref_put on the device. -ChrisL
++ * with a kref and a per_cpu local_t.  A dma_chan_get is called when a client
++ * signals that it wants to use a channel, and dma_chan_put is called when
++ * a channel is removed or a client using it is unregesitered.  A client can
++ * take extra references per outstanding transaction, as is the case with
++ * the NET DMA client.  The release function does a kref_put on the device.
++ *	-ChrisL, DanW
+  */
+ 
+ #include <linux/init.h>
+@@ -102,8 +104,19 @@ static ssize_t show_bytes_transferred(st
+ static ssize_t show_in_use(struct class_device *cd, char *buf)
+ {
+ 	struct dma_chan *chan = container_of(cd, struct dma_chan, class_dev);
++	int in_use = 0;
+ 
+-	return sprintf(buf, "%d\n", (chan->client ? 1 : 0));
++	if (unlikely(chan->slow_ref) &&
++		atomic_read(&chan->refcount.refcount) > 1)
++		in_use = 1;
++	else {
++		if (local_read(&(per_cpu_ptr(chan->local,
++			get_cpu())->refcount)) > 0)
++			in_use = 1;
++		put_cpu();
++	}
++
++	return sprintf(buf, "%d\n", in_use);
+ }
+ 
+ static struct class_device_attribute dma_class_attrs[] = {
+@@ -129,42 +142,53 @@ static struct class dma_devclass = {
+ 
+ /* --- client and device registration --- */
+ 
++#define dma_chan_satisfies_mask(chan, mask) \
++	__dma_chan_satisfies_mask((chan), &(mask))
++static int
++__dma_chan_satisfies_mask(struct dma_chan *chan, dma_cap_mask_t *want)
++{
++	dma_cap_mask_t has;
++
++	bitmap_and(has.bits, want->bits, chan->device->cap_mask.bits,
++		DMA_TX_TYPE_END);
++	return bitmap_equal(want->bits, has.bits, DMA_TX_TYPE_END);
++}
++
+ /**
+- * dma_client_chan_alloc - try to allocate a channel to a client
++ * dma_client_chan_alloc - try to allocate channels to a client
+  * @client: &dma_client
+  *
+  * Called with dma_list_mutex held.
+  */
+-static struct dma_chan *dma_client_chan_alloc(struct dma_client *client)
++static void dma_client_chan_alloc(struct dma_client *client)
+ {
+ 	struct dma_device *device;
+ 	struct dma_chan *chan;
+-	unsigned long flags;
+ 	int desc;	/* allocated descriptor count */
++	enum dma_state_client ack;
+ 
+-	/* Find a channel, any DMA engine will do */
+-	list_for_each_entry(device, &dma_device_list, global_node) {
++	/* Find a channel */
++	list_for_each_entry(device, &dma_device_list, global_node)
+ 		list_for_each_entry(chan, &device->channels, device_node) {
+-			if (chan->client)
++			if (!dma_chan_satisfies_mask(chan, client->cap_mask))
+ 				continue;
+ 
+ 			desc = chan->device->device_alloc_chan_resources(chan);
+ 			if (desc >= 0) {
+-				kref_get(&device->refcount);
+-				kref_init(&chan->refcount);
+-				chan->slow_ref = 0;
+-				INIT_RCU_HEAD(&chan->rcu);
+-				chan->client = client;
+-				spin_lock_irqsave(&client->lock, flags);
+-				list_add_tail_rcu(&chan->client_node,
+-				                  &client->channels);
+-				spin_unlock_irqrestore(&client->lock, flags);
+-				return chan;
++				ack = client->event_callback(client,
++						chan,
++						DMA_RESOURCE_AVAILABLE);
++
++				/* we are done once this client rejects
++				 * an available resource
++				 */
++				if (ack == DMA_ACK) {
++					dma_chan_get(chan);
++					kref_get(&device->refcount);
++				} else if (ack == DMA_NAK)
++					return;
+ 			}
+ 		}
+-	}
+-
+-	return NULL;
+ }
+ 
+ enum dma_status dma_sync_wait(struct dma_chan *chan, dma_cookie_t cookie)
+@@ -193,7 +217,6 @@ void dma_chan_cleanup(struct kref *kref)
+ {
+ 	struct dma_chan *chan = container_of(kref, struct dma_chan, refcount);
+ 	chan->device->device_free_chan_resources(chan);
+-	chan->client = NULL;
+ 	kref_put(&chan->device->refcount, dma_async_device_cleanup);
+ }
+ EXPORT_SYMBOL(dma_chan_cleanup);
+@@ -209,7 +232,7 @@ static void dma_chan_free_rcu(struct rcu
+ 	kref_put(&chan->refcount, dma_chan_cleanup);
+ }
+ 
+-static void dma_client_chan_free(struct dma_chan *chan)
++static void dma_chan_release(struct dma_chan *chan)
+ {
+ 	atomic_add(0x7FFFFFFF, &chan->refcount.refcount);
+ 	chan->slow_ref = 1;
+@@ -217,70 +240,57 @@ static void dma_client_chan_free(struct 
+ }
+ 
+ /**
+- * dma_chans_rebalance - reallocate channels to clients
+- *
+- * When the number of DMA channel in the system changes,
+- * channels need to be rebalanced among clients.
++ * dma_chans_notify_available - broadcast available channels to the clients
+  */
+-static void dma_chans_rebalance(void)
++static void dma_clients_notify_available(void)
+ {
+ 	struct dma_client *client;
+-	struct dma_chan *chan;
+-	unsigned long flags;
+ 
+ 	mutex_lock(&dma_list_mutex);
+ 
+-	list_for_each_entry(client, &dma_client_list, global_node) {
+-		while (client->chans_desired > client->chan_count) {
+-			chan = dma_client_chan_alloc(client);
+-			if (!chan)
+-				break;
+-			client->chan_count++;
+-			client->event_callback(client,
+-	                                       chan,
+-	                                       DMA_RESOURCE_ADDED);
+-		}
+-		while (client->chans_desired < client->chan_count) {
+-			spin_lock_irqsave(&client->lock, flags);
+-			chan = list_entry(client->channels.next,
+-			                  struct dma_chan,
+-			                  client_node);
+-			list_del_rcu(&chan->client_node);
+-			spin_unlock_irqrestore(&client->lock, flags);
+-			client->chan_count--;
+-			client->event_callback(client,
+-			                       chan,
+-			                       DMA_RESOURCE_REMOVED);
+-			dma_client_chan_free(chan);
+-		}
+-	}
++	list_for_each_entry(client, &dma_client_list, global_node)
++		dma_client_chan_alloc(client);
+ 
+ 	mutex_unlock(&dma_list_mutex);
+ }
+ 
+ /**
+- * dma_async_client_register - allocate and register a &dma_client
+- * @event_callback: callback for notification of channel addition/removal
++ * dma_chans_notify_available - tell the clients that a channel is going away
++ * @chan: channel on its way out
+  */
+-struct dma_client *dma_async_client_register(dma_event_callback event_callback)
++static void dma_clients_notify_removed(struct dma_chan *chan)
+ {
+ 	struct dma_client *client;
++	enum dma_state_client ack;
+ 
+-	client = kzalloc(sizeof(*client), GFP_KERNEL);
+-	if (!client)
+-		return NULL;
++	mutex_lock(&dma_list_mutex);
++
++	list_for_each_entry(client, &dma_client_list, global_node) {
++		ack = client->event_callback(client, chan,
++				DMA_RESOURCE_REMOVED);
++
++		/* client was holding resources for this channel so
++		 * free it
++		 */
++		if (ack == DMA_ACK) {
++			dma_chan_put(chan);
++			kref_put(&chan->device->refcount,
++				dma_async_device_cleanup);
++		}
++	}
+ 
+-	INIT_LIST_HEAD(&client->channels);
+-	spin_lock_init(&client->lock);
+-	client->chans_desired = 0;
+-	client->chan_count = 0;
+-	client->event_callback = event_callback;
++	mutex_unlock(&dma_list_mutex);
++}
+ 
++/**
++ * dma_async_client_register - register a &dma_client
++ * @client: ptr to a client structure with valid 'event_callback' and 'cap_mask'
++ */
++void dma_async_client_register(struct dma_client *client)
++{
+ 	mutex_lock(&dma_list_mutex);
+ 	list_add_tail(&client->global_node, &dma_client_list);
+ 	mutex_unlock(&dma_list_mutex);
+-
+-	return client;
+ }
+ EXPORT_SYMBOL(dma_async_client_register);
+ 
+@@ -292,40 +302,42 @@ EXPORT_SYMBOL(dma_async_client_register)
+  */
+ void dma_async_client_unregister(struct dma_client *client)
+ {
++	struct dma_device *device;
+ 	struct dma_chan *chan;
++	enum dma_state_client ack;
+ 
+ 	if (!client)
+ 		return;
+ 
+-	rcu_read_lock();
+-	list_for_each_entry_rcu(chan, &client->channels, client_node)
+-		dma_client_chan_free(chan);
+-	rcu_read_unlock();
+-
+ 	mutex_lock(&dma_list_mutex);
++	/* free all channels the client is holding */
++	list_for_each_entry(device, &dma_device_list, global_node)
++		list_for_each_entry(chan, &device->channels, device_node) {
++			ack = client->event_callback(client, chan,
++				DMA_RESOURCE_REMOVED);
++
++			if (ack == DMA_ACK) {
++				dma_chan_put(chan);
++				kref_put(&chan->device->refcount,
++					dma_async_device_cleanup);
++			}
++		}
++
+ 	list_del(&client->global_node);
+ 	mutex_unlock(&dma_list_mutex);
+-
+-	kfree(client);
+-	dma_chans_rebalance();
+ }
+ EXPORT_SYMBOL(dma_async_client_unregister);
+ 
+ /**
+- * dma_async_client_chan_request - request DMA channels
+- * @client: &dma_client
+- * @number: count of DMA channels requested
+- *
+- * Clients call dma_async_client_chan_request() to specify how many
+- * DMA channels they need, 0 to free all currently allocated.
+- * The resulting allocations/frees are indicated to the client via the
+- * event callback.
++ * dma_async_client_chan_request - send all available channels to the
++ * client that satisfy the capability mask
++ * @client - requester
+  */
+-void dma_async_client_chan_request(struct dma_client *client,
+-			unsigned int number)
++void dma_async_client_chan_request(struct dma_client *client)
+ {
+-	client->chans_desired = number;
+-	dma_chans_rebalance();
++	mutex_lock(&dma_list_mutex);
++	dma_client_chan_alloc(client);
++	mutex_unlock(&dma_list_mutex);
+ }
+ EXPORT_SYMBOL(dma_async_client_chan_request);
+ 
+@@ -386,13 +398,16 @@ int dma_async_device_register(struct dma
+ 		}
+ 
+ 		kref_get(&device->refcount);
++		kref_init(&chan->refcount);
++		chan->slow_ref = 0;
++		INIT_RCU_HEAD(&chan->rcu);
+ 	}
+ 
+ 	mutex_lock(&dma_list_mutex);
+ 	list_add_tail(&device->global_node, &dma_device_list);
+ 	mutex_unlock(&dma_list_mutex);
+ 
+-	dma_chans_rebalance();
++	dma_clients_notify_available();
+ 
+ 	return 0;
+ 
+@@ -428,26 +443,16 @@ static void dma_async_device_cleanup(str
+ void dma_async_device_unregister(struct dma_device *device)
+ {
+ 	struct dma_chan *chan;
+-	unsigned long flags;
+ 
+ 	mutex_lock(&dma_list_mutex);
+ 	list_del(&device->global_node);
+ 	mutex_unlock(&dma_list_mutex);
+ 
+ 	list_for_each_entry(chan, &device->channels, device_node) {
+-		if (chan->client) {
+-			spin_lock_irqsave(&chan->client->lock, flags);
+-			list_del(&chan->client_node);
+-			chan->client->chan_count--;
+-			spin_unlock_irqrestore(&chan->client->lock, flags);
+-			chan->client->event_callback(chan->client,
+-			                             chan,
+-			                             DMA_RESOURCE_REMOVED);
+-			dma_client_chan_free(chan);
+-		}
++		dma_clients_notify_removed(chan);
+ 		class_device_unregister(&chan->class_dev);
++		dma_chan_release(chan);
+ 	}
+-	dma_chans_rebalance();
+ 
+ 	kref_put(&device->refcount, dma_async_device_cleanup);
+ 	wait_for_completion(&device->done);
+Index: linux-2.6.18/drivers/dma/ioatdma.c
+===================================================================
+--- linux-2.6.18.orig/drivers/dma/ioatdma.c
++++ linux-2.6.18/drivers/dma/ioatdma.c
+@@ -72,7 +72,6 @@ static int enumerate_dma_channels(struct
+ 		INIT_LIST_HEAD(&ioat_chan->used_desc);
+ 		/* This should be made common somewhere in dmaengine.c */
+ 		ioat_chan->common.device = &device->common;
+-		ioat_chan->common.client = NULL;
+ 		list_add_tail(&ioat_chan->common.device_node,
+ 		              &device->common.channels);
+ 	}
+Index: linux-2.6.18/drivers/dma/ioatdma.h
+===================================================================
+--- linux-2.6.18.orig/drivers/dma/ioatdma.h
++++ linux-2.6.18/drivers/dma/ioatdma.h
+@@ -30,9 +30,6 @@
+ 
+ #define IOAT_LOW_COMPLETION_MASK	0xffffffc0
+ 
+-extern struct list_head dma_device_list;
+-extern struct list_head dma_client_list;
+-
+ /**
+  * struct ioat_device - internal representation of a IOAT device
+  * @pdev: PCI-Express device
+Index: linux-2.6.18/include/linux/dmaengine.h
+===================================================================
+--- linux-2.6.18.orig/include/linux/dmaengine.h
++++ linux-2.6.18/include/linux/dmaengine.h
+@@ -29,20 +29,32 @@
+ #include <linux/dma-mapping.h>
+ 
+ /**
+- * enum dma_event - resource PNP/power managment events
++ * enum dma_state - resource PNP/power managment state
+  * @DMA_RESOURCE_SUSPEND: DMA device going into low power state
+  * @DMA_RESOURCE_RESUME: DMA device returning to full power
+- * @DMA_RESOURCE_ADDED: DMA device added to the system
++ * @DMA_RESOURCE_AVAILABLE: DMA device available to the system
+  * @DMA_RESOURCE_REMOVED: DMA device removed from the system
+  */
+-enum dma_event {
++enum dma_state {
+ 	DMA_RESOURCE_SUSPEND,
+ 	DMA_RESOURCE_RESUME,
+-	DMA_RESOURCE_ADDED,
++	DMA_RESOURCE_AVAILABLE,
+ 	DMA_RESOURCE_REMOVED,
+ };
+ 
+ /**
++ * enum dma_state_client - state of the channel in the client
++ * @DMA_ACK: client would like to use, or was using this channel
++ * @DMA_DUP: client has already seen this channel, or is not using this channel
++ * @DMA_NAK: client does not want to see any more channels
++ */
++enum dma_state_client {
++	DMA_ACK,
++	DMA_DUP,
++	DMA_NAK,
++};
++
++/**
+  * typedef dma_cookie_t - an opaque DMA cookie
+  *
+  * if dma_cookie_t is >0 it's a DMA request cookie, <0 it's an error code
+@@ -104,7 +116,6 @@ struct dma_chan_percpu {
+ 
+ /**
+  * struct dma_chan - devices supply DMA channels, clients use them
+- * @client: ptr to the client user of this chan, will be %NULL when unused
+  * @device: ptr to the dma device who supplies this channel, always !%NULL
+  * @cookie: last cookie value returned to client
+  * @chan_id: channel ID for sysfs
+@@ -112,12 +123,10 @@ struct dma_chan_percpu {
+  * @refcount: kref, used in "bigref" slow-mode
+  * @slow_ref: indicates that the DMA channel is free
+  * @rcu: the DMA channel's RCU head
+- * @client_node: used to add this to the client chan list
+  * @device_node: used to add this to the device chan list
+  * @local: per-cpu pointer to a struct dma_chan_percpu
+  */
+ struct dma_chan {
+-	struct dma_client *client;
+ 	struct dma_device *device;
+ 	dma_cookie_t cookie;
+ 
+@@ -129,11 +138,11 @@ struct dma_chan {
+ 	int slow_ref;
+ 	struct rcu_head rcu;
+ 
+-	struct list_head client_node;
+ 	struct list_head device_node;
+ 	struct dma_chan_percpu *local;
+ };
+ 
++
+ void dma_chan_cleanup(struct kref *kref);
+ 
+ static inline void dma_chan_get(struct dma_chan *chan)
+@@ -158,26 +167,31 @@ static inline void dma_chan_put(struct d
+ 
+ /*
+  * typedef dma_event_callback - function pointer to a DMA event callback
+- */
+-typedef void (*dma_event_callback) (struct dma_client *client,
+-		struct dma_chan *chan, enum dma_event event);
++ * For each channel added to the system this routine is called for each client.
++ * If the client would like to use the channel it returns '1' to signal (ack)
++ * the dmaengine core to take out a reference on the channel and its
++ * corresponding device.  A client must not 'ack' an available channel more
++ * than once.  When a channel is removed all clients are notified.  If a client
++ * is using the channel it must 'ack' the removal.  A client must not 'ack' a
++ * removed channel more than once.
++ * @client - 'this' pointer for the client context
++ * @chan - channel to be acted upon
++ * @state - available or removed
++ */
++struct dma_client;
++typedef enum dma_state_client (*dma_event_callback) (struct dma_client *client,
++		struct dma_chan *chan, enum dma_state state);
+ 
+ /**
+  * struct dma_client - info on the entity making use of DMA services
+  * @event_callback: func ptr to call when something happens
+- * @chan_count: number of chans allocated
+- * @chans_desired: number of chans requested. Can be +/- chan_count
+- * @lock: protects access to the channels list
+- * @channels: the list of DMA channels allocated
++ * @cap_mask: only return channels that satisfy the requested capabilities
++ *  a value of zero corresponds to any capability
+  * @global_node: list_head for global dma_client_list
+  */
+ struct dma_client {
+ 	dma_event_callback	event_callback;
+-	unsigned int		chan_count;
+-	unsigned int		chans_desired;
+-
+-	spinlock_t		lock;
+-	struct list_head	channels;
++	dma_cap_mask_t		cap_mask;
+ 	struct list_head	global_node;
+ };
+ 
+@@ -285,10 +299,9 @@ struct dma_device {
+ 
+ /* --- public DMA engine API --- */
+ 
+-struct dma_client *dma_async_client_register(dma_event_callback event_callback);
++void dma_async_client_register(struct dma_client *client);
+ void dma_async_client_unregister(struct dma_client *client);
+-void dma_async_client_chan_request(struct dma_client *client,
+-		unsigned int number);
++void dma_async_client_chan_request(struct dma_client *client);
+ dma_cookie_t dma_async_memcpy_buf_to_buf(struct dma_chan *chan,
+ 	void *dest, void *src, size_t len);
+ dma_cookie_t dma_async_memcpy_buf_to_pg(struct dma_chan *chan,
+@@ -299,7 +312,6 @@ dma_cookie_t dma_async_memcpy_pg_to_pg(s
+ void dma_async_tx_descriptor_init(struct dma_async_tx_descriptor *tx,
+ 	struct dma_chan *chan);
+ 
+-
+ static inline void
+ async_tx_ack(struct dma_async_tx_descriptor *tx)
+ {
+Index: linux-2.6.18/net/core/dev.c
+===================================================================
+--- linux-2.6.18.orig/net/core/dev.c
++++ linux-2.6.18/net/core/dev.c
+@@ -151,9 +151,22 @@ static struct list_head ptype_base[16];	
+ static struct list_head ptype_all;		/* Taps */
+ 
+ #ifdef CONFIG_NET_DMA
+-static struct dma_client *net_dma_client;
+-static unsigned int net_dma_count;
+-static spinlock_t net_dma_event_lock;
++struct net_dma {
++	struct dma_client client;
++	spinlock_t lock;
++	cpumask_t channel_mask;
++	struct dma_chan *channels[NR_CPUS];
++};
++
++static enum dma_state_client
++netdev_dma_event(struct dma_client *client, struct dma_chan *chan,
++	enum dma_state state);
++
++static struct net_dma net_dma = {
++	.client = {
++		.event_callback = netdev_dma_event,
++	},
++};
+ #endif
+ 
+ /*
+@@ -1979,12 +1992,13 @@ out:
+ 	 * There may not be any more sk_buffs coming right now, so push
+ 	 * any pending DMA copies to hardware
+ 	 */
+-	if (net_dma_client) {
+-		struct dma_chan *chan;
+-		rcu_read_lock();
+-		list_for_each_entry_rcu(chan, &net_dma_client->channels, client_node)
+-			dma_async_memcpy_issue_pending(chan);
+-		rcu_read_unlock();
++	if (!cpus_empty(net_dma.channel_mask)) {
++		int chan_idx;
++		for_each_cpu_mask(chan_idx, net_dma.channel_mask) {
++			struct dma_chan *chan = net_dma.channels[chan_idx];
++			if (chan)
++				dma_async_memcpy_issue_pending(chan);
++		}
+ 	}
+ #endif
+ 	local_irq_enable();
+@@ -3447,12 +3461,13 @@ static int dev_cpu_callback(struct notif
+  * This is called when the number of channels allocated to the net_dma_client
+  * changes.  The net_dma_client tries to have one DMA channel per CPU.
+  */
+-static void net_dma_rebalance(void)
++
++static void net_dma_rebalance(struct net_dma *net_dma)
+ {
+-	unsigned int cpu, i, n;
++	unsigned int cpu, i, n, chan_idx;
+ 	struct dma_chan *chan;
+ 
+-	if (net_dma_count == 0) {
++	if (cpus_empty(net_dma->channel_mask)) {
+ 		for_each_online_cpu(cpu)
+ 			rcu_assign_pointer(per_cpu(softnet_data, cpu).net_dma, NULL);
+ 		return;
+@@ -3461,10 +3476,12 @@ static void net_dma_rebalance(void)
+ 	i = 0;
+ 	cpu = first_cpu(cpu_online_map);
+ 
+-	rcu_read_lock();
+-	list_for_each_entry(chan, &net_dma_client->channels, client_node) {
+-		n = ((num_online_cpus() / net_dma_count)
+-		   + (i < (num_online_cpus() % net_dma_count) ? 1 : 0));
++	for_each_cpu_mask(chan_idx, net_dma->channel_mask) {
++		chan = net_dma->channels[chan_idx];
++
++		n = ((num_online_cpus() / cpus_weight(net_dma->channel_mask))
++		   + (i < (num_online_cpus() %
++			cpus_weight(net_dma->channel_mask)) ? 1 : 0));
+ 
+ 		while(n) {
+ 			per_cpu(softnet_data, cpu).net_dma = chan;
+@@ -3473,7 +3490,6 @@ static void net_dma_rebalance(void)
+ 		}
+ 		i++;
+ 	}
+-	rcu_read_unlock();
+ }
+ 
+ /**
+@@ -3482,23 +3498,53 @@ static void net_dma_rebalance(void)
+  * @chan: DMA channel for the event
+  * @event: event type
+  */
+-static void netdev_dma_event(struct dma_client *client, struct dma_chan *chan,
+-	enum dma_event event)
+-{
+-	spin_lock(&net_dma_event_lock);
+-	switch (event) {
+-	case DMA_RESOURCE_ADDED:
+-		net_dma_count++;
+-		net_dma_rebalance();
++static enum dma_state_client
++netdev_dma_event(struct dma_client *client, struct dma_chan *chan,
++	enum dma_state state)
++{
++	int i, found = 0, pos = -1;
++	struct net_dma *net_dma =
++		container_of(client, struct net_dma, client);
++	enum dma_state_client ack = DMA_DUP; /* default: take no action */
++
++	spin_lock(&net_dma->lock);
++	switch (state) {
++	case DMA_RESOURCE_AVAILABLE:
++		for (i = 0; i < NR_CPUS; i++)
++			if (net_dma->channels[i] == chan) {
++				found = 1;
++				break;
++			} else if (net_dma->channels[i] == NULL && pos < 0)
++				pos = i;
++
++		if (!found && pos >= 0) {
++			ack = DMA_ACK;
++			net_dma->channels[pos] = chan;
++			cpu_set(pos, net_dma->channel_mask);
++			net_dma_rebalance(net_dma);
++		}
+ 		break;
+ 	case DMA_RESOURCE_REMOVED:
+-		net_dma_count--;
+-		net_dma_rebalance();
++		for (i = 0; i < NR_CPUS; i++)
++			if (net_dma->channels[i] == chan) {
++				found = 1;
++				pos = i;
++				break;
++			}
++
++		if (found) {
++			ack = DMA_ACK;
++			cpu_clear(pos, net_dma->channel_mask);
++			net_dma->channels[i] = NULL;
++			net_dma_rebalance(net_dma);
++		}
+ 		break;
+ 	default:
+ 		break;
+ 	}
+-	spin_unlock(&net_dma_event_lock);
++	spin_unlock(&net_dma->lock);
++
++	return ack;
+ }
+ 
+ /**
+@@ -3506,12 +3552,10 @@ static void netdev_dma_event(struct dma_
+  */
+ static int __init netdev_dma_register(void)
+ {
+-	spin_lock_init(&net_dma_event_lock);
+-	net_dma_client = dma_async_client_register(netdev_dma_event);
+-	if (net_dma_client == NULL)
+-		return -ENOMEM;
+-
+-	dma_async_client_chan_request(net_dma_client, num_online_cpus());
++	spin_lock_init(&net_dma.lock);
++	dma_cap_set(DMA_MEMCPY, net_dma.client.cap_mask);
++	dma_async_client_register(&net_dma.client);
++	dma_async_client_chan_request(&net_dma.client);
+ 	return 0;
+ }
+ 
+Index: linux-2.6.18/mvl_patches/pro50-2006.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-2006.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(2006);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+

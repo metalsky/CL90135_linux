@@ -1,0 +1,355 @@
+#! /usr/bin/env bash
+# Patch: -pro_musb_hdrc_Fix_various_build_warnings_for_peripheral
+# Date: Fri Sep 19 14:16:29 2008
+# From 374792e54f69efaab7d2978b5ce124e3d8a2a1c2 Mon Sep 17 00:00:00 2001
+# From: David Brownell <dbrownell@users.sourceforge.net>
+# Date: Mon, 20 Aug 2007 23:34:08 -0700
+# Subject: [PATCH] musb_hdrc: Fix various build warnings for peripheral
+# 
+# (Updated) Fix various build warnings for peripheral-only builds,
+# and some linewrap bugs.  Remove some inappropriate #ifdefs.
+# 
+# Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+# (cherry picked from commit 16153ee4dd6c6cc08363ee8a0bfc6c9cf74fd5e1)
+
+PATCHNUM=1769
+LSPINFO=include/linux/lsppatchlevel.h
+TMPFILE=/tmp/mvl_patch_$$
+
+function dopatch() {
+    patch $* >${TMPFILE} 2>&1 <<"EOF"
+From 374792e54f69efaab7d2978b5ce124e3d8a2a1c2 Mon Sep 17 00:00:00 2001
+From: David Brownell <dbrownell@users.sourceforge.net>
+Date: Mon, 20 Aug 2007 23:34:08 -0700
+Subject: [PATCH] musb_hdrc: Fix various build warnings for peripheral
+
+(Updated) Fix various build warnings for peripheral-only builds,
+and some linewrap bugs.  Remove some inappropriate #ifdefs.
+
+Signed-off-by: David Brownell <dbrownell@users.sourceforge.net>
+(cherry picked from commit 16153ee4dd6c6cc08363ee8a0bfc6c9cf74fd5e1)
+Index: linux-2.6.18/drivers/usb/musb/musbdefs.h
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/musbdefs.h
++++ linux-2.6.18/drivers/usb/musb/musbdefs.h
+@@ -328,12 +328,12 @@ struct musb {
+ 	irqreturn_t		(*isr)(int, void *);
+ 	struct work_struct	irq_work;
+ 
+-#ifdef CONFIG_USB_MUSB_HDRC_HCD
+-
+ /* this hub status bit is reserved by USB 2.0 and not seen by usbcore */
+ #define MUSB_PORT_STAT_RESUME	(1 << 31)
+ 
+ 	u32			port1_status;
++
++#ifdef CONFIG_USB_MUSB_HDRC_HCD
+ 	unsigned long		rh_timer;
+ 
+ 	enum musb_h_ep0_state	ep0_stage;
+Index: linux-2.6.18/drivers/usb/musb/plat_uds.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/plat_uds.c
++++ linux-2.6.18/drivers/usb/musb/plat_uds.c
+@@ -364,9 +364,7 @@ static irqreturn_t musb_stage0_irq(struc
+ 				u8 devctl, u8 power)
+ {
+ 	irqreturn_t handled = IRQ_NONE;
+-#ifdef CONFIG_USB_MUSB_HDRC_HCD
+ 	void __iomem *mbase = musb->mregs;
+-#endif
+ 
+ 	DBG(3, "<== Power=%02x, DevCtl=%02x, int_usb=0x%x\n", power, devctl,
+ 		int_usb);
+@@ -603,8 +601,7 @@ static irqreturn_t musb_stage0_irq(struc
+ 	 * only host sees babble; only peripheral sees bus reset.
+ 	 */
+ 	if (int_usb & MUSB_INTR_RESET) {
+-#ifdef CONFIG_USB_MUSB_HDRC_HCD
+-		if (devctl & MUSB_DEVCTL_HM) {
++		if (is_host_capable() && (devctl & MUSB_DEVCTL_HM) != 0) {
+ 			/*
+ 			 * Looks like non-HS BABBLE can be ignored, but
+ 			 * HS BABBLE is an error condition. For HS the solution
+@@ -618,9 +615,7 @@ static irqreturn_t musb_stage0_irq(struc
+ 				ERR("Stopping host session because of babble\n");
+ 				musb_writeb(mbase, MUSB_DEVCTL, 0);
+ 			}
+-		} else
+-#endif	/* CONFIG_USB_MUSB_HDRC_HCD */
+-		{
++		} else if (is_peripheral_capable()) {
+ 			DBG(1, "BUS RESET\n");
+ 
+ 			musb_g_reset(musb);
+@@ -1707,6 +1702,11 @@ musb_vbus_show(struct device *dev, struc
+ }
+ static DEVICE_ATTR(vbus, 0644, musb_vbus_show, musb_vbus_store);
+ 
++#ifdef CONFIG_USB_GADGET_MUSB_HDRC
++
++/* Gadget drivers can't know that a host is connected so they might want
++ * to start SRP, but users can.  This allows userspace to trigger SRP.
++ */
+ static ssize_t
+ musb_srp_store(struct device *dev, struct device_attribute *attr,
+ 		const char *buf, size_t n)
+@@ -1726,7 +1726,10 @@ musb_srp_store(struct device *dev, struc
+ 	return n;
+ }
+ static DEVICE_ATTR(srp, 0644, NULL, musb_srp_store);
+-#endif
++
++#endif /* CONFIG_USB_GADGET_MUSB_HDRC */
++
++#endif	/* sysfs */
+ 
+ /* Only used to provide cable state change events */
+ static void musb_irq_work(struct work_struct *data)
+@@ -2028,9 +2031,9 @@ fail:
+ 	status = device_create_file(dev, &dev_attr_mode);
+ 	status = device_create_file(dev, &dev_attr_cable);
+ 	status = device_create_file(dev, &dev_attr_vbus);
+-#ifdef CONFIG_USB_MUSB_OTG
++#ifdef CONFIG_USB_GADGET_MUSB_HDRC
+ 	status = device_create_file(dev, &dev_attr_srp);
+-#endif /* CONFIG_USB_MUSB_OTG */
++#endif /* CONFIG_USB_GADGET_MUSB_HDRC */
+ 	status = 0;
+ #endif
+ 
+Index: linux-2.6.18/drivers/usb/musb/tusb6010.c
+===================================================================
+--- linux-2.6.18.orig/drivers/usb/musb/tusb6010.c
++++ linux-2.6.18/drivers/usb/musb/tusb6010.c
+@@ -438,11 +438,9 @@ static void musb_do_idle(unsigned long _
+ 	if (!musb->is_active) {
+ 		u32	wakeups;
+ 
+-#ifdef CONFIG_USB_MUSB_HDRC_HCD
+ 		/* wait until khubd handles port change status */
+ 		if (is_host_active(musb) && (musb->port1_status >> 16))
+ 			goto done;
+-#endif
+ 
+ #ifdef CONFIG_USB_GADGET_MUSB_HDRC
+ 		if (is_peripheral_enabled(musb) && !musb->gadget_driver)
+@@ -586,7 +584,6 @@ void musb_platform_set_mode(struct musb 
+ {
+ 	void __iomem	*base = musb->ctrl_base;
+ 	u32		otg_stat, phy_otg_ctrl, phy_otg_ena, dev_conf;
+-	int		vbus = 0;
+ 
+ 	if (musb->board_mode != MUSB_OTG) {
+ 		ERR("Changing mode currently only supported in OTG mode\n");
+@@ -606,7 +603,6 @@ void musb_platform_set_mode(struct musb 
+ 		phy_otg_ena |= TUSB_PHY_OTG_CTRL_OTG_ID_PULLUP;
+ 		dev_conf |= TUSB_DEV_CONF_ID_SEL;
+ 		dev_conf &= ~TUSB_DEV_CONF_SOFT_ID;
+-		vbus = 1;
+ 		break;
+ #endif
+ 
+Index: linux-2.6.18/mvl_patches/pro50-1769.c
+===================================================================
+--- /dev/null
++++ linux-2.6.18/mvl_patches/pro50-1769.c
+@@ -0,0 +1,16 @@
++/*
++ * Author: MontaVista Software, Inc. <source@mvista.com>
++ *
++ * 2008 (c) MontaVista Software, Inc. This file is licensed under
++ * the terms of the GNU General Public License version 2. This program
++ * is licensed "as is" without any warranty of any kind, whether express
++ * or implied.
++ */
++#include <linux/init.h>
++#include <linux/mvl_patch.h>
++
++static __init int regpatch(void)
++{
++        return mvl_register_patch(1769);
++}
++module_init(regpatch);
+EOF
+
+    rv=0
+    cat /tmp/mvl_patch_$$
+    if [ "$?" != "0" ]; then
+	# Patch had a hard error, return 2
+	rv=2
+    elif grep '^Hunk' ${TMPFILE}; then
+	rv=1
+    fi
+
+    rm -f ${TMPFILE}
+    return $rv
+}
+
+function options() {
+    echo "Options are:"
+    echo "  --force-unsupported - Force the patch to be applied even if the"
+    echo "      patch is out of order or the current kernel is unsupported."
+    echo "      Use of this option is strongly discouraged."
+    echo "  --force-apply-fuzz - If the patch has fuzz, go ahead and apply"
+    echo "      it anyway.  This can occur if the patch is applied to an"
+    echo "      unsupported kernel or applied out of order or if you have"
+    echo "      made your own modifications to the kernel.  Use with"
+    echo "      caution."
+    echo "  --remove - Remove the patch"
+}
+
+
+function checkpatchnum() {
+    local level;
+
+    if [ ! -e ${1} ]; then
+	echo "${1} does not exist, make sure you are in the kernel" 1>&2
+	echo "base directory" 1>&2
+	exit 1;
+    fi
+
+    # Extract the current patch number from the lsp info file.
+    level=`grep '#define LSP_.*PATCH_LEVEL' ${1} | sed 's/^.*\"\\(.*\\)\".*\$/\\1/'`
+    if [ "a$level" = "a" ]; then
+	echo "No patch level defined in ${1}, are you sure this is" 1>&2
+	echo "a valid MVL kernel LSP?" 1>&2
+	exit 1;
+    fi
+
+    expr $level + 0 >/dev/null 2>&1
+    isnum=$?
+
+    # Check if the kernel is supported
+    if [ "$level" = "unsupported" ]; then
+	echo "**Current kernel is unsupported by MontaVista due to patches"
+	echo "  begin applied out of order."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  Application is forced, applying patch anyway"
+	    unsupported=t
+	    fix_patch_level=f
+	else
+	    echo "  Patch application aborted.  Use --force-unsupported to"
+	    echo "  force the patch to be applied, but the kernel will not"
+	    echo "  be supported by MontaVista."
+	    exit 1;
+	fi
+
+    # Check the patch number from the lspinfo file to make sure it is
+    # a valid number
+    elif [ $isnum = 2 ]; then
+	echo "**Patch level from ${1} was not a valid number, " 1>&2
+	echo "  are you sure this is a valid MVL kernel LSP?" 1>&2
+	exit 1;
+
+    # Check that this is the right patch number to be applied.
+    elif [ `expr $level $3` ${4} ${2} ]; then
+	echo "**Application of this patch is out of order and will cause the"
+	echo "  kernel to be unsupported by MontaVista."
+	if [ $force_unsupported == 't' ]; then
+	    echo "  application is forced, applying patch anyway"
+	    unsupported=t
+	else
+	    echo "  Patch application aborted.  Please get all the patches in"
+	    echo "  proper order from MontaVista Zone and apply them in order"
+	    echo "  If you really want to apply this patch, use"
+	    echo "  --force-unsupported to force the patch to be applied, but"
+	    echo "  the kernel will not be supported by MontaVista."
+	    exit 1;
+	fi
+    fi
+}
+
+#
+# Update the patch level in the file.  Note that we use patch to do
+# this.  Certain weak version control systems don't take kindly to
+# arbitrary changes directly to files, but do have a special version
+# of "patch" that understands this.
+#
+function setpatchnum() {
+    sed "s/^#define LSP_\(.*\)PATCH_LEVEL[ \t*]\"[0-9]*\".*$/#define LSP_\1PATCH_LEVEL \"${2}\"/" <${1} >/tmp/$$.tmp1
+    diff -u ${1} /tmp/$$.tmp1 >/tmp/$$.tmp2
+    rm /tmp/$$.tmp1
+    sed "s/^+++ \/tmp\/$$.tmp1/+++ include\/linux\/lsppatchlevel.h/" </tmp/$$.tmp2 >/tmp/$$.tmp1
+    rm /tmp/$$.tmp2
+    patch -p0 </tmp/$$.tmp1
+    rm /tmp/$$.tmp1
+}
+
+force_unsupported=f
+force_apply_fuzz=""
+unsupported=f
+fix_patch_level=t
+reverse=f
+common_patchnum_diff='+ 1'
+common_patchnum=$PATCHNUM
+patch_extraopts=''
+
+# Extract command line parameters.
+while [ $# -gt 0 ]; do
+    if [ "a$1" == 'a--force-unsupported' ]; then
+	force_unsupported=t
+    elif [ "a$1" == 'a--force-apply-fuzz' ]; then
+	force_apply_fuzz=y
+    elif [ "a$1" == 'a--remove' ]; then
+	reverse=t
+	common_patchnum_diff=''
+	common_patchnum=`expr $PATCHNUM - 1`
+	patch_extraopts='--reverse'
+    else
+	echo "'$1' is an invalid command line parameter."
+	options
+	exit 1
+    fi
+    shift
+done
+
+echo "Checking patch level"
+checkpatchnum ${LSPINFO} ${PATCHNUM} "${common_patchnum_diff}" "-ne"
+
+if ! dopatch -p1 --dry-run --force $patch_extraopts; then
+    if [ $? = 2 ]; then
+	echo -n "**Patch had errors, application aborted" 1>&2
+	exit 1;
+    fi
+
+    # Patch has warnings
+    clean_apply=${force_apply_fuzz}
+    while [ "a$clean_apply" != 'ay' -a "a$clean_apply" != 'an' ]; do
+	echo -n "**Patch did not apply cleanly.  Do you still want to apply? (y/n) > "
+	read clean_apply
+	clean_apply=`echo "$clean_apply" | tr '[:upper:]' '[:lower:]'`
+    done
+    if [ $clean_apply = 'n' ]; then
+	exit 1;
+    fi
+fi
+
+dopatch -p1 --force $patch_extraopts
+
+if [ $fix_patch_level = 't' ]; then 
+    if [ $unsupported = 't' ]; then
+	common_patchnum="unsupported"
+    fi
+
+    setpatchnum ${LSPINFO} ${common_patchnum}
+fi
+
+# Move the patch file into the mvl_patches directory if we are not reversing
+if [ $reverse != 't' ]; then 
+    if echo $0 | grep '/' >/dev/null; then
+	# Filename is a path, either absolute or from the current directory.
+	srcfile=$0
+    else
+	# Filename is from the path
+	for i in `echo $PATH | tr ':;' '  '`; do
+	    if [ -e ${i}/$0 ]; then
+		srcfile=${i}/$0
+	    fi
+	done
+    fi
+
+    fname=`basename ${srcfile}`
+    diff -uN mvl_patches/${fname} ${srcfile} | (cd mvl_patches; patch)
+fi
+
